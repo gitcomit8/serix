@@ -1,8 +1,5 @@
 
 # **Serix Kernel Architecture Document**  
-**Version**: 1.0  
-**Last Updated**: July 6, 2025  
-**License**: Apache 2.0 + MIT  
 
 ```mermaid
 flowchart TD
