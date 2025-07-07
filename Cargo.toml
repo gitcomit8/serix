@@ -1,0 +1,14 @@
+[package]
+name = "serix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+uefi = { version = "0.35.0", features = ["logger", "panic_handler"] }
+log = "0.4.27"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
