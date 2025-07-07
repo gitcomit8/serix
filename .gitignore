@@ -1,1 +1,3 @@
 /target
+/esp/NvVars
+/esp/EFI/BOOT/BOOTX64.EFI
