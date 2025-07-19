@@ -4,7 +4,6 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 
-// This is needed even if your code doesn't allocate, but dependencies ask for a global allocator.
 struct Dummy;
 
 unsafe impl GlobalAlloc for Dummy {
@@ -32,10 +31,12 @@ static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    //Access framebuffer info
     let fb_response = FRAMEBUFFER_REQ
         .get_response()
         .expect("No framebuffer reply");
 
+    //Paint screen blue
     if let Some(fb) = fb_response.framebuffers().next() {
         let width = fb.width() as usize;
         let height = fb.height() as usize;
@@ -57,6 +58,7 @@ pub extern "C" fn _start() -> ! {
     loop {}
 }
 
+//On panic fall into infinite loop
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
