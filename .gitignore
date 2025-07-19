@@ -1,0 +1,7 @@
+/limine
+/ovmf
+*.iso
+*.hdd
+/target
+.idea/
+Cargo.lock
