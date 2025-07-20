@@ -3,12 +3,13 @@
 #![feature(alloc_error_handler)]
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::any::Any;
 
 struct Dummy;
 
 unsafe impl GlobalAlloc for Dummy {
     unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
-        core::ptr::null_mut()
+        ptr::null_mut()
     }
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
 }
@@ -23,11 +24,13 @@ fn on_oom(_layout: core::alloc::Layout) -> ! {
 
 use core::panic::PanicInfo;
 use core::ptr;
-use limine::request::FramebufferRequest;
+use limine::memory_map::EntryType;
+use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
+static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -35,6 +38,9 @@ pub extern "C" fn _start() -> ! {
     let fb_response = FRAMEBUFFER_REQ
         .get_response()
         .expect("No framebuffer reply");
+
+    let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
+    let entries = mmap_response.entries();
 
     //Paint screen blue
     if let Some(fb) = fb_response.framebuffers().next() {
@@ -51,6 +57,30 @@ pub extern "C" fn _start() -> ! {
                 let offset = y * pitch + x * (bpp / 8);
                 unsafe {
                     ptr::copy_nonoverlapping(blue_pixel.as_ptr(), ptr.add(offset), 4);
+                }
+            }
+        }
+
+        //Visualize mmap - draw pixel mid-screen with color indicating type
+        let count = entries.len();
+        let max_count = width.min(count);
+
+        //Thick vertical bar at bottom of screen
+        let bar_width = width / max_count.max(1);
+
+        for (i, entry) in entries.iter().enumerate() {
+            let color = match entry.entry_type {
+                EntryType::USABLE => [0x00, 0xFF, 0x00, 0x00], // green
+                EntryType::BOOTLOADER_RECLAIMABLE => [0xFF, 0xFF, 0x00, 0x00], // cyan
+                _ => [0x80, 0x80, 0x80, 0x00],                 // gray
+            };
+            let x_start = i * bar_width;
+            for x in x_start..(x_start + bar_width) {
+                for y in (height - 40)..height {
+                    let offset = y * pitch + x * (bpp / 8);
+                    unsafe {
+                        ptr::copy_nonoverlapping(color.as_ptr(), ptr.add(offset), 4);
+                    }
                 }
             }
         }
