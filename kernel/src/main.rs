@@ -3,34 +3,15 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
-use core::alloc::{GlobalAlloc, Layout};
-struct Dummy;
+mod util;
 
-unsafe impl GlobalAlloc for Dummy {
-    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
-        ptr::null_mut()
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-}
-
-#[global_allocator]
-static DUMMY: Dummy = Dummy;
-
-#[alloc_error_handler]
-fn on_oom(_layout: core::alloc::Layout) -> ! {
-    loop {}
-}
-
-use core::panic::PanicInfo;
 use core::ptr;
 use limine::memory_map::EntryType;
 use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{
-    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
-};
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{OffsetPageTable, PageTable};
+use x86_64::VirtAddr;
 
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
@@ -102,10 +83,4 @@ unsafe fn active_level_table(offset: VirtAddr) -> &'static mut PageTable {
 
 unsafe fn init_offset_page_table(offset: VirtAddr) -> OffsetPageTable<'static> {
     OffsetPageTable::new(active_level_table(offset), offset)
-}
-
-//On panic fall into infinite loop
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
 }
