@@ -5,14 +5,20 @@
 extern crate alloc;
 mod util;
 
+use crate::util::HEAP_ALLOCATOR;
 use alloc::boxed::Box;
 use core::ptr;
-use limine::memory_map::EntryType;
+use limine::memory_map::{Entry, EntryType};
 use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{
+    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+};
 use x86_64::{PhysAddr, VirtAddr};
+
+const HEAP_START: usize = 0x4444_4444_0000;
+const HEAP_SIZE: usize = 1024 * 1024;
 
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
@@ -28,6 +34,14 @@ pub extern "C" fn _start() -> ! {
     let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
     let entries = mmap_response.entries();
 
+    //Get kernel physical memory offset
+    let phys_mem_offset = VirtAddr::new(0xffff_8000_0000_0000);
+    let mut mapper = unsafe { init_offset_page_table(phys_mem_offset) };
+    //BUG: BootFrameAllocator::new uses heap before heap is initialized
+    let mut frame_alloc = BootFrameAllocator::new(mmap_response.entries());
+
+    //--- HEAP MAP/INIT ---
+    init_heap(&mut mapper, &mut frame_alloc);
     //Paint screen blue
     if let Some(fb) = fb_response.framebuffers().next() {
         let width = fb.width() as usize;
@@ -92,7 +106,7 @@ pub struct BootFrameAllocator {
 }
 
 impl BootFrameAllocator {
-    pub fn new(memory_map: &'static [limine::memory_map::Entry]) -> Self {
+    pub fn new(memory_map: &[&Entry]) -> Self {
         let mut frames = alloc::vec::Vec::new();
         for region in memory_map
             .iter()
@@ -124,5 +138,34 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
         } else {
             None
         }
+    }
+}
+
+pub fn init_heap(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+) {
+    let page_range = {
+        let heap_start = VirtAddr::new(HEAP_START as u64);
+        let heap_end = VirtAddr::new((HEAP_START + HEAP_SIZE - 1) as u64);
+        let start_page = Page::containing_address(heap_start);
+        let end_page = Page::containing_address(heap_end);
+        Page::range_inclusive(start_page, end_page)
+    };
+
+    for page in page_range {
+        let frame = frame_allocator
+            .allocate_frame()
+            .expect("No frames available");
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .expect("Mapping failed")
+                .flush();
+        }
+    }
+    unsafe {
+        HEAP_ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
     }
 }
