@@ -29,10 +29,10 @@ flowchart TD
 
 ```rust
 pub enum SchedClass {
-    Realtime(FifoPolicy),  // SCHED_FIFO (0-99)
-    Fair(WeightedPolicy),  // SCHED_NORMAL (100-139) 
-    Batch(IdlePolicy),     // SCHED_IDLE (140)
-    Iso(Isochronous)       // SCHED_DEADLINE
+	Realtime(FifoPolicy),  // SCHED_FIFO (0-99)
+	Fair(WeightedPolicy),  // SCHED_NORMAL (100-139) 
+	Batch(IdlePolicy),     // SCHED_IDLE (140)
+	Iso(Isochronous)       // SCHED_DEADLINE
 }
 ```
 
@@ -43,8 +43,8 @@ pub enum SchedClass {
       Task -->|Background| E-Core
   ```
 - **Guarantees**:
-    - ≤500ns context switch (P-core)
-    - Cache warmth tracking via PMU
+	- ≤500ns context switch (P-core)
+	- Cache warmth tracking via PMU
 
 ### **2.2 Aegis Memory Manager**
 
@@ -85,10 +85,10 @@ long syscall(
 
 ```rust
 struct Capability {
-    id: u128,                     // XChaCha20 nonce
-    rights: BitFlags<32>,         // Fine-grained permissions
-    origin: CapOrigin,            // Delegation chain
-    expires: Option<CycleCount>   // Temporal validity
+	id: u128,                     // XChaCha20 nonce
+	rights: BitFlags<32>,         // Fine-grained permissions
+	origin: CapOrigin,            // Delegation chain
+	expires: Option<CycleCount>   // Temporal validity
 }
 ```
 
@@ -139,13 +139,13 @@ classDiagram
 **Layered Defenses**:
 
 1. **Prevention**:
-    - All objects capability-protected
-    - No implicit memory sharing
+	- All objects capability-protected
+	- No implicit memory sharing
 2. **Detection**:
-    - TPM-based attestation
-    - Capability anomaly detection
+	- TPM-based attestation
+	- Capability anomaly detection
 3. **Response**:
-    - Automatic revocation on violation
+	- Automatic revocation on violation
 
 ---
 
@@ -180,16 +180,16 @@ smack --unroll 128 scheduler.rs
 ## **7. Pending Design Decisions**
 
 1. **Power Management**:
-    - P-core parking thresholds
-    - E-core DVFS strategy
+	- P-core parking thresholds
+	- E-core DVFS strategy
 
 2. **Debugging**:
-    - Kernel core dump format
-    - Live introspection ABI
+	- Kernel core dump format
+	- Live introspection ABI
 
 3. **Legacy**:
-    - x87 FPU emulation
-    - ACPI vs FDT for RISC-V
+	- x87 FPU emulation
+	- ACPI vs FDT for RISC-V
 
 ---
 

@@ -13,7 +13,7 @@ use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{
-    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+	FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
