@@ -13,16 +13,18 @@ use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{
-	FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
 const HEAP_START: usize = 0x4444_4444_0000;
 const HEAP_SIZE: usize = 1024 * 1024;
+const MAX_BOOT_FRAMES: usize = 65536;
 
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
+static mut BOOT_FRAMES: [Option<PhysFrame>; MAX_BOOT_FRAMES] = [None; MAX_BOOT_FRAMES];
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -37,8 +39,28 @@ pub extern "C" fn _start() -> ! {
     //Get kernel physical memory offset
     let phys_mem_offset = VirtAddr::new(0xffff_8000_0000_0000);
     let mut mapper = unsafe { init_offset_page_table(phys_mem_offset) };
-    //BUG: BootFrameAllocator::new uses heap before heap is initialized
-    let mut frame_alloc = BootFrameAllocator::new(mmap_response.entries());
+
+    //Preallocate all usable frames before heap mapping
+    let mut frame_count = 0;
+    for region in entries
+        .iter()
+        .filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
+    {
+        let start = region.base;
+        let end = region.base + region.length;
+        let start_frame = PhysFrame::containing_address(PhysAddr::new(start));
+        let end_frame = PhysFrame::containing_address(PhysAddr::new(end - 1));
+        for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
+            if frame_count < MAX_BOOT_FRAMES {
+                unsafe {
+                    BOOT_FRAMES[frame_count] = Some(frame);
+                }
+                frame_count += 1;
+            }
+        }
+    }
+
+    let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
 
     //--- HEAP MAP/INIT ---
     init_heap(&mut mapper, &mut frame_alloc);
@@ -86,6 +108,34 @@ pub extern "C" fn _start() -> ! {
         }
     }
     loop {}
+}
+
+pub struct StaticBootFrameAllocator {
+    next: usize,
+    limit: usize,
+}
+impl StaticBootFrameAllocator {
+    pub fn new(frame_count: usize) -> Self {
+        StaticBootFrameAllocator {
+            next: 0,
+            limit: frame_count,
+        }
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for StaticBootFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        while self.next < self.limit {
+            unsafe {
+                if let Some(frame) = BOOT_FRAMES[self.next].take() {
+                    self.next += 1;
+                    return Some(frame);
+                }
+            }
+            self.next += 1;
+        }
+        None
+    }
 }
 
 //Returns a mutable reference to the active level-4 page table
