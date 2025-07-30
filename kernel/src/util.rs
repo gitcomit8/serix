@@ -14,11 +14,6 @@ unsafe impl GlobalAlloc for Dummy {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
 }
 
-//Declare global allocator instance
-#[global_allocator]
-pub static DUMMY: Dummy = Dummy;
-pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
-
 //Allocation error handler loops infinitely
 #[alloc_error_handler]
 pub fn alloc_error_handler(_: core::alloc::Layout) -> ! {

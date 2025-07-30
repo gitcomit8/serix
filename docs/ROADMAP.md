@@ -16,7 +16,7 @@
 
 - Framebuffer initialization
 
-- [ ] **Week 3**: Memory Management Basics
+- [X] **Week 3**: Memory Management Basics
 
 - Page table initialization
 
