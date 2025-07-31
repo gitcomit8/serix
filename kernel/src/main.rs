@@ -5,6 +5,7 @@
 extern crate alloc;
 mod boot;
 mod graphics;
+mod hal;
 mod heap;
 mod memory;
 mod util;
@@ -56,6 +57,7 @@ pub extern "C" fn _start() -> ! {
 
     let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
 
+    hal::cpu::enable_interrupts();
     //--- HEAP MAP/INIT ---
     init_heap(&mut mapper, &mut frame_alloc);
     //Paint screen blue
@@ -63,5 +65,7 @@ pub extern "C" fn _start() -> ! {
         fill_screen_blue(&fb);
         draw_memory_map(&fb, mmap_response.entries());
     }
-    loop {}
+    loop {
+        hal::cpu::halt();
+    }
 }
