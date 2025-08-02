@@ -3,6 +3,7 @@
 #![feature(alloc_error_handler)]
 #![feature(abi_x86_interrupt)]
 extern crate alloc;
+mod apic;
 mod boot;
 mod graphics;
 mod hal;
@@ -24,7 +25,10 @@ static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    idt::init_idt();
+    idt::init_idt(); // Setup CPU exception handlers
+    unsafe {
+        apic::enable();
+    }
     //Access framebuffer info
     let fb_response = FRAMEBUFFER_REQ
         .get_response()
