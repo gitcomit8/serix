@@ -1,12 +1,13 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-
+#![feature(abi_x86_interrupt)]
 extern crate alloc;
 mod boot;
 mod graphics;
 mod hal;
 mod heap;
+mod idt;
 mod memory;
 mod util;
 
@@ -23,6 +24,7 @@ static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    idt::init_idt();
     //Access framebuffer info
     let fb_response = FRAMEBUFFER_REQ
         .get_response()
