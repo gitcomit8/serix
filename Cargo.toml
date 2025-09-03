@@ -1,3 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["kernel"]
+members = ["kernel",
+    "memory",
+    "hal",
+    "apic",
+    "idt",
+    "graphics",
+    "util",
+]
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
