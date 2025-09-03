@@ -5,8 +5,13 @@ edition = "2024"
 
 [dependencies]
 limine = "0.5.0"
-linked_list_allocator = "0.10.5"
 x86_64 = "0.15.2"
+apic = { path = "../apic" }
+graphics = { path = "../graphics" }
+hal = { path = "../hal" }
+idt = { path = "../idt" }
+memory = { path = "../memory" }
+util = { path = "../util" }
 
 [profile.release]
 panic = "abort"

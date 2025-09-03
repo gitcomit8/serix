@@ -1,0 +1,13 @@
+[package]
+name = "util"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+linked_list_allocator = "0.10.5"
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
