@@ -24,7 +24,7 @@
 
 - Heap allocation (`alloc` crate integration)
 
-- [ ] **Week 4**: Hardware Abstraction Layer
+- [X] **Week 4**: Hardware Abstraction Layer
 
 - CPU exception handling
 
