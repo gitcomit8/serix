@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 #![no_std]
 
+pub mod io;
+pub mod serial;
+pub use io::*;
+pub use serial::{init_serial,serial_print};
+
 pub mod cpu {
     use x86_64::instructions::*;
 
@@ -17,21 +22,5 @@ pub mod cpu {
 	#[inline(always)]
 	pub fn disable_interrupts() {
 		interrupts::disable();
-	}
-}
-
-pub mod io {
-    use x86_64::instructions::port::Port;
-
-    #[inline(always)]
-	pub unsafe fn outb(port: u16, data: u8) {
-		let mut port: Port<u8> = Port::new(port);
-		port.write(data);
-	}
-
-	#[inline(always)]
-	pub unsafe fn inb(port: u16) -> u8 {
-		let mut port: Port<u8> = Port::new(port);
-		port.read()
 	}
 }

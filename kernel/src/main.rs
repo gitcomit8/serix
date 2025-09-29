@@ -21,6 +21,11 @@ fn panic(_info: &PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+
+    hal::init_serial();
+    hal::serial_println!("Serix Kernel Starting.....");
+    hal::serial_println!("Serial console initialized");
+
     idt::init_idt(); // Setup CPU exception handlers
     unsafe {
         apic::enable();
@@ -67,6 +72,8 @@ pub extern "C" fn _start() -> ! {
         fill_screen_blue(&fb);
         draw_memory_map(&fb, mmap_response.entries());
     }
+
+    hal::serial_println!("Kernel init complete");
     loop {
         hal::cpu::halt();
     }
