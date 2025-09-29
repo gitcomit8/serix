@@ -1,6 +1,8 @@
 #![no_std]
 #![feature(alloc_error_handler)]
 
+pub mod panic;
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::ptr;
@@ -22,4 +24,3 @@ pub fn alloc_error_handler(_: core::alloc::Layout) -> ! {
 }
 
 //Panic handler also loops infinitely
-

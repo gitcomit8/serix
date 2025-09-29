@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 linked_list_allocator = "0.10.5"
-
+hal = { path = "../hal" }
 [profile.release]
 panic = "abort"
 
