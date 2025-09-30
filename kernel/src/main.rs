@@ -5,9 +5,9 @@ mod boot;
 use core::panic::PanicInfo;
 use graphics::{draw_memory_map, fill_screen_blue};
 use hal::serial_println;
-use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
-use memory::heap::{init_heap, StaticBootFrameAllocator};
+use limine::request::{FramebufferRequest, MemoryMapRequest};
+use memory::heap::{StaticBootFrameAllocator, init_heap};
 use util::panic::halt_loop;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
@@ -37,6 +37,8 @@ pub extern "C" fn _start() -> ! {
 	idt::init_idt(); // Setup CPU exception handlers
 	unsafe {
 		apic::enable();
+		apic::timer::init();
+		apic::timer::init_timer_periodic();
 	}
 	//Access framebuffer info
 	let fb_response = FRAMEBUFFER_REQ
@@ -71,7 +73,6 @@ pub extern "C" fn _start() -> ! {
 	}
 
 	let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
-
 	hal::cpu::enable_interrupts();
 	//--- HEAP MAP/INIT ---
 	init_heap(&mut mapper, &mut frame_alloc);
@@ -81,7 +82,6 @@ pub extern "C" fn _start() -> ! {
 		draw_memory_map(&fb, mmap_response.entries());
 	}
 
-	hal::serial_println!("Kernel init complete");
 	loop {
 		hal::cpu::halt();
 	}
