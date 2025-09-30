@@ -43,6 +43,7 @@ jobs:
         tag: "v0.0.${{ github.run_number }}"
         name: Serix Kernel ISO "v0.0.${{ github.run_number }}"
         body: Automated Serix Kernel ISO release for commit ${{ github.sha }}
+        token: ${{ secrets.PAT }}
 
     - name: Upload ISO to Release
       uses: actions/upload-release-asset@v1
@@ -51,3 +52,4 @@ jobs:
         asset_path: ./serix.iso
         asset_name: serix.iso
         asset_content_type: application/octet-stream
+        token: ${{ secrets.PAT }}
