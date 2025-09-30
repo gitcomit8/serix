@@ -8,6 +8,8 @@ on:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    permissions:
+        contents: write
 
     steps:
     - name: Checkout code
@@ -29,27 +31,11 @@ jobs:
     - name: Build the ISO
       run: make iso
 
-    - name: Create Tag
-      run: |
-        git config user.name "github-actions"
-        git config user.email "github-actions@github.com"
-        git tag -a "v0.0.${{ github.run_number }}" -m "Auto tag for run ${{ github.run_number }}"
-        git push origin "v0.0.${{ github.run_number }}"
-
-    - name: Create GitHub Release
+    - name: Create Release
       id: create_release
-      uses: ncipollo/release-action@v1
+      uses: softprops/action-gh-release@v2
       with:
-        tag: "v0.0.${{ github.run_number }}"
-        name: Serix Kernel ISO "v0.0.${{ github.run_number }}"
-        body: Automated Serix Kernel ISO release for commit ${{ github.sha }}
-        token: ${{ secrets.PAT }}
-
-    - name: Upload ISO asset via API
-      run: |
-        curl --fail -X POST \
-          -H "Authorization: Bearer ${{ secrets.PAT }}" \
-          -H "Content-Type: application/octet-stream" \
-          --data-binary @./serix.iso \
-          "${{steps.create_release.outputs.UPLOAD_URL}}?name=serix.iso"
-          
+        files: |
+            ./serix.iso
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
