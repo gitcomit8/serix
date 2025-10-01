@@ -1,6 +1,7 @@
 #![feature(abi_x86_interrupt)]
 #![no_std]
 
+mod ioapic;
 pub mod timer;
 
 const APIC_BASE: u64 = 0xFEE00000;
