@@ -4,23 +4,37 @@ SECTIONS
 {
     . = 1M;
 
-    .text :
+    /* Ensure multiboot header is at the beginning */
+    .multiboot ALIGN(8) :
+    {
+        *(.multiboot_header)
+    }
+
+    .text ALIGN(4K) :
     {
         *(.text .text.*)
     }
 
-    .rodata :
+    .rodata ALIGN(4K) :
     {
         *(.rodata .rodata.*)
     }
 
-    .data :
+    .data ALIGN(4K) :
     {
         *(.data .data.*)
     }
 
-    .bss :
+    .bss ALIGN(4K) :
     {
+        *(COMMON)
         *(.bss .bss.*)
+    }
+
+    /* Discard debug information */
+    /DISCARD/ :
+    {
+        *(.comment)
+        *(.debug*)
     }
 }

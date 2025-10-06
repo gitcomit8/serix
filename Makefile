@@ -1,49 +1,38 @@
-KERNEL = target/x86_64-unknown-none/release/kernel
-ISO = serix.iso
-ISO_ROOT = iso_root
-LIMINE_DIR = limine
+KERNEL_TARGET=target/x86_64-unknown-none/release/kernel
+ISO=serix.iso
+ISO_ROOT=iso_root
+MULTIBOOT_HEADER=multiboot_header.o
+BOOT=boot.o
 
-LIMINE_BRANCH = v9.x-binary
-LIMINE_URL = https://github.com/limine-bootloader/limine.git
-
-.PHONY: all run iso clean limine kernel
+.PHONY: all run iso clean kernel multiboot
 
 all: iso
 
-kernel:
-	cargo build --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
+# Assemble multiboot header
+$(MULTIBOOT_HEADER): multiboot_header.s
+	nasm -f elf64 multiboot_header.s -o $(MULTIBOOT_HEADER)
 
-limine:
-	if [ ! -d $(LIMINE_DIR) ]; then \
-		git clone $(LIMINE_URL) --branch=$(LIMINE_BRANCH) --depth=1 $(LIMINE_DIR); \
-	fi
-	make -C $(LIMINE_DIR)
+# Assemble boot entry
+$(BOOT): boot.s
+	nasm -f elf64 boot.s -o $(BOOT)
 
-$(ISO_ROOT)/boot:
-	mkdir -p $@
+# Build Rust kernel in release mode
+kernel: $(MULTIBOOT_HEADER) $(BOOT)
+	cargo build --release --target x86_64-unknown-none
 
-$(ISO_ROOT)/boot/kernel: kernel | $(ISO_ROOT)/boot
-	cp $(KERNEL) $@
-
-$(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin: limine | $(ISO_ROOT)/boot
-	cp $(LIMINE_DIR)/limine-bios.sys $(ISO_ROOT)/boot/
-	cp $(LIMINE_DIR)/limine-bios-cd.bin $(ISO_ROOT)/boot/
-	cp $(LIMINE_DIR)/limine-uefi-cd.bin $(ISO_ROOT)/boot/
-
-$(ISO_ROOT)/limine.conf:
-	cp ./limine.conf $@
-
-iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
-	xorriso -as mkisofs -b boot/limine-bios-cd.bin \
-	  -no-emul-boot -boot-load-size 4 -boot-info-table \
-	  --efi-boot boot/limine-uefi-cd.bin \
-	  -efi-boot-part --efi-boot-image --protective-msdos-label \
-	  $(ISO_ROOT) -o $(ISO)
-	./limine/limine bios-install $(ISO)
+iso: kernel $(MULTIBOOT_HEADER) $(BOOT)
+	# Ensure ISO root exists
+	mkdir -p $(ISO_ROOT)/boot/grub
+	# Copy kernel binary
+	cp $(KERNEL_TARGET) $(ISO_ROOT)/boot/kernel
+	# Copy GRUB config
+	cp grub.cfg $(ISO_ROOT)/boot/grub/grub.cfg
+	# Create bootable ISO with GRUB
+	grub-mkrescue -o $(ISO) $(ISO_ROOT)
 
 run: iso
 	qemu-system-x86_64 -cdrom $(ISO) -m 512 -serial stdio
 
 clean:
-	rm -rf $(ISO_ROOT) $(ISO)
-	cargo clean --manifest-path kernel/Cargo.toml
+	rm -rf $(ISO_ROOT) $(ISO) $(MULTIBOOT_HEADER) $(BOOT)
+	cargo clean
