@@ -45,13 +45,19 @@ You should see a **solid blue screen** upon successful boot.
 
 ## Repository Layout
 
-| Path        | Purpose                    |
-|-------------|----------------------------|
-| `kernel/`   | Rust kernel source code    |
-| `limine/`   | Limine bootloader binaries |
-| `iso_root/` | Filesystem image root      |
-| `Makefile`  | Build, ISO, run automation |
-| `docs/`     | Project documentation      |
+| Path        | Purpose                     |
+|-------------|-----------------------------|
+| `kernel/`   | Rust kernel source code     |
+| `apic/`     | APIC Subsystem              |
+| `graphics/` | Graphics Subsystem          |
+| `hal/`      | Hardware Abstraction Layer  |
+| `idt/`      | Interrupt Descriptor Table  |
+| `memory/`   | Memory Management Subsystem |
+| `util/`     | Utilities                   |
+| `limine/`   | Limine bootloader binaries  |
+| `iso_root/` | Filesystem image root       |
+| `Makefile`  | Build, ISO, run automation  |
+| `docs/`     | Project documentation       |
 
 ---
 

@@ -109,11 +109,11 @@ struct Capability {
 
 ### **3.1 Supported Platforms**
 
-| **Feature**      | **x86_64**          | **RISC-V**   |
-|------------------|---------------------|--------------|
-| SMP              | ✓ (APIC)            | ✓ (SBI)      |
-| IOMMU            | VT-d/AMD-Vi         | RISC-V IOMMU |
-| Power Management | C-states + P-states | WFI          |
+| **Feature**      | **x86_64**          |
+|------------------|---------------------|
+| SMP              | ✓ (APIC)            |
+| IOMMU            | VT-d/AMD-Vi         |
+| Power Management | C-states + P-states |
 
 ### **3.2 Driver Model**
 
@@ -199,7 +199,12 @@ smack --unroll 128 scheduler.rs
 serix/
 ├── kernel/
 ├── hal/
-├── libserix/
+├── apic/
+├── graphics/
+├── idt/
+├── limine/
+├── memory/
+├── util/
 ├── tools/
 └── docs/
 ```
