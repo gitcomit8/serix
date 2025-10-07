@@ -11,6 +11,7 @@ use memory::heap::{StaticBootFrameAllocator, init_heap};
 use util::panic::halt_loop;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
+use task::{TaskManager, TaskCB, SchedClass};
 
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
@@ -28,6 +29,12 @@ pub fn panic(info: &PanicInfo) -> ! {
 	halt_loop();
 }
 
+fn idle_task() {
+	loop {
+		hal::cpu::halt();
+	}
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
@@ -40,6 +47,13 @@ pub extern "C" fn _start() -> ! {
 		apic::timer::init();
 		apic::timer::init_timer_periodic();
 	}
+
+	let task_manager = TaskManager::new();
+	let eg_task = TaskManager::create_task("idle_task")
+		.sched_class(SchedClass::Fair(120))
+		.stack_size(8192)
+		.build_kernel_task(VirtAddr::new(idle_task as *const () as u64));
+	serial_println!("Created task: {} with ID: {}", eg_task.name, eg_task.id.as_u64());
 	//Access framebuffer info
 	let fb_response = FRAMEBUFFER_REQ
 		.get_response()

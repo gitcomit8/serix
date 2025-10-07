@@ -7,6 +7,7 @@ members = ["kernel",
     "idt",
     "graphics",
     "util",
+    "task",
 ]
 
 [profile.release]
