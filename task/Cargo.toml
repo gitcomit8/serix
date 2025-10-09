@@ -5,9 +5,8 @@ edition = "2024"
 
 [dependencies]
 x86_64 = "0.15.2"
-hal = { path = "../hal" }
-util = { path = "../util" }
 spin = "0.10.0"
+hal = { path = "../hal" }
 
 [profile.release]
 panic = "abort"
