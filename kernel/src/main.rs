@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-mod boot;
 
 use core::panic::PanicInfo;
 use graphics::{draw_memory_map, fill_screen_blue};
@@ -52,9 +51,9 @@ pub extern "C" fn _start() -> ! {
         apic::enable();
         apic::timer::register_handler(); // Register timer handler before IDT is loaded
     }
-    
+
     idt::init_idt(); // Setup CPU exception handlers and load IDT
-    
+
     unsafe {
         apic::timer::init_hardware(); // Initialize timer hardware
     }
