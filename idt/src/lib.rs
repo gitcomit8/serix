@@ -1,18 +1,29 @@
 #![feature(abi_x86_interrupt)]
 #![no_std]
 
+use core::cell::UnsafeCell;
 use hal::serial_println;
 use lazy_static::lazy_static;
 use util::panic::oops;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
+struct IdtWrapper {
+	idt: UnsafeCell<InterruptDescriptorTable>,
+	loaded: UnsafeCell<bool>,
+}
+
+unsafe impl Sync for IdtWrapper {}
+
 lazy_static! {
-	static ref IDT: InterruptDescriptorTable = {
+	static ref IDT: IdtWrapper = {
 		let mut idt = InterruptDescriptorTable::new();
 		idt.divide_error.set_handler_fn(divide_by_zero_handler);
 		idt.page_fault.set_handler_fn(page_fault_handler);
 		idt.double_fault.set_handler_fn(double_fault_handler);
-		idt
+		IdtWrapper {
+			idt: UnsafeCell::new(idt),
+			loaded: UnsafeCell::new(false),
+		}
 	};
 }
 extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame) {
@@ -44,13 +55,23 @@ extern "x86-interrupt" fn double_fault_handler(_stack: InterruptStackFrame, _err
 }
 
 pub fn init_idt() {
-	IDT.load();
+	unsafe {
+		(*IDT.idt.get()).load();
+		*IDT.loaded.get() = true;
+	}
 }
 
-pub unsafe fn register_interrupt_handler(
-	idt: &mut InterruptDescriptorTable,
+pub fn register_interrupt_handler(
 	vector: u8,
 	handler: extern "x86-interrupt" fn(InterruptStackFrame),
 ) {
-	idt[vector].set_handler_fn(handler);
+	unsafe {
+		let idt = &mut *IDT.idt.get();
+		idt[vector].set_handler_fn(handler);
+		
+		// Only reload if IDT was already loaded
+		if *IDT.loaded.get() {
+			idt.load();
+		}
+	}
 }
