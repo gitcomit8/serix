@@ -3,7 +3,7 @@ ISO = serix.iso
 ISO_ROOT = iso_root
 LIMINE_DIR = limine
 
-LIMINE_BRANCH = v9.x-binary
+LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
 .PHONY: all run iso clean limine kernel
