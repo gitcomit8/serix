@@ -9,8 +9,9 @@ use hal::serial_println;
 use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
-use task::{SchedClass, Scheduler, TaskCB, TaskManager};
+use task::{Scheduler, TaskManager};
 use util::panic::halt_loop;
+use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -65,11 +66,18 @@ pub extern "C" fn _start() -> ! {
     serial_println!("Serial console initialized");
 
     unsafe {
-        apic::enable();
+        apic::enable(); // This now also disables PIC
+        apic::ioapic::init_ioapic(); // Route IRQs through IOAPIC
         apic::timer::register_handler(); // Register timer handler before IDT is loaded
     }
 
     idt::init_idt(); // Setup CPU exception handlers and load IDT
+
+    //Init keyboard
+    hal::serial_println!("Keyboard ready for input!");
+
+    //Enable interrupts globally
+    x86_64::instructions::interrupts::enable();
 
     unsafe {
         apic::timer::init_hardware(); // Initialize timer hardware
@@ -116,43 +124,10 @@ pub extern "C" fn _start() -> ! {
         fill_screen_blue(&fb);
         draw_memory_map(&fb, mmap_response.entries());
     }
-    
+
     // Initialize global scheduler
     Scheduler::init_global();
-    {
-        let mut scheduler = Scheduler::global().lock();
-
-        // Allocate proper stacks for tasks (8KB each)
-        const STACK_SIZE: usize = 8192;
-        
-        // Create kernel boot task - this represents the current execution context
-        let kernel_stack_mem = alloc::vec![0u8; STACK_SIZE];
-        let kernel_stack = VirtAddr::from_ptr(kernel_stack_mem.as_ptr()) + STACK_SIZE as u64;
-        core::mem::forget(kernel_stack_mem);
-        
-        let idle_stack_mem = alloc::vec![0u8; STACK_SIZE];
-        let task1_stack_mem = alloc::vec![0u8; STACK_SIZE];
-
-        // Get stack top addresses (stacks grow downward)
-        let idle_stack = VirtAddr::from_ptr(idle_stack_mem.as_ptr()) + STACK_SIZE as u64;
-        let task1_stack = VirtAddr::from_ptr(task1_stack_mem.as_ptr()) + STACK_SIZE as u64;
-
-        // Prevent stack memory from being deallocated
-        core::mem::forget(idle_stack_mem);
-        core::mem::forget(task1_stack_mem);
-
-        // Add kernel boot task as first task (will never actually run, just holds boot context)
-        let kernel_task = TaskCB::new("kernel_boot", idle_task, kernel_stack, SchedClass::Fair(0));
-        scheduler.add_task(kernel_task);
-        
-        let idle = TaskCB::new("idle", idle_task, idle_stack, SchedClass::Fair(120));
-        let task1 = TaskCB::new("task1", task1, task1_stack, SchedClass::Fair(110));
-        scheduler.add_task(idle);
-        scheduler.add_task(task1);
-
-        serial_println!("Starting scheduler with {} tasks", scheduler.task_count());
-    } // Lock is dropped here
-    
-    // Jump into scheduler - this never returns
-    unsafe { Scheduler::start(); }
+    loop {
+        hlt()
+    }
 }

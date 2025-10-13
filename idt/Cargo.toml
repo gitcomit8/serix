@@ -7,6 +7,7 @@ edition = "2024"
 x86_64 = "0.15.2"
 hal = { path = "../hal" }
 util = { path = "../util" }
+keyboard = { path = "../keyboard" }
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
 [profile.release]
