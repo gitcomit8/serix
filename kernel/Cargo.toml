@@ -7,13 +7,13 @@ edition = "2024"
 limine = "0.5.0"
 x86_64 = "0.15.2"
 apic = { path = "../apic" }
-graphics = { path = "../graphics" }
+graphics = { path = "../graphics", features = ["global-console"] }
 hal = { path = "../hal" }
 idt = { path = "../idt" }
 memory = { path = "../memory" }
 util = { path = "../util" }
 task = { path = "../task" }
-keyboard = { path = "../keyboard" }
+spin = "0.10.0"
 
 [profile.release]
 panic = "abort"

@@ -3,8 +3,13 @@ name = "graphics"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+global-console = ["spin"]
+
 [dependencies]
 limine = "0.5.0"
+spin = { version = "0.10.0", optional = true }
 
 [profile.release]
 panic = "abort"

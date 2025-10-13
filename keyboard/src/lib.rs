@@ -24,6 +24,7 @@ pub fn handle_scancode(scancode: u8) {
     if let Some(&ascii) = SCANDCODE_TO_ASCII.get(scancode as usize) {
         if ascii != 0 {
             hal::serial_print!("{}", ascii as char);
+            graphics::fb_print!("{}", ascii as char);
         }
     }
 }
