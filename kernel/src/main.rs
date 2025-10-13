@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use core::panic::PanicInfo;
+use graphics::console::init_console;
 use graphics::{draw_memory_map, fill_screen_blue};
 use hal::serial_println;
 use limine::request::{FramebufferRequest, MemoryMapRequest};
@@ -19,34 +20,6 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 static SCHEDULER: TaskManager = TaskManager::new();
-
-/*unsafe extern "C" {
-    fn context_switch(old: *mut CPUContext, new: *const CPUContext) -> !;
-}*/
-
-unsafe extern "C" fn idle_task() -> ! {
-    serial_println!("Idle task started!");
-    loop {
-        serial_println!("Idle task running");
-        for _ in 0..10000000 {
-            core::hint::spin_loop();
-        }
-        serial_println!("Idle task calling yield");
-        task::task_yield();
-        serial_println!("Idle task returned from yield");
-    }
-}
-
-unsafe extern "C" fn task1() -> ! {
-    serial_println!("Task 1 started!");
-    loop {
-        serial_println!("Task 1 running");
-        for _ in 0..10000000 {
-            core::hint::spin_loop();
-        }
-        task::task_yield();
-    }
-}
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
@@ -74,7 +47,7 @@ pub extern "C" fn _start() -> ! {
     idt::init_idt(); // Setup CPU exception handlers and load IDT
 
     //Init keyboard
-    hal::serial_println!("Keyboard ready for input!");
+    serial_println!("Keyboard ready for input!");
 
     //Enable interrupts globally
     x86_64::instructions::interrupts::enable();
@@ -125,8 +98,16 @@ pub extern "C" fn _start() -> ! {
         draw_memory_map(&fb, mmap_response.entries());
     }
 
+    let fb = fb_response.framebuffers().next().expect("No framebuffer");
+    init_console(fb.addr(), fb.width() as usize, fb.height() as usize, fb.pitch() as usize);
+
     // Initialize global scheduler
     Scheduler::init_global();
+
+    // Test framebuffer console with macros
+    graphics::fb_println!("Welcome to Serix OS!");
+    graphics::fb_println!("Memory map entries: {}", mmap_response.entries().len());
+
     loop {
         hlt()
     }
