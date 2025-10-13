@@ -12,7 +12,9 @@ hal = { path = "../hal" }
 idt = { path = "../idt" }
 memory = { path = "../memory" }
 util = { path = "../util" }
-task={ path = "../task" }
+task = { path = "../task" }
+keyboard = { path = "../keyboard" }
+
 [profile.release]
 panic = "abort"
 
