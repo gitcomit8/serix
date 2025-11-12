@@ -8,7 +8,8 @@ members = ["kernel",
     "graphics",
     "util",
     "task",
-    "keyboard"
+    "keyboard",
+    "capability"
 ]
 
 [profile.release]
