@@ -13,8 +13,8 @@ idt = { path = "../idt" }
 memory = { path = "../memory" }
 util = { path = "../util" }
 task = { path = "../task" }
+capability = { path = "../capability" }
 spin = "0.10.0"
-
 [profile.release]
 panic = "abort"
 

@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use capability::CapabilityStore;
 use core::panic::PanicInfo;
 use graphics::console::init_console;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
@@ -10,8 +11,9 @@ use hal::serial_println;
 use limine::request::{FramebufferRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
+use spin::{Mutex, Once};
+use task::Scheduler;
 use task::{init_executor, poll_executor, spawn_task};
-use task::{Scheduler, TaskManager};
 use util::panic::halt_loop;
 use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
@@ -20,7 +22,7 @@ use x86_64::{PhysAddr, VirtAddr};
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
-static SCHEDULER: TaskManager = TaskManager::new();
+static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
@@ -32,6 +34,10 @@ pub fn panic(info: &PanicInfo) -> ! {
 	}
 
 	halt_loop();
+}
+
+pub fn global_cap_store() -> &'static Mutex<CapabilityStore> {
+	CAP_STORE_ONCE.call_once(|| Mutex::new(CapabilityStore::new()))
 }
 
 #[unsafe(no_mangle)]
