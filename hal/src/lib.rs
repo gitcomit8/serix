@@ -1,3 +1,13 @@
+/*
+ * Hardware Abstraction Layer (HAL)
+ *
+ * Provides low-level hardware access and initialization including:
+ * - CPU control (interrupts, halt)
+ * - Port I/O operations
+ * - Serial console
+ * - CPU topology detection
+ */
+
 #![allow(dead_code)]
 #![no_std]
 

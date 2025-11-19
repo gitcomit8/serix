@@ -1,3 +1,10 @@
+/*
+ * Capability-based Security System
+ *
+ * Implements object capabilities for fine-grained access control.
+ * Capabilities are unforgeable tokens that grant specific rights to resources.
+ */
+
 #![no_std]
 
 extern crate alloc;
