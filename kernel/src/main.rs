@@ -26,6 +26,7 @@ use spin::{Mutex, Once};
 use task::{init_executor, poll_executor, spawn_task};
 use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
+use vfs::{INode, RamFile};
 use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
@@ -180,6 +181,15 @@ pub extern "C" fn _start() -> ! {
 				dev.device
 			);
 		}
+	}
+
+	let file = RamFile::new("system.log");
+	file.write(0, b"Serix Kernel Phase 3 OK");
+
+	let mut read_buf = [0u8; 23];
+	file.read(0, &mut read_buf);
+	if let Ok(msg) = core::str::from_utf8(&read_buf) {
+		serial_println!("VFS Readback: {}", msg);
 	}
 
 	/* Initialize global task scheduler */
