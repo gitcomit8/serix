@@ -10,8 +10,3 @@ util = { path = "../util" }
 keyboard = { path = "../keyboard" }
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"

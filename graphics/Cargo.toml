@@ -10,9 +10,3 @@ global-console = ["spin"]
 [dependencies]
 limine = "0.5.0"
 spin = { version = "0.10.0", optional = true }
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"
