@@ -10,7 +10,7 @@ members = ["kernel",
     "task",
     "keyboard",
     "capability"
-]
+, "drivers"]
 
 [profile.release]
 panic = "abort"
