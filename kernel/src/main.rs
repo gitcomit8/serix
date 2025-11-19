@@ -49,6 +49,8 @@ pub extern "C" fn _start() -> ! {
 	serial_println!("Serix Kernel Starting.....");
 	serial_println!("Serial console initialized");
 
+	gdt::init();
+
 	unsafe {
 		apic::enable(); // This now also disables PIC
 		apic::ioapic::init_ioapic(); // Route IRQs through IOAPIC
