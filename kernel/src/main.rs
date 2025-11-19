@@ -71,6 +71,8 @@ pub extern "C" fn _start() -> ! {
 
 	init_executor();
 
+	syscall::init_syscalls();
+
 	//Access framebuffer info
 	let fb_response = FRAMEBUFFER_REQ
 		.get_response()
