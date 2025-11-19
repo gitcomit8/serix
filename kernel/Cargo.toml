@@ -15,3 +15,4 @@ util = { path = "../util" }
 task = { path = "../task" }
 capability = { path = "../capability" }
 spin = "0.10.0"
+drivers = { path = "../drivers" }

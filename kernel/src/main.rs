@@ -14,6 +14,8 @@ mod syscall;
 
 use capability::CapabilityStore;
 use core::panic::PanicInfo;
+use drivers::pci;
+use drivers::virtio::VirtioBlock;
 use graphics::console::init_console;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
@@ -27,7 +29,6 @@ use util::panic::halt_loop;
 use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
-
 /* Limine protocol requests */
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
@@ -165,6 +166,21 @@ pub extern "C" fn _start() -> ! {
 		fb.height() as usize,
 		fb.pitch() as usize,
 	);
+
+	serial_println!("--- Phase 3 System Check ---");
+	let devices = pci::enumerate_pci();
+	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
+
+	for dev in devices {
+		//Check for VirtIO Block Device
+		if VirtioBlock::init(dev).is_some() {
+			serial_println!(
+				"> Driver Loaded: VirtIO Block Device (Bus {}, Slot {})",
+				dev.bus,
+				dev.device
+			);
+		}
+	}
 
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
