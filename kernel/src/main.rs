@@ -71,7 +71,11 @@ pub extern "C" fn _start() -> ! {
 
 	init_executor();
 
+	let core_type = hal::topology::get_core_type();
+	serial_println!("CORE TYPE: {:?}", core_type);
 	syscall::init_syscalls();
+	let cap = capability::CapabilityHandle::generate();
+	serial_println!("Generated Secure Capability Handle: {:?}", cap);
 
 	//Access framebuffer info
 	let fb_response = FRAMEBUFFER_REQ
