@@ -21,8 +21,8 @@ use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
 use spin::{Mutex, Once};
-use task::Scheduler;
 use task::{init_executor, poll_executor, spawn_task};
+use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
 use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
@@ -97,11 +97,6 @@ pub extern "C" fn _start() -> ! {
 	/* Enable interrupts globally */
 	x86_64::instructions::interrupts::enable();
 
-	unsafe {
-		/* Initialize timer hardware */
-		apic::timer::init_hardware();
-	}
-
 	init_executor();
 
 	let core_type = hal::topology::get_core_type();
@@ -173,6 +168,8 @@ pub extern "C" fn _start() -> ! {
 
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
+	Scheduler::global().lock().add_task(TaskCB::running_task());
+	serial_println!("Kernel task registered");
 
 	/* Display welcome message */
 	fb_println!("Welcome to Serix OS!");
@@ -197,6 +194,11 @@ pub extern "C" fn _start() -> ! {
 			task::yield_now::yield_now().await;
 		}
 	});
+
+	unsafe {
+		/* Initialize timer hardware */
+		apic::timer::init_hardware();
+	}
 
 	/* Main kernel loop: poll executor and halt CPU until next interrupt */
 	loop {

@@ -5,12 +5,13 @@
  */
 
 use crate::{lapic_reg, send_eoi};
+use task;
 use x86_64::structures::idt::InterruptStackFrame;
 
 /* Timer configuration constants */
 pub const TIMER_VECTOR: u8 = 0x31;
-pub const TIMER_DIVIDE_CONFIG: u32 = 0x3;		/* Divide by 16 */
-pub const TIMER_INITIAL_COUNT: u32 = 100_000;	/* Timer interval */
+pub const TIMER_DIVIDE_CONFIG: u32 = 0x3; /* Divide by 16 */
+pub const TIMER_INITIAL_COUNT: u32 = 100_000; /* Timer interval */
 
 /* Global tick counter */
 static mut TICKS: u64 = 0;
@@ -27,6 +28,7 @@ extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
 		/* Signal end of interrupt to LAPIC */
 		send_eoi();
 	}
+	task::schedule();
 }
 
 /*

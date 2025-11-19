@@ -17,7 +17,6 @@ pub mod yield_now;
 use crate::async_task::AsyncTask;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
@@ -221,6 +220,18 @@ impl TaskCB {
 		}
 	}
 
+	pub fn running_task() -> Self {
+		Self {
+			id: TaskId::new(),
+			state: TaskState::Running,
+			sched_class: SchedClass::default(),
+			context: CPUContext::default(),
+			kstack: VirtAddr::zero(), // Placeholder
+			ustack: None,
+			name: "kernel_main",
+		}
+	}
+
 	//Set the task state
 	pub fn set_state(&mut self, state: TaskState) {
 		self.state = state;
@@ -270,87 +281,6 @@ impl TaskBuilder {
 		let stack_top = stack_base + self.stack_size as u64;
 
 		TaskCB::new(self.name, entry_point, stack_top, self.sched_class)
-	}
-}
-
-//Task Manager - holds tasks in thread-safe manner
-pub struct TaskManager {
-	tasks: Mutex<RefCell<Vec<TaskCB>>>,
-	current_task_idx: Mutex<usize>,
-}
-
-impl TaskManager {
-	pub const fn new() -> Self {
-		Self {
-			tasks: Mutex::new(RefCell::new(Vec::new())),
-			current_task_idx: Mutex::new(0),
-		}
-	}
-
-	/*//Create a new task using builder
-	pub fn create_task(name: &'static str) -> TaskBuilder {
-		TaskBuilder::new(name)
-	}
-
-	//Spawn async task (proto)
-	pub fn spawn_async<T: AsyncTask>(&self, task: T) -> TaskId {
-		//TODO: integrate with scheduler
-		TaskId::new()
-	}
-
-	//Add task to task list
-	pub fn add_task(&self, task: TaskCB) {
-		let mut tasks = self.tasks.lock();
-		tasks.borrow_mut().push(task);
-	}*/
-
-	//Pick the next ready task in round-robin
-	pub fn next_ready_task(&self) -> Option<TaskCB> {
-		let mut tasks = self.tasks.lock();
-		let mut idx = *self.current_task_idx.lock();
-
-		if tasks.borrow().is_empty() {
-			return None;
-		}
-
-		let tasks_ref = tasks.borrow();
-		let total_tasks = tasks_ref.len();
-
-		for _ in 0..total_tasks {
-			let task = &tasks_ref[idx];
-			if task.state == TaskState::Ready {
-				*self.current_task_idx.lock() = (idx + 1) % total_tasks;
-				return Some(task.clone());
-			}
-			idx = (idx + 1) % total_tasks;
-		}
-		None
-	}
-
-	//Update task within task list
-	pub fn update_task(&self, updated_task: TaskCB) {
-		let mut tasks = self.tasks.lock();
-		let mut tasks_ref = tasks.borrow_mut();
-
-		for task in tasks_ref.iter_mut() {
-			if task.id == updated_task.id {
-				*task = updated_task;
-				break;
-			}
-		}
-	}
-
-	//Simple scheduler: selects next ready task and marks it running
-	pub fn schedule(&self) -> Option<TaskCB> {
-		let next_task_opt = self.next_ready_task();
-
-		if let Some(mut task) = next_task_opt {
-			task.set_state(TaskState::Running);
-			self.update_task(task.clone());
-			Some(task)
-		} else {
-			None
-		}
 	}
 }
 
@@ -421,49 +351,66 @@ impl Scheduler {
 	pub fn task_count(&self) -> usize {
 		self.tasks.len()
 	}
+
+	fn next_ready_task(&mut self) -> Option<usize> {
+		let count = self.tasks.len();
+		for i in 1..=count {
+			let idx = (self.current + i) % count;
+			if self.tasks[idx].state == TaskState::Ready {
+				return Some(idx);
+			}
+		}
+		None
+	}
+
+	pub fn pick_next(&mut self) -> Option<usize> {
+		// If current task is Running, mark it Ready so it can be picked again
+		if self.tasks[self.current].state == TaskState::Running {
+			self.tasks[self.current].state = TaskState::Ready;
+		}
+
+		if let Some(next_idx) = self.next_ready_task() {
+			self.tasks[next_idx].state = TaskState::Running;
+			Some(next_idx)
+		} else {
+			None
+		}
+	}
 }
 
-// Public API for tasks to yield CPU
-pub fn task_yield() {
+// Public API for tasks (and timer) to yield CPU
+pub fn schedule() {
 	unsafe {
-		// Acquire lock, get info, then drop lock before context switch
 		let (old_ctx, new_ctx) = {
 			let mut scheduler = Scheduler::global().lock();
 			let current_idx = scheduler.current;
 
-			// Find the next ready task
-			let mut next_idx = (current_idx + 1) % scheduler.tasks.len();
-
-			while scheduler.tasks[next_idx].state != TaskState::Ready {
-				next_idx = (next_idx + 1) % scheduler.tasks.len();
-
-				// If we've checked all tasks and none are ready, just return
-				if next_idx == current_idx {
+			if let Some(next_idx) = scheduler.pick_next() {
+				// Don't switch if it's the same task
+				if current_idx == next_idx {
 					return;
 				}
+
+				scheduler.current = next_idx;
+
+				// Get raw pointers
+				let old_ctx = &mut scheduler.tasks[current_idx].context as *mut CPUContext;
+				let new_ctx = &scheduler.tasks[next_idx].context as *const CPUContext;
+
+				(old_ctx, new_ctx)
+			} else {
+				return; // No ready tasks
 			}
+		}; // Lock dropped here
 
-			hal::serial_println!(
-				"task_yield: switching from task {} to task {}",
-				current_idx,
-				next_idx
-			);
-
-			// Update states
-			scheduler.tasks[current_idx].state = TaskState::Ready;
-			scheduler.tasks[next_idx].state = TaskState::Running;
-			scheduler.current = next_idx;
-
-			// Get raw pointers before dropping lock
-			let old_ctx = &mut scheduler.tasks[current_idx].context as *mut CPUContext;
-			let new_ctx = &scheduler.tasks[next_idx].context as *const CPUContext;
-
-			(old_ctx, new_ctx)
-		}; // Lock is dropped here
-
-		// Perform context switch without holding lock
+		// Perform context switch
 		context_switch::context_switch(old_ctx, new_ctx);
 	}
+}
+
+// Public API for tasks to yield CPU
+pub fn task_yield() {
+	schedule();
 }
 
 pub static EXECUTOR: Mutex<Option<Executor>> = Mutex::new(None);
