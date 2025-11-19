@@ -10,7 +10,7 @@ impl CapabilityHandle {
 		CapabilityHandle { key }
 	}
 
-	fn generate() -> Self {
+	pub fn generate() -> Self {
 		// Seed using CPU timestamp counter
 		let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
 
