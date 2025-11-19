@@ -2,6 +2,7 @@
 #![no_main]
 
 extern crate alloc;
+mod gdt;
 mod syscall;
 
 use capability::CapabilityStore;
@@ -9,7 +10,7 @@ use core::panic::PanicInfo;
 use graphics::console::init_console;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
-use limine::request::{FramebufferRequest, MemoryMapRequest};
+use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use limine::BaseRevision;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
 use spin::{Mutex, Once};
@@ -23,6 +24,7 @@ use x86_64::{PhysAddr, VirtAddr};
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
+static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
 #[panic_handler]
@@ -75,8 +77,9 @@ pub extern "C" fn _start() -> ! {
 	let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
 	let entries = mmap_response.entries();
 
-	//Get kernel physical memory offset
-	let phys_mem_offset = VirtAddr::new(0xffff_8000_0000_0000);
+	//Get dynamic offset from Limine
+	let hhdm_response = HHDM_REQ.get_response().expect("No HHDM response");
+	let phys_mem_offset = VirtAddr::new(hhdm_response.offset());
 	let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 
 	//Preallocate all usable frames before heap mapping
@@ -90,12 +93,16 @@ pub extern "C" fn _start() -> ! {
 		let start_frame = PhysFrame::containing_address(PhysAddr::new(start));
 		let end_frame = PhysFrame::containing_address(PhysAddr::new(end - 1));
 		for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
-			if frame_count < memory::heap::MAX_BOOT_FRAMES {
-				unsafe {
-					memory::heap::BOOT_FRAMES[frame_count] = Some(frame);
-				}
-				frame_count += 1;
+			if frame_count >= memory::heap::MAX_BOOT_FRAMES {
+				break;
 			}
+			unsafe {
+				memory::heap::BOOT_FRAMES[frame_count] = Some(frame);
+			}
+			frame_count += 1;
+		}
+		if frame_count >= memory::heap::MAX_BOOT_FRAMES {
+			break;
 		}
 	}
 
