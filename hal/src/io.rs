@@ -26,3 +26,39 @@ pub unsafe fn inb(port: u16) -> u8 {
 	core::arch::asm!("in al, dx", out("al") value, in("dx") port);
 	value
 }
+
+/*
+ * outw - Write a word (16-bits) to an I/O port
+ */
+#[inline]
+pub unsafe fn outw(port: u16, value: u16) {
+	core::arch::asm!("out dx, ax", in("dx") port, in("ax") value);
+}
+
+/*
+ * inw - Read a word (16-bits) from an I/O port
+ */
+#[inline]
+pub unsafe fn inw(port: u16) -> u16 {
+	let value: u16;
+	core::arch::asm!("in ax, dx", out("ax") value, in("dx") port);
+	value
+}
+
+/*
+ * outl - Write a double word (32-bits) to an I/O port
+ */
+#[inline]
+pub unsafe fn outl(port: u16, value: u32) {
+	core::arch::asm!("out dx, eax", in("dx") port, in("eax") value);
+}
+
+/*
+ * inl - Read a double word (32-bits) from an I/O port
+ */
+#[inline]
+pub unsafe fn inl(port: u16) -> u32 {
+	let value: u32;
+	core::arch::asm!("in eax, dx", out("eax") value, in("dx") port);
+	value
+}
