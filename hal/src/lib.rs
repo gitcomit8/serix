@@ -4,5 +4,7 @@
 pub mod cpu;
 pub mod io;
 pub mod serial;
+pub mod topology;
+
 pub use io::*;
 pub use serial::{init_serial, serial_print};
