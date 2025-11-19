@@ -7,9 +7,3 @@ edition = "2024"
 x86_64 = "0.15.2"
 spin = "0.10.0"
 hal = { path = "../hal" }
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"
