@@ -36,19 +36,19 @@
 
 #### **Phase 2: System Infrastructure** (August 2025)  
 
-- [ ] **Week 1**: Task Skeleton
+- [X] **Week 1**: Task Skeleton
 
 - Task control block (TCB) structure
 
 - Async task creation prototype
 
-- [ ] **Week 2**: Capability System Core
+- [X] **Week 2**: Capability System Core
 
 - Cryptographic handle implementation
 
 - Capability storage/retrieval
 
-- [ ] **Week 3**: Basic Syscalls
+- [X] **Week 3**: Basic Syscalls
 
 - `serix_write` (debug console)
 
@@ -56,7 +56,7 @@
 
 - `serix_yield`
 
-- [ ] **Week 4**: Hybrid Core Detection
+- [X] **Week 4**: Hybrid Core Detection
 
 - Intel CPUID parsing
 
