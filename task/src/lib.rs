@@ -1,3 +1,10 @@
+/*
+ * Task Scheduling and Management
+ *
+ * Implements cooperative multitasking with async/await support.
+ * Provides task control blocks, scheduling, context switching, and an async executor.
+ */
+
 #![no_std]
 
 extern crate alloc;

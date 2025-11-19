@@ -1,0 +1,7 @@
+# Rust formatting configuration
+# Force tabs instead of spaces (Linux kernel style)
+
+hard_tabs = true
+tab_spaces = 8
+max_width = 100
+use_small_heuristics = "Max"

@@ -1,3 +1,10 @@
+/*
+ * Serix Kernel Main Entry Point
+ *
+ * This file contains the kernel initialization sequence and main loop.
+ * It sets up the GDT, IDT, APIC, memory management, and task execution.
+ */
+
 #![no_std]
 #![no_main]
 
@@ -21,12 +28,21 @@ use x86_64::instructions::hlt;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
 
+/* Limine protocol requests */
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 static HHDM_REQ: HhdmRequest = HhdmRequest::new();
+
+/* Global capability store */
 static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
+/*
+ * panic - Kernel panic handler
+ * @info: Panic information containing location and message
+ *
+ * Handles kernel panics by printing diagnostic information and halting.
+ */
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
 	serial_println!("[KERNEL PANIC]");
@@ -39,34 +55,51 @@ pub fn panic(info: &PanicInfo) -> ! {
 	halt_loop();
 }
 
+/*
+ * global_cap_store - Get the global capability store
+ *
+ * Returns a reference to the global capability store, initializing it if needed.
+ */
 pub fn global_cap_store() -> &'static Mutex<CapabilityStore> {
 	CAP_STORE_ONCE.call_once(|| Mutex::new(CapabilityStore::new()))
 }
 
+/*
+ * _start - Kernel entry point
+ *
+ * This is the main kernel initialization function called by the bootloader.
+ * It initializes all subsystems and enters the main execution loop.
+ */
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
 	serial_println!("Serix Kernel Starting.....");
 	serial_println!("Serial console initialized");
 
+	/* Initialize Global Descriptor Table */
 	gdt::init();
 
 	unsafe {
-		apic::enable(); // This now also disables PIC
-		apic::ioapic::init_ioapic(); // Route IRQs through IOAPIC
-		apic::timer::register_handler(); // Register timer handler before IDT is loaded
+		/* Enable APIC and disable legacy PIC */
+		apic::enable();
+		/* Route IRQs through IOAPIC */
+		apic::ioapic::init_ioapic();
+		/* Register timer handler before IDT is loaded */
+		apic::timer::register_handler();
 	}
 
-	idt::init_idt(); // Setup CPU exception handlers and load IDT
+	/* Setup CPU exception handlers and load IDT */
+	idt::init_idt();
 
-	//Init keyboard
+	/* Initialize keyboard */
 	serial_println!("Keyboard ready for input!");
 
-	//Enable interrupts globally
+	/* Enable interrupts globally */
 	x86_64::instructions::interrupts::enable();
 
 	unsafe {
-		apic::timer::init_hardware(); // Initialize timer hardware
+		/* Initialize timer hardware */
+		apic::timer::init_hardware();
 	}
 
 	init_executor();
@@ -77,7 +110,7 @@ pub extern "C" fn _start() -> ! {
 	let cap = capability::CapabilityHandle::generate();
 	serial_println!("Generated Secure Capability Handle: {:?}", cap);
 
-	//Access framebuffer info
+	/* Access framebuffer information from Limine */
 	let fb_response = FRAMEBUFFER_REQ
 		.get_response()
 		.expect("No framebuffer reply");
@@ -85,12 +118,15 @@ pub extern "C" fn _start() -> ! {
 	let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
 	let entries = mmap_response.entries();
 
-	//Get dynamic offset from Limine
+	/* Get Higher Half Direct Map offset from Limine */
 	let hhdm_response = HHDM_REQ.get_response().expect("No HHDM response");
 	let phys_mem_offset = VirtAddr::new(hhdm_response.offset());
 	let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 
-	//Preallocate all usable frames before heap mapping
+	/*
+	 * Preallocate all usable physical frames before heap mapping.
+	 * This populates the boot frame allocator with available memory.
+	 */
 	let mut frame_count = 0;
 	for region in entries
 		.iter()
@@ -116,14 +152,17 @@ pub extern "C" fn _start() -> ! {
 
 	let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
 	hal::cpu::enable_interrupts();
-	//--- HEAP MAP/INIT ---
+
+	/* Initialize kernel heap with identity-mapped pages */
 	init_heap(&mut mapper, &mut frame_alloc);
-	//Paint screen blue
+
+	/* Paint screen blue and draw memory map visualization */
 	if let Some(fb) = fb_response.framebuffers().next() {
 		fill_screen_blue(&fb);
 		draw_memory_map(&fb, mmap_response.entries());
 	}
 
+	/* Initialize framebuffer console for kernel output */
 	let fb = fb_response.framebuffers().next().expect("No framebuffer");
 	init_console(
 		fb.addr(),
@@ -132,13 +171,14 @@ pub extern "C" fn _start() -> ! {
 		fb.pitch() as usize,
 	);
 
-	// Initialize global scheduler
+	/* Initialize global task scheduler */
 	Scheduler::init_global();
 
-	// Test framebuffer console with macros
+	/* Display welcome message */
 	fb_println!("Welcome to Serix OS!");
 	fb_println!("Memory map entries: {}", mmap_response.entries().len());
 
+	/* Spawn test async tasks to demonstrate cooperative multitasking */
 	spawn_task(async {
 		for i in 0..5 {
 			serial_println!("Async task 1 iteration {}", i);
@@ -158,6 +198,7 @@ pub extern "C" fn _start() -> ! {
 		}
 	});
 
+	/* Main kernel loop: poll executor and halt CPU until next interrupt */
 	loop {
 		poll_executor();
 		hlt();
