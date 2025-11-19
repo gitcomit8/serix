@@ -9,6 +9,30 @@ impl CapabilityHandle {
 	pub fn new(key: [u8; 16]) -> Self {
 		CapabilityHandle { key }
 	}
+
+	fn generate() -> Self {
+		// Seed using CPU timestamp counter
+		let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
+
+		// Simple Xorshift64
+		let rng = |s: &mut u64| {
+			*s ^= *s << 13;
+			*s ^= *s >> 17;
+			*s ^= *s << 5;
+			*s
+		};
+
+		let mut key = [0u8; 16];
+		// Generate 128 bits (2 u64s)
+		for i in 0..2 {
+			let rand = rng(&mut seed);
+			let bytes = rand.to_ne_bytes();
+			for j in 0..8 {
+				key[i * 8 + j] = bytes[j];
+			}
+		}
+		CapabilityHandle { key }
+	}
 }
 
 impl fmt::Debug for CapabilityHandle {
