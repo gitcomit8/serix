@@ -2,6 +2,7 @@
 #![no_main]
 
 extern crate alloc;
+mod syscall;
 
 use capability::CapabilityStore;
 use core::panic::PanicInfo;
