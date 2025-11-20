@@ -18,3 +18,4 @@ spin = "0.10.0"
 drivers = { path = "../drivers" }
 vfs = { path = "../vfs" }
 ipc = { path = "../ipc" }
+loader = { path = "../loader" }
