@@ -29,6 +29,7 @@ use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
 use vfs::{INode, RamFile};
 use x86_64::instructions::hlt;
+use x86_64::registers::rflags::RFlags;
 use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
 };
@@ -147,6 +148,94 @@ unsafe fn map_segment(
 }
 
 /*
+ * allocate_user_stack - Map a stack for the user process
+ * @mapper: User address space mapper
+ * @allocator: Frame allocator
+ *
+ * Maps 16KB of stack at the top of the user address space.
+ * Returns the virtual address of the stack top (initial RSP).
+ */
+unsafe fn allocate_user_stack(
+	mapper: &mut impl Mapper<Size4KiB>,
+	allocator: &mut impl FrameAllocator<Size4KiB>,
+	phys_mem_offset: VirtAddr,
+) -> VirtAddr {
+	// Define stack top at the end of the lower half canonical address space
+	let stack_top = VirtAddr::new(0x0000_7FFF_FFFF_F000);
+	let stack_bottom = stack_top - 16384u64; // 16 KB stack
+
+	let start_page = x86_64::structures::paging::Page::containing_address(stack_bottom);
+	let end_page = x86_64::structures::paging::Page::containing_address(stack_top - 1u64);
+
+	let flags =
+		PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+	for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+		let frame = allocator.allocate_frame().expect("OOM for user stack");
+		if let Ok(map_result) = mapper.map_to(page, frame, flags, allocator) {
+			map_result.flush();
+		}
+
+		// Zero the stack memory (good practice)
+		let frame_virt = phys_mem_offset + frame.start_address().as_u64();
+		let ptr = frame_virt.as_mut_ptr() as *mut u8;
+		ptr.write_bytes(0, 4096);
+	}
+
+	stack_top
+}
+
+/*
+ * enter_user_mode - Jump to Ring 3
+ * @entry_point: Virtual address of the user program entry
+ * @stack_pointer: Virtual address of the user stack top
+ *
+ * Performs the delicate IRETQ dance to switch privilege levels.
+ * DOES NOT RETURN.
+ */
+unsafe fn enter_user_mode(entry_point: VirtAddr, stack_pointer: VirtAddr) -> ! {
+	let selectors = gdt::descriptors();
+
+	// 1. Enable Interrupts in User Mode (RFLAGS.IF = 1)
+	let rflags = RFlags::INTERRUPT_FLAG.bits();
+
+	// 2. Prepare the stack frame for IRETQ
+	// Stack Layout: [SS, RSP, RFLAGS, CS, RIP]
+	core::arch::asm!(
+	"push {user_ds}",   // SS (User Data Segment)
+	"push {rsp}",       // RSP (User Stack Pointer)
+	"push {rflags}",    // RFLAGS
+	"push {user_cs}",   // CS (User Code Segment)
+	"push {rip}",       // RIP (Entry Point)
+	"iretq",            // Interrupt Return (Jump to Ring 3)
+	user_ds = in(reg) selectors.user_data.0,
+	rsp = in(reg) stack_pointer.as_u64(),
+	rflags = in(reg) rflags,
+	user_cs = in(reg) selectors.user_code.0,
+	rip = in(reg) entry_point.as_u64(),
+	options(noreturn)
+	)
+}
+
+unsafe fn map_mmio(
+	mapper: &mut impl x86_64::structures::paging::Mapper<Size4KiB>,
+	allocator: &mut impl FrameAllocator<Size4KiB>,
+	phys_addr: u64,
+	virt_addr: VirtAddr,
+) {
+	use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame};
+
+	let page = Page::containing_address(virt_addr);
+	let frame = PhysFrame::containing_address(PhysAddr::new(phys_addr));
+	// MMIO needs to be Writable and Cache Disable (though usually Strong Uncacheable by MTRR)
+	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
+
+	if let Ok(map_to) = mapper.map_to(page, frame, flags, allocator) {
+		map_to.flush();
+	}
+}
+
+/*
  * _start - Kernel entry point
  *
  * This is the main kernel initialization function called by the bootloader.
@@ -233,6 +322,21 @@ pub extern "C" fn _start() -> ! {
 	/* Initialize kernel heap with identity-mapped pages */
 	init_heap(&mut mapper, &mut frame_alloc);
 
+	let lapic_phys = 0xFEE00000u64;
+	let ioapic_phys = 0xFEC00000u64;
+
+	let lapic_virt = phys_mem_offset + lapic_phys;
+	let ioapic_virt = phys_mem_offset + ioapic_phys;
+
+	unsafe {
+		map_mmio(&mut mapper, &mut frame_alloc, lapic_phys, lapic_virt);
+		map_mmio(&mut mapper, &mut frame_alloc, ioapic_phys, ioapic_virt);
+
+		// Tell APIC driver to use these new virtual addresses
+		apic::set_bases(lapic_virt.as_u64());
+		apic::ioapic::set_base(ioapic_virt.as_u64());
+	}
+
 	/* Paint screen blue and draw memory map visualization */
 	if let Some(fb) = fb_response.framebuffers().next() {
 		fill_screen_blue(&fb);
@@ -271,74 +375,6 @@ pub extern "C" fn _start() -> ! {
 	if let Ok(msg) = core::str::from_utf8(&read_buf) {
 		serial_println!("VFS Readback: {}", msg);
 	}
-	serial_println!("--- Phase 4: ELF Loader Check ---");
-
-	let dummy_elf: [u8; 64] = [
-		0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x02, 0x00, 0x3E, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00,
-		0x00, 0x00, // Entry point 0x12345678
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00,
-	];
-
-	match loader::load_elf(&dummy_elf) {
-		Ok(image) => {
-			serial_println!("ELF Header Parsed Successfully!");
-			serial_println!("Entry Point: {:#x}", image.entry_point.as_u64());
-			// Expecting 0x12345678 based on our dummy bytes
-			if image.entry_point.as_u64() == 0x12345678 {
-				serial_println!("Sanity Check: PASSED");
-			} else {
-				serial_println!("Sanity Check: FAILED (Wrong Entry Point)");
-			}
-		}
-		Err(e) => serial_println!("ELF Load Error: {}", e),
-	}
-	let new_pml4 = unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) };
-	if let Some(frame) = new_pml4 {
-		serial_println!(
-			"New User PML4 created at Phys: {:#x}",
-			frame.start_address().as_u64()
-		);
-	} else {
-		panic!("Failed to allocate User PML4");
-	}
-	let new_pml4_frame =
-		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
-			.expect("Failed to create user page table");
-
-	serial_println!(
-		"User PML4 created at: {:#x}",
-		new_pml4_frame.start_address().as_u64()
-	);
-
-	// Create a mapper for this new address space
-	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
-
-	// Load the "program" (our dummy ELF)
-	match loader::load_elf(&dummy_elf) {
-		Ok(image) => {
-			for segment in image.segments {
-				serial_println!(
-					"Mapping segment at {:#x} (Size: {} bytes)",
-					segment.virtual_address.as_u64(),
-					segment.size
-				);
-
-				unsafe {
-					map_segment(
-						&mut user_mapper,
-						&mut frame_alloc,
-						&segment,
-						phys_mem_offset,
-					);
-				}
-			}
-			serial_println!("Segments mapped successfully.");
-		}
-		Err(e) => panic!("Failed to load dummy ELF: {}", e),
-	}
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
 	Scheduler::global().lock().add_task(TaskCB::running_task());
@@ -371,6 +407,94 @@ pub extern "C" fn _start() -> ! {
 	unsafe {
 		/* Initialize timer hardware */
 		apic::timer::init_hardware();
+	}
+	// --- PHASE 4: Loading & Execution ---
+	serial_println!("--- Phase 4: User Mode Transition ---");
+
+	// 1. Create a valid ELF executable (Hardcoded for testing)
+	// This allows us to test the loader without a disk driver or compiler.
+	//
+	// Assembly:
+	//   mov rax, 0xDEADBEEF  ; Just a marker
+	//   jmp $                ; Infinite loop (don't return)
+	//
+	// This byte array is a valid ELF64-x86-64 binary containing that code.
+	let shellcode_elf: [u8; 132] = [
+		0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, // Header
+		0x02, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
+		0x00, // Entry: 0x200078
+		0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, // PHDR: Offset 0x78
+		0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
+		0x00, // VAddr: 0x200078
+		0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, // Size: 12 bytes
+		0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Align: 0x1000
+		// Code starts here (Offset 0x78)
+		0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // mov rax, 0xDEADBEEF
+		0xeb, 0xfe, // jmp $
+	];
+
+	// 2. Write to VFS
+	let init_file = vfs::RamFile::new("init");
+	init_file.write(0, &shellcode_elf);
+	serial_println!("Created /init (Size: {} bytes)", init_file.size());
+
+	// 3. Read back from VFS (simulating loading from disk)
+	let mut file_buffer = alloc::vec::Vec::new();
+	file_buffer.resize(init_file.size(), 0);
+	init_file.read(0, &mut file_buffer);
+
+	// 4. Parse ELF
+	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
+	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
+
+	// 5. Create User Address Space
+	let new_pml4_frame =
+		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
+			.expect("Failed to create user page table");
+
+	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
+
+	// 6. Map Segments
+	for segment in image.segments {
+		unsafe {
+			map_segment(
+				&mut user_mapper,
+				&mut frame_alloc,
+				&segment,
+				phys_mem_offset,
+			);
+		}
+	}
+	serial_println!("Segments mapped.");
+
+	// 7. Allocate User Stack
+	let user_stack =
+		unsafe { allocate_user_stack(&mut user_mapper, &mut frame_alloc, phys_mem_offset) };
+	serial_println!("User Stack allocated at {:#x}", user_stack.as_u64());
+
+	// 8. Switch Page Table (CR3)
+	unsafe {
+		use x86_64::registers::control::{Cr3, Cr3Flags};
+		// Use Cr3Flags, NOT PageTableFlags
+		Cr3::write(new_pml4_frame, Cr3Flags::empty());
+	}
+	serial_println!("Switched CR3 to User Table.");
+
+	let current_rsp: u64;
+	unsafe {
+		core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+	}
+	gdt::set_kernel_stack(VirtAddr::new(current_rsp));
+
+	// 9. Jump to User Mode!
+	serial_println!("Jumping to Ring 3...");
+	unsafe {
+		enter_user_mode(image.entry_point, user_stack);
 	}
 
 	/* Main kernel loop: poll executor and halt CPU until next interrupt */

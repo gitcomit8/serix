@@ -5,7 +5,12 @@
  */
 
 /* I/O APIC base address in memory */
-const IOAPIC_BASE: u64 = 0xFEC00000;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static IOAPIC_BASE: AtomicU64 = AtomicU64::new(0xFEC00000);
+pub fn set_base(addr: u64) {
+	IOAPIC_BASE.store(addr, Ordering::Relaxed);
+}
 
 /*
  * ioapic_reg - Get pointer to I/O APIC register
@@ -14,7 +19,7 @@ const IOAPIC_BASE: u64 = 0xFEC00000;
  * Returns a pointer to the specified I/O APIC register.
  */
 fn ioapic_reg(offset: u32) -> *mut u32 {
-	(IOAPIC_BASE + offset as u64) as *mut u32
+	(IOAPIC_BASE.load(Ordering::Relaxed) + offset as u64) as *mut u32
 }
 
 /*
