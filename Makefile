@@ -42,7 +42,7 @@ iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/l
 	./limine/limine bios-install $(ISO)
 
 run: iso
-	qemu-system-x86_64 -cdrom $(ISO) -m 512 -serial stdio
+	qemu-system-x86_64 -cdrom $(ISO) -m 4G -serial stdio
 
 clean:
 	rm -rf $(ISO_ROOT) $(ISO)
