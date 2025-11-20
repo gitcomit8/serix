@@ -1,0 +1,8 @@
+[package]
+name = "loader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+x86_64 = "0.15.3"
+bitflags = "2.10.0"
