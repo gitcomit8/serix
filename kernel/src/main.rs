@@ -21,6 +21,7 @@ use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
 use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use limine::BaseRevision;
+use loader::LoadableSegment;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
 use spin::{Mutex, Once};
 use task::{init_executor, poll_executor, spawn_task};
@@ -28,7 +29,9 @@ use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
 use vfs::{INode, RamFile};
 use x86_64::instructions::hlt;
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{
+	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
+};
 use x86_64::{PhysAddr, VirtAddr};
 /* Limine protocol requests */
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -64,6 +67,83 @@ pub fn panic(info: &PanicInfo) -> ! {
  */
 pub fn global_cap_store() -> &'static Mutex<CapabilityStore> {
 	CAP_STORE_ONCE.call_once(|| Mutex::new(CapabilityStore::new()))
+}
+
+/*
+ * map_segment - Map an ELF segment into a page table
+ * @mapper: The mapper for the target address space
+ * @allocator: Frame allocator
+ * @segment: The segment to map
+ * @phys_mem_offset: HHDM offset for copying data
+ */
+unsafe fn map_segment(
+	mapper: &mut impl Mapper<Size4KiB>,
+	allocator: &mut impl FrameAllocator<Size4KiB>,
+	segment: &LoadableSegment,
+	phys_mem_offset: VirtAddr,
+) {
+	let start = segment.virtual_address;
+	let end = start + segment.size;
+
+	// Calculate page range
+	let start_page = Page::<Size4KiB>::containing_address(start);
+	let end_page = Page::<Size4KiB>::containing_address(end - 1u64);
+
+	// Translate ELF flags to Page Table flags
+	let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+	if segment.flags.writable {
+		flags |= PageTableFlags::WRITABLE;
+	}
+	if !segment.flags.executable {
+		flags |= PageTableFlags::NO_EXECUTE;
+	}
+
+	for page in Page::range_inclusive(start_page, end_page) {
+		// 1. Allocate a frame
+		let frame = allocator.allocate_frame().expect("OOM during segment load");
+
+		// 2. Map it
+		// We handle the "AlreadyMapped" error (common with overlapping segments)
+		// by just ignoring it for this tutorial, or unmapping first.
+		if let Ok(map_result) = mapper.map_to(page, frame, flags, allocator) {
+			map_result.flush(); // Flush TLB (though not strictly needed for inactive table)
+		} else {
+			// TODO: handle overlapping .bss/.data gracefully
+			serial_println!("Warning: Overlapping mapping at {:?}", page.start_address());
+		}
+
+		// 3. Copy Data
+		let frame_virt = phys_mem_offset + frame.start_address().as_u64();
+		let ptr = frame_virt.as_mut_ptr() as *mut u8;
+		ptr.write_bytes(0, 4096);
+
+		// Calculate offsets to copy relevant file data
+		let page_addr = page.start_address().as_u64();
+		let seg_addr = start.as_u64();
+
+		// Data offset within the segment data array
+		let data_start = if page_addr < seg_addr {
+			0
+		} else {
+			page_addr - seg_addr
+		};
+		let data_end = core::cmp::min(segment.data.len() as u64, (page_addr + 4096) - seg_addr);
+
+		if data_start < data_end {
+			let dest_offset = if page_addr < seg_addr {
+				seg_addr - page_addr
+			} else {
+				0
+			};
+			let count = (data_end - data_start) as usize;
+
+			core::ptr::copy_nonoverlapping(
+				segment.data.as_ptr().add(data_start as usize),
+				ptr.add(dest_offset as usize),
+				count,
+			);
+		}
+	}
 }
 
 /*
@@ -214,6 +294,50 @@ pub extern "C" fn _start() -> ! {
 			}
 		}
 		Err(e) => serial_println!("ELF Load Error: {}", e),
+	}
+	let new_pml4 = unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) };
+	if let Some(frame) = new_pml4 {
+		serial_println!(
+			"New User PML4 created at Phys: {:#x}",
+			frame.start_address().as_u64()
+		);
+	} else {
+		panic!("Failed to allocate User PML4");
+	}
+	let new_pml4_frame =
+		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
+			.expect("Failed to create user page table");
+
+	serial_println!(
+		"User PML4 created at: {:#x}",
+		new_pml4_frame.start_address().as_u64()
+	);
+
+	// Create a mapper for this new address space
+	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
+
+	// Load the "program" (our dummy ELF)
+	match loader::load_elf(&dummy_elf) {
+		Ok(image) => {
+			for segment in image.segments {
+				serial_println!(
+					"Mapping segment at {:#x} (Size: {} bytes)",
+					segment.virtual_address.as_u64(),
+					segment.size
+				);
+
+				unsafe {
+					map_segment(
+						&mut user_mapper,
+						&mut frame_alloc,
+						&segment,
+						phys_mem_offset,
+					);
+				}
+			}
+			serial_println!("Segments mapped successfully.");
+		}
+		Err(e) => panic!("Failed to load dummy ELF: {}", e),
 	}
 	/* Initialize global task scheduler */
 	Scheduler::init_global();

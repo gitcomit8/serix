@@ -112,3 +112,17 @@ pub unsafe fn create_user_page_table(
 	}
 	Some(pml4_frame)
 }
+
+/*
+ * create_mapper - Create a mapper for a specific page table
+ * @pml4_frame: The physical frame of the target PML4
+ * @offset: Physical memory offset (HHDM)
+ *
+ * Allows modifying a page table that isn't currently active (CR3).
+ */
+pub unsafe fn create_mapper(pml4_frame: PhysFrame, offset: VirtAddr) -> OffsetPageTable<'static> {
+	let phys = pml4_frame.start_address().as_u64();
+	let virt = offset + phys;
+	let table = &mut *(virt.as_mut_ptr() as *mut PageTable);
+	OffsetPageTable::new(table, offset)
+}
