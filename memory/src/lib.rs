@@ -90,3 +90,25 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 		}
 	}
 }
+
+pub unsafe fn create_user_page_table(
+	frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+	offset: VirtAddr,
+) -> Option<PhysFrame> {
+	let pml4_frame = frame_allocator.allocate_frame()?;
+	let pml4_phys = pml4_frame.start_address();
+	let pml4_virt = offset + pml4_phys.as_u64();
+
+	let pml4_table = &mut *(pml4_virt.as_mut_ptr() as *mut PageTable);
+	pml4_table.zero();
+
+	let (active_frame, _) = Cr3::read();
+	let active_phys = active_frame.start_address();
+	let active_virt = offset + active_phys.as_u64();
+	let active_table = &*(active_virt.as_ptr() as *const PageTable);
+
+	for i in 256..512 {
+		pml4_table[i] = active_table[i].clone();
+	}
+	Some(pml4_frame)
+}
