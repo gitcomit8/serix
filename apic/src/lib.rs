@@ -8,24 +8,32 @@
 #![feature(abi_x86_interrupt)]
 #![no_std]
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use hal::serial_println;
 
 pub mod ioapic;
 pub mod timer;
 
-/* Local APIC base address in memory */
-const APIC_BASE: u64 = 0xFEE00000;
+/* * APIC Base Addresses (Physical/Virtual)
+ * Default to physical addresses for early boot compatibility.
+ * These should be updated to virtual higher-half addresses once paging is up.
+ */
+static APIC_BASE: AtomicU64 = AtomicU64::new(0xFEE00000);
 
 /*
- * lapic_reg - Get pointer to Local APIC register
- * @offset: Register offset from base address
- *
- * Returns a pointer to the specified Local APIC register.
+ * set_bases - Update the base addresses for APIC components
+ * @lapic: Virtual address of Local APIC
+ * @ioapic: Virtual address of I/O APIC
  */
-fn lapic_reg(offset: u32) -> *mut u32 {
-	(APIC_BASE + offset as u64) as *mut u32
+pub fn set_bases(lapic: u64) {
+	APIC_BASE.store(lapic, Ordering::Relaxed);
+	// I/O APIC base is managed in ioapic.rs, we'll add a setter there
+	ioapic::set_base(0xFEC00000); // Default or pass as arg if needed
 }
 
+fn lapic_reg(offset: u32) -> *mut u32 {
+	(APIC_BASE.load(Ordering::Relaxed) + offset as u64) as *mut u32
+}
 /*
  * disable_pic - Disable legacy 8259 PIC
  *
