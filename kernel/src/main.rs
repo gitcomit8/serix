@@ -83,14 +83,13 @@ unsafe fn map_segment(
 	segment: &LoadableSegment,
 	phys_mem_offset: VirtAddr,
 ) {
+	use x86_64::structures::paging::mapper::MapToError;
+
 	let start = segment.virtual_address;
 	let end = start + segment.size;
-
-	// Calculate page range
 	let start_page = Page::<Size4KiB>::containing_address(start);
 	let end_page = Page::<Size4KiB>::containing_address(end - 1u64);
 
-	// Translate ELF flags to Page Table flags
 	let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 	if segment.flags.writable {
 		flags |= PageTableFlags::WRITABLE;
@@ -100,29 +99,37 @@ unsafe fn map_segment(
 	}
 
 	for page in Page::range_inclusive(start_page, end_page) {
-		// 1. Allocate a frame
-		let frame = allocator.allocate_frame().expect("OOM during segment load");
+		let frame;
 
-		// 2. Map it
-		// We handle the "AlreadyMapped" error (common with overlapping segments)
-		// by just ignoring it for this tutorial, or unmapping first.
-		if let Ok(map_result) = mapper.map_to(page, frame, flags, allocator) {
-			map_result.flush(); // Flush TLB (though not strictly needed for inactive table)
-		} else {
-			// TODO: handle overlapping .bss/.data gracefully
-			serial_println!("Warning: Overlapping mapping at {:?}", page.start_address());
+		// 1. Allocate a frame speculatively
+		let new_frame = allocator.allocate_frame().expect("OOM during segment load");
+
+		// 2. Try to map the page
+		match mapper.map_to(page, new_frame, flags, allocator) {
+			Ok(flusher) => {
+				// Success! Use the new frame
+				frame = new_frame;
+				flusher.flush();
+
+				// Zero out the new frame
+				let ptr =
+					(phys_mem_offset + frame.start_address().as_u64()).as_mut_ptr() as *mut u8;
+				ptr.write_bytes(0, 4096);
+			}
+			Err(MapToError::PageAlreadyMapped(existing_frame)) => {
+				// FIX: Page exists (shared by code/data segments). Use existing frame.
+				frame = existing_frame;
+			}
+			Err(e) => panic!("Map failed: {:?}", e),
 		}
 
-		// 3. Copy Data
+		// 3. Copy Data (Always copy, even if overlapping)
 		let frame_virt = phys_mem_offset + frame.start_address().as_u64();
 		let ptr = frame_virt.as_mut_ptr() as *mut u8;
-		ptr.write_bytes(0, 4096);
 
-		// Calculate offsets to copy relevant file data
 		let page_addr = page.start_address().as_u64();
 		let seg_addr = start.as_u64();
 
-		// Data offset within the segment data array
 		let data_start = if page_addr < seg_addr {
 			0
 		} else {
@@ -251,6 +258,7 @@ pub extern "C" fn _start() -> ! {
 	gdt::init();
 
 	unsafe {
+		gdt::init_per_cpu();
 		/* Enable APIC and disable legacy PIC */
 		apic::enable();
 		/* Route IRQs through IOAPIC */
@@ -419,28 +427,11 @@ pub extern "C" fn _start() -> ! {
 	//   jmp $                ; Infinite loop (don't return)
 	//
 	// This byte array is a valid ELF64-x86-64 binary containing that code.
-	let shellcode_elf: [u8; 132] = [
-		0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, // Header
-		0x02, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
-		0x00, // Entry: 0x200078
-		0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, // PHDR: Offset 0x78
-		0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
-		0x00, // VAddr: 0x200078
-		0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, // Size: 12 bytes
-		0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Align: 0x1000
-		// Code starts here (Offset 0x78)
-		0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // mov rax, 0xDEADBEEF
-		0xeb, 0xfe, // jmp $
-	];
+	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
 
 	// 2. Write to VFS
 	let init_file = vfs::RamFile::new("init");
-	init_file.write(0, &shellcode_elf);
+	init_file.write(0, shellcode_elf);
 	serial_println!("Created /init (Size: {} bytes)", init_file.size());
 
 	// 3. Read back from VFS (simulating loading from disk)
@@ -480,7 +471,6 @@ pub extern "C" fn _start() -> ! {
 	// 8. Switch Page Table (CR3)
 	unsafe {
 		use x86_64::registers::control::{Cr3, Cr3Flags};
-		// Use Cr3Flags, NOT PageTableFlags
 		Cr3::write(new_pml4_frame, Cr3Flags::empty());
 	}
 	serial_println!("Switched CR3 to User Table.");
@@ -489,9 +479,12 @@ pub extern "C" fn _start() -> ! {
 	unsafe {
 		core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
 	}
-	gdt::set_kernel_stack(VirtAddr::new(current_rsp));
+	let stack_addr = VirtAddr::new(current_rsp);
 
-	// 9. Jump to User Mode!
+	// Set BOTH TSS (interrupts) and GS (syscalls)
+	gdt::set_kernel_stack(stack_addr);
+	gdt::set_syscall_stack(stack_addr);
+
 	serial_println!("Jumping to Ring 3...");
 	unsafe {
 		enter_user_mode(image.entry_point, user_stack);
