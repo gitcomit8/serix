@@ -8,6 +8,7 @@
 use spin::{Mutex, Once};
 use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
 use x86_64::instructions::tables::load_tss;
+use x86_64::registers::model_specific::KernelGsBase;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
@@ -119,5 +120,29 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
 	if let Some(tss_mutex) = TSS.get() {
 		let mut tss = tss_mutex.lock();
 		tss.privilege_stack_table[0] = stack_top;
+	}
+}
+
+#[repr(C)]
+pub struct PerCpuData {
+	pub scratch: u64,         // 0x00
+	pub kernel_stack: u64,    // 0x08
+	pub user_stack_save: u64, // 0x10
+}
+
+static mut PER_CPU_DATA: PerCpuData = PerCpuData {
+	scratch: 0,
+	kernel_stack: 0,
+	user_stack_save: 0,
+};
+
+pub unsafe fn init_per_cpu() {
+	let addr = core::ptr::addr_of!(PER_CPU_DATA) as u64;
+	KernelGsBase::write(VirtAddr::new(addr));
+}
+
+pub fn set_syscall_stack(stack_top: VirtAddr) {
+	unsafe {
+		PER_CPU_DATA.kernel_stack = stack_top.as_u64();
 	}
 }

@@ -13,7 +13,7 @@ members = ["kernel",
     "drivers",
     "vfs",
     "ipc"
-, "loader"]
+    , "loader", "ulib"]
 
 [profile.release]
 panic = "abort"

@@ -2,7 +2,7 @@
  * System Call Handler
  *
  * Implements fast system calls using SYSCALL/SYSRET instructions.
- * Handles system call entry, register marshalling, and return to userspace.
+ * Handles system call entry, register marshaling, and return to userspace.
  */
 
 use core::arch::naked_asm;
@@ -121,13 +121,13 @@ unsafe extern "C" fn syscall_entry() {
 		 * RAX (syscall nr) -> RDI (arg0)
 		 * RDI (arg1) -> RSI (arg1)
 		 * RSI (arg2) -> RDX (arg2)
-		 * R10 (arg3) -> RCX (arg3)  -- NOTE: R10, not RDX
+		 * R10 (arg3) -> RCX (arg3)
 		 * R8  (arg4) -> R8  (arg4)
 		 * R9  (arg5) -> R9  (arg5)
 		 */
 		"mov r9, r8",            /* arg5 */
 		"mov r8, r10",           /* arg4 (was saved in R10 by userspace) */
-		"mov rcx, r10",          /* arg3 - FIX: use R10 instead of RDX */
+		"mov rcx, rdx",          /* arg3 */
 		"mov rdx, rsi",          /* arg2 */
 		"mov rsi, rdi",          /* arg1 */
 		"mov rdi, rax",          /* syscall number */
@@ -214,8 +214,9 @@ extern "C" fn syscall_dispatcher(
 		SYS_EXIT => {
 			/* Exit system call: terminate current task */
 			hal::serial_println!("[SYSCALL] Process exited with status {}", arg1);
-			task::preempt_executor();
-			0 /* Never actually returns, but compiler needs this */
+			loop {
+				hal::cpu::halt();
+			}
 		}
 
 		SYS_YIELD => {
