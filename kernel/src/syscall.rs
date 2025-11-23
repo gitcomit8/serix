@@ -15,6 +15,15 @@ pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
 
+/* Error codes (negative errno values represented as u64) */
+pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
+pub const ERRNO_EFAULT: u64 = u64::MAX - 13; /* Bad address (errno 14) */
+pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
+
+/* Userspace memory validation constants */
+const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
+const USER_SPACE_END: u64 = 0x0000_8000_0000_0000; /* 128 TiB - typical userspace limit */
+
 /*
  * init_syscalls - Initialize system call support
  *
@@ -63,6 +72,22 @@ pub fn init_syscalls() {
 }
 
 /*
+ * is_user_accessible - Validate userspace pointer range
+ * @ptr: Pointer to validate
+ * @len: Length of memory region
+ *
+ * Returns true if the entire memory range [ptr, ptr+len) is in valid userspace.
+ */
+#[inline]
+fn is_user_accessible(ptr: *const u8, len: usize) -> bool {
+	let addr = ptr as u64;
+	let end_addr = addr.saturating_add(len as u64);
+
+	/* Check for overflow and valid userspace range */
+	addr >= USER_SPACE_START && end_addr <= USER_SPACE_END && end_addr > addr && !ptr.is_null()
+}
+
+/*
  * syscall_entry - Low-level syscall entry point
  *
  * Naked assembly function that handles the transition from user to kernel mode.
@@ -73,12 +98,15 @@ unsafe extern "C" fn syscall_entry() {
 	naked_asm!(
 		/* Swap to kernel GS and save/load stacks */
 		"swapgs",
-		"mov gs:[16], rsp",
-		"mov rsp, gs:[8]",
+		"mov gs:[16], rsp",      /* Save user stack pointer */
+		"mov rsp, gs:[8]",       /* Load kernel stack pointer */
+
+		/* Align stack to 16 bytes as required by System V ABI */
+		"and rsp, ~0xF",
 
 		/* Save user RFLAGS and RIP (saved by SYSCALL instruction) */
-		"push r11",
-		"push rcx",
+		"push r11",              /* User RFLAGS */
+		"push rcx",              /* User RIP */
 
 		/* Save callee-saved registers */
 		"push rbp",
@@ -93,15 +121,21 @@ unsafe extern "C" fn syscall_entry() {
 		 * RAX (syscall nr) -> RDI (arg0)
 		 * RDI (arg1) -> RSI (arg1)
 		 * RSI (arg2) -> RDX (arg2)
-		 * RDX (arg3) -> RCX (arg3)
+		 * R10 (arg3) -> RCX (arg3)  -- NOTE: R10, not RDX
+		 * R8  (arg4) -> R8  (arg4)
+		 * R9  (arg5) -> R9  (arg5)
 		 */
-		"mov rcx, rdx",
-		"mov rdx, rsi",
-		"mov rsi, rdi",
-		"mov rdi, rax",
+		"mov r9, r8",            /* arg5 */
+		"mov r8, r10",           /* arg4 (was saved in R10 by userspace) */
+		"mov rcx, r10",          /* arg3 - FIX: use R10 instead of RDX */
+		"mov rdx, rsi",          /* arg2 */
+		"mov rsi, rdi",          /* arg1 */
+		"mov rdi, rax",          /* syscall number */
 
-		/* Call the syscall dispatcher */
+		/* Call the syscall dispatcher - return value comes back in RAX */
 		"call {syscall_handler}",
+
+		/* RAX now contains the return value - preserve it */
 
 		/* Restore callee-saved registers */
 		"pop r15",
@@ -112,8 +146,8 @@ unsafe extern "C" fn syscall_entry() {
 		"pop rbp",
 
 		/* Restore user RIP and RFLAGS for SYSRET */
-		"pop rcx",
-		"pop r11",
+		"pop rcx",               /* User RIP */
+		"pop r11",               /* User RFLAGS */
 
 		/* Restore user stack and GS, then return to userspace */
 		"mov rsp, gs:[16]",
@@ -129,35 +163,71 @@ unsafe extern "C" fn syscall_entry() {
  * @arg1: First argument
  * @arg2: Second argument
  * @arg3: Third argument
+ * @arg4: Fourth argument (optional, for future use)
+ * @arg5: Fifth argument (optional, for future use)
  *
  * Dispatches system calls to appropriate handlers based on the syscall number.
+ * Returns the syscall result in RAX (0 or positive on success, negative errno on error).
  */
 #[unsafe(no_mangle)]
-extern "C" fn syscall_dispatcher(nr: u64, arg1: u64, arg2: u64, arg3: u64) {
+extern "C" fn syscall_dispatcher(
+	nr: u64,
+	arg1: u64,
+	arg2: u64,
+	arg3: u64,
+	_arg4: u64,
+	_arg5: u64,
+) -> u64 {
 	match nr {
 		SYS_WRITE => {
 			/* Write system call: fd, buffer pointer, length */
-			if arg1 == 1 {
-				/* stdout */
-				let ptr = arg2 as *const u8;
-				let len = arg3 as usize;
-				let s = unsafe {
-					core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
-				};
-				hal::serial_print!("{}", s);
+			if arg1 != 1 {
+				/* Only stdout (fd 1) is supported for now */
+				return ERRNO_EBADF;
+			}
+
+			let ptr = arg2 as *const u8;
+			let len = arg3 as usize;
+
+			/* Validate pointer is in userspace range */
+			if !is_user_accessible(ptr, len) {
+				hal::serial_println!("[SYSCALL] SYS_WRITE: Invalid pointer 0x{:x}", arg2);
+				return ERRNO_EFAULT;
+			}
+
+			/* Safely create slice from validated pointer */
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+
+			/* Validate UTF-8 encoding */
+			match core::str::from_utf8(slice) {
+				Ok(s) => {
+					hal::serial_print!("{}", s);
+					len as u64 /* Return bytes written */
+				}
+				Err(_) => {
+					hal::serial_println!("[SYSCALL] SYS_WRITE: Invalid UTF-8 data");
+					ERRNO_EINVAL
+				}
 			}
 		}
+
 		SYS_EXIT => {
 			/* Exit system call: terminate current task */
-			hal::serial_println!("Process exited with status {}", arg1);
+			hal::serial_println!("[SYSCALL] Process exited with status {}", arg1);
 			task::preempt_executor();
+			0 /* Never actually returns, but compiler needs this */
 		}
+
 		SYS_YIELD => {
 			/* Yield system call: voluntarily give up CPU */
 			task::preempt_executor();
+			0 /* Success */
 		}
+
 		_ => {
-			hal::serial_println!("Unknown syscall: {}", nr);
+			/* Unknown system call */
+			hal::serial_println!("[SYSCALL] Unknown syscall: {}", nr);
+			ERRNO_EINVAL
 		}
 	}
 }
