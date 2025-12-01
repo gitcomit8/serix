@@ -6,14 +6,15 @@
  */
 
 use core::arch::naked_asm;
+use task::Scheduler;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
 use x86_64::VirtAddr;
-
 /* System call numbers */
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
+pub const SYS_CLONE: u64 = 56;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
@@ -221,8 +222,25 @@ extern "C" fn syscall_dispatcher(
 
 		SYS_YIELD => {
 			/* Yield system call: voluntarily give up CPU */
-			task::preempt_executor();
+			task::task_yield();
 			0 /* Success */
+		}
+
+		SYS_CLONE => {
+			let user_stack = arg2;
+			let instruction_pointer = arg3;
+
+			let mut scheduler = Scheduler::global().lock();
+			let current_idx = scheduler.current;
+			let current_task = &scheduler.tasks[current_idx];
+
+			let child_task = current_task.clone_thread(instruction_pointer, user_stack);
+			let child_id = child_task.id.as_u64();
+
+			scheduler.add_task(child_task);
+
+			hal::serial_println!("[SYSCALL] Thread spawned (TID: {})", child_id);
+			child_id // Return TID to parent
 		}
 
 		_ => {

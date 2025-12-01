@@ -4,8 +4,27 @@ use core::arch::asm;
 
 const SYS_WRITE: usize = 1;
 const SYS_EXIT: usize = 60;
+const SYS_CLONE: usize = 56;
 
 pub const STDOUT: usize = 1;
+
+/*
+ * spawn_thread - Create a new thread
+ * @func: Function to run in the new thread
+ * @stack: Pointer to the top of the stack for the new thread
+ */
+pub fn spawn_thread(func: extern "C" fn(), stack: &mut [u8]) -> usize {
+	let stack_top = unsafe { stack.as_mut_ptr().add(stack.len()) as usize };
+	let func_addr = func as usize;
+
+	unsafe { syscall3(SYS_CLONE, 0, stack_top, func_addr) }
+}
+
+pub fn yield_cpu() {
+	unsafe {
+		syscall1(24, 0);
+	}
+}
 
 /*
  * syscall3 - Generic syscall wrapper for 3 arguments

@@ -12,8 +12,8 @@ use x86_64::structures::paging::{
 use x86_64::VirtAddr;
 
 /* Kernel heap virtual address range */
-const HEAP_START: usize = 0x4444_4444_0000;
-const HEAP_SIZE: usize = 1024 * 1024;		/* 1 MiB heap */
+const HEAP_START: usize = 0xFFFF_A000_0000_0000;
+const HEAP_SIZE: usize = 1024 * 1024; /* 1 MiB heap */
 
 /* Maximum number of boot frames to pre-allocate */
 pub const MAX_BOOT_FRAMES: usize = 65536;
@@ -49,7 +49,7 @@ pub fn init_heap(
 		let frame = frame_allocator
 			.allocate_frame()
 			.expect("No frames available");
-		let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+		let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
 		unsafe {
 			mapper
 				.map_to(page, frame, flags, frame_allocator)

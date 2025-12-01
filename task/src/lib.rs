@@ -17,10 +17,17 @@ pub mod yield_now;
 use crate::async_task::AsyncTask;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
+use x86_64::registers::model_specific::GsBase;
 use x86_64::VirtAddr;
+
+pub static mut STACK_UPDATE_HOOK: Option<fn(VirtAddr)> = None;
+pub unsafe fn register_stack_update_hook(func: fn(VirtAddr)) {
+	STACK_UPDATE_HOOK = Some(func);
+}
 
 pub struct Executor {
 	tasks: VecDeque<AsyncTask>,
@@ -246,6 +253,91 @@ impl TaskCB {
 			SchedClass::Iso => 50, //High priority
 		}
 	}
+	/*
+	 * clone_thread - Create a new thread sharing the same address space
+	 * @entry_point: User Instruction Pointer (RIP) for the new thread
+	 * @user_stack: User Stack Pointer (RSP) for the new thread
+	 *
+	 * Returns a new TaskCB that shares CR3 with self but has a fresh Context.
+	 */
+	pub fn clone_thread(&self, entry_point: u64, user_stack: u64) -> Self {
+		// Allocate separate kernel stack for the thread
+		// Note: In a real OS, manage this lifecycle properly (e.g., Slab Allocator)
+		let kstack = alloc::vec![0u8; 16384];
+		let kstack_bottom = kstack.as_ptr() as u64;
+		let kstack_top = kstack_bottom + 16384;
+
+		// 1. Construct Interrupt Stack Frame (Trap Frame) for IRETQ
+		// We push the User Context onto the NEW Kernel Stack.
+		// Layout (growing down): SS, RSP, RFLAGS, CS, RIP
+		let mut sp = kstack_top;
+		unsafe {
+			// SS (User Data Selector - Ring 3)
+			sp -= 8;
+			*(sp as *mut u64) = 0x23;
+
+			// RSP (User Stack Pointer)
+			sp -= 8;
+			*(sp as *mut u64) = user_stack;
+
+			// RFLAGS (Interrupts Enabled, IOPL=3 maybe? Default 0x202 is safe)
+			sp -= 8;
+			*(sp as *mut u64) = 0x202;
+
+			// CS (User Code Selector - Ring 3)
+			sp -= 8;
+			*(sp as *mut u64) = 0x2b;
+
+			// RIP (User Entry Point)
+			sp -= 8;
+			*(sp as *mut u64) = entry_point;
+		}
+
+		// 2. Setup Kernel Context for the Scheduler
+		// When the scheduler picks this task, it will context_switch INTO this context.
+		// It must start in Kernel Mode (Ring 0) and execute the trampoline to jump to User Mode.
+		let mut context = CPUContext::default();
+		context.rip = enter_user_mode as usize as u64; // Trampoline
+		context.rsp = sp; // Stack Pointer points to the IRETQ frame we just built
+		context.rflags = 0x2;
+
+		// Standard Kernel Segments for Ring 0 execution
+		context.cs = 0x8;
+		context.ss = 0x10;
+		// Load User Data segments into DS/ES/FS/GS so they are ready after IRET
+		context.ds = 0x23;
+		context.es = 0x23;
+		context.fs = 0x23;
+		context.gs = 0x23;
+
+		context.cr3 = self.context.cr3; // Share Address Space
+
+		// 3. Setup GS Base
+		// We must capture the current Kernel GS Base (PerCPU Data) so it is restored
+		// correctly when the scheduler switches to this task.
+		unsafe {
+			context.gs_base = GsBase::read().as_u64();
+		}
+
+		// Prevent deallocation of the stack vector (leak it for now)
+		core::mem::forget(kstack);
+
+		TaskCB {
+			id: TaskId::new(),
+			state: TaskState::Ready,
+			sched_class: self.sched_class,
+			context,
+			// kstack must point to the absolute top for TSS updates
+			kstack: VirtAddr::new(kstack_top),
+			ustack: Some(VirtAddr::new(user_stack)),
+			name: "user_thread",
+		}
+	}
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn enter_user_mode() {
+	naked_asm!("xor rax, rax", "swapgs", "iretq");
 }
 
 //Task creation parameters
@@ -286,8 +378,8 @@ impl TaskBuilder {
 
 //Scheduler - performs actual context switching and task management
 pub struct Scheduler {
-	tasks: Vec<TaskCB>,
-	current: usize,
+	pub tasks: Vec<TaskCB>,
+	pub current: usize,
 }
 
 // Global scheduler instance
@@ -328,6 +420,9 @@ impl Scheduler {
 		scheduler.tasks[next_idx].state = TaskState::Running;
 		scheduler.current = next_idx;
 
+		let next_task = &scheduler.tasks[next_idx];
+		let new_kstack = next_task.kstack;
+
 		hal::serial_println!("Switching from task {} to task {}", current_idx, next_idx);
 
 		// Get raw pointers
@@ -336,6 +431,11 @@ impl Scheduler {
 
 		// Drop the lock before context switch
 		drop(scheduler);
+
+		// UPDATE KERNEL STACK (TSS)
+		if let Some(hook) = STACK_UPDATE_HOOK {
+			hook(new_kstack);
+		}
 
 		// Context switch - will return when task yields
 		context_switch::context_switch(old_ctx, new_ctx);
@@ -392,11 +492,15 @@ pub fn schedule() {
 				}
 
 				scheduler.current = next_idx;
+				let new_kstack = scheduler.tasks[next_idx].kstack;
 
 				// Get raw pointers
 				let old_ctx = &mut scheduler.tasks[current_idx].context as *mut CPUContext;
 				let new_ctx = &scheduler.tasks[next_idx].context as *const CPUContext;
 
+				if let Some(hook) = STACK_UPDATE_HOOK {
+					hook(new_kstack);
+				}
 				(old_ctx, new_ctx)
 			} else {
 				return; // No ready tasks

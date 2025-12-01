@@ -383,6 +383,13 @@ pub extern "C" fn _start() -> ! {
 	if let Ok(msg) = core::str::from_utf8(&read_buf) {
 		serial_println!("VFS Readback: {}", msg);
 	}
+
+	unsafe {
+		task::register_stack_update_hook(|stack_top| {
+			gdt::set_kernel_stack(stack_top);
+			gdt::set_syscall_stack(stack_top);
+		});
+	}
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
 	Scheduler::global().lock().add_task(TaskCB::running_task());
@@ -475,15 +482,21 @@ pub extern "C" fn _start() -> ! {
 	}
 	serial_println!("Switched CR3 to User Table.");
 
-	let current_rsp: u64;
-	unsafe {
-		core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-	}
-	let stack_addr = VirtAddr::new(current_rsp);
+	let kernel_stack_size = 16 * 1024;
+	let mut kernel_stack = alloc::vec![0u8; kernel_stack_size];
+	let stack_top_addr =
+		VirtAddr::from_ptr(unsafe { kernel_stack.as_mut_ptr().add(kernel_stack_size) });
+	core::mem::forget(kernel_stack);
+	// let current_rsp: u64;
+	// unsafe {
+	// 	core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+	// }
+	// let stack_addr = VirtAddr::new(current_rsp);
 
 	// Set BOTH TSS (interrupts) and GS (syscalls)
-	gdt::set_kernel_stack(stack_addr);
-	gdt::set_syscall_stack(stack_addr);
+
+	gdt::set_kernel_stack(stack_top_addr);
+	gdt::set_syscall_stack(stack_top_addr);
 
 	serial_println!("Jumping to Ring 3...");
 	unsafe {
