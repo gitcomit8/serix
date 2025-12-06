@@ -17,7 +17,7 @@ pub const STDOUT: usize = 1;
  */
 
 #[inline(always)]
-unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
+unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize { unsafe {
 	let ret: usize;
 	asm!(
 	"syscall",
@@ -31,10 +31,10 @@ unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
 	out("r11") _,
 	);
 	ret
-}
+}}
 
 #[inline(always)]
-unsafe fn syscall1(nr: usize, arg1: usize) -> usize {
+unsafe fn syscall1(nr: usize, arg1: usize) -> usize { unsafe {
 	let ret: usize;
 	asm!(
 	"syscall",
@@ -45,7 +45,7 @@ unsafe fn syscall1(nr: usize, arg1: usize) -> usize {
 	out("r11") _,
 	);
 	ret
-}
+}}
 
 // --- The "libc" Stubs ---
 pub fn write(fd: usize, buf: &[u8]) -> isize {
