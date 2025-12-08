@@ -242,6 +242,32 @@ unsafe fn map_mmio(
 	}
 }
 
+unsafe fn map_mmio_range(
+	mapper: &mut impl Mapper<Size4KiB>,
+	allocator: &mut impl FrameAllocator<Size4KiB>,
+	phys_start: u64,
+	virt_start: VirtAddr,
+	size: u64,
+) {
+	use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame};
+
+	let start_frame = PhysFrame::containing_address(PhysAddr::new(phys_start));
+	let end_frame = PhysFrame::containing_address(PhysAddr::new(phys_start + size - 1));
+
+	// Iterate over all frames in the range
+	for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
+		let offset = frame.start_address().as_u64() - phys_start;
+		let page = Page::containing_address(virt_start + offset);
+
+		let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
+
+		// Ignore error if already mapped (e.g., if we mapped a page boundary previously)
+		if let Ok(map_to) = mapper.map_to(page, frame, flags, allocator) {
+			map_to.flush();
+		}
+	}
+}
+
 /*
  * _start - Kernel entry point
  *
@@ -364,14 +390,21 @@ pub extern "C" fn _start() -> ! {
 	let devices = pci::enumerate_pci();
 	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
 
+	let mut mmio_mapper = |phys: u64, size: u64| -> *mut u8 {
+		let virt = phys_mem_offset + phys;
+
+		// Actually map the physical frames to the virtual HHDM address
+		unsafe {
+			map_mmio_range(&mut mapper, &mut frame_alloc, phys, virt, size);
+		}
+
+		virt.as_mut_ptr()
+	};
+
 	for dev in devices {
-		//Check for VirtIO Block Device
-		if VirtioBlock::init(dev).is_some() {
-			serial_println!(
-				"> Driver Loaded: VirtIO Block Device (Bus {}, Slot {})",
-				dev.bus,
-				dev.device
-			);
+		// Initialize VirtIO Block Device with the mapper
+		if let Some(_blk) = unsafe { VirtioBlock::init(dev, &mut mmio_mapper) } {
+			serial_println!("VirtIO Block Device Initialized!");
 		}
 	}
 
