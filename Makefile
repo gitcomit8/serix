@@ -49,7 +49,9 @@ iso: init $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/b
 	./limine/limine bios-install $(ISO)
 
 run: iso
-	qemu-system-x86_64 -cdrom $(ISO) -m 4G -serial stdio
+	qemu-system-x86_64 -cdrom $(ISO) -m 4G -serial stdio \
+		-drive file=disk.img,if=none,format=raw,id=x0 \
+		-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off
 
 clean:
 	rm -rf $(ISO_ROOT) $(ISO)
