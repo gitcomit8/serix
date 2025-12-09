@@ -14,6 +14,8 @@ use x86_64::VirtAddr;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
+pub const SYS_SEND: u64 = 20;
+pub const SYS_RECV: u64 = 21;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
@@ -175,7 +177,7 @@ extern "C" fn syscall_dispatcher(
 	arg1: u64,
 	arg2: u64,
 	arg3: u64,
-	_arg4: u64,
+	arg4: u64,
 	_arg5: u64,
 ) -> u64 {
 	match nr {
@@ -224,7 +226,84 @@ extern "C" fn syscall_dispatcher(
 			task::preempt_executor();
 			0 /* Success */
 		}
+		SYS_SEND => {
+			/* * Send IPC Message
+			 * arg1: Target Port ID
+			 * arg2: Message ID/Type
+			 * arg3: Pointer to data buffer (userspace)
+			 * arg4: Data length
+			 */
+			let port_id = arg1;
+			let msg_type = arg2;
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
 
+			if len > ipc::MAX_MSG_SIZE {
+				return ERRNO_EINVAL;
+			}
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+
+			// Copy data from user
+			let mut data = [0u8; ipc::MAX_MSG_SIZE];
+			unsafe {
+				core::ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
+			}
+
+			let msg = ipc::Message {
+				sender_id: 0, // TODO: Get current task ID
+				id: msg_type,
+				len: len as u64,
+				data,
+			};
+
+			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
+				if port.send(msg) {
+					0
+				} else {
+					// Queue full (EAGAIN)
+					u64::MAX - 11
+				}
+			} else {
+				// Port not found (ENOENT)
+				u64::MAX - 2
+			}
+		}
+
+		SYS_RECV => {
+			/*
+			 * Receive IPC Message
+			 * arg1: Local Port ID
+			 * arg2: Pointer to buffer to write data
+			 * Returns: Message Type (id) in RAX, Length in RDX (needs custom return handling)
+			 * For simplicity now: Returns 0 on success, fills buffer.
+			 */
+			let port_id = arg1;
+			let out_ptr = arg2 as *mut u8;
+
+			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
+				if let Some(msg) = port.receive() {
+					// Validate output buffer
+					let len = msg.len as usize;
+					if !is_user_accessible(out_ptr, len) {
+						return ERRNO_EFAULT;
+					}
+
+					unsafe {
+						core::ptr::copy_nonoverlapping(msg.data.as_ptr(), out_ptr, len);
+					}
+					// Return Message ID (User needs to know what they got)
+					msg.id
+				} else {
+					// No message (EAGAIN)
+					u64::MAX - 11
+				}
+			} else {
+				ERRNO_EINVAL
+			}
+		}
 		_ => {
 			/* Unknown system call */
 			hal::serial_println!("[SYSCALL] Unknown syscall: {}", nr);

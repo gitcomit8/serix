@@ -449,6 +449,31 @@ pub extern "C" fn _start() -> ! {
 		/* Initialize timer hardware */
 		apic::timer::init_hardware();
 	}
+
+	// IPC Initialization
+	serial_println!("Testing IPC initialization");
+	let test_port_id = 100;
+	let port = ipc::IPC_GLOBAL.create_port(test_port_id);
+
+	//Create test msg
+	let msg = ipc::Message {
+		sender_id: 1,
+		id: 0xBEEF,
+		len: 11,
+		data: {
+			let mut d = [0u8; ipc::MAX_MSG_SIZE]; // [u8; 128]
+			let payload = b"Hello World!";
+			d[0..payload.len()].copy_from_slice(payload);
+			d
+		},
+	};
+
+	port.send(msg);
+	serial_println!("IPC: Sent test message to port {}", test_port_id);
+	if let Some(recv_msg) = port.receive() {
+		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
+	}
+
 	// --- PHASE 4: Loading & Execution ---
 	serial_println!("--- Phase 4: User Mode Transition ---");
 
