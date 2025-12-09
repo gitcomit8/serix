@@ -452,20 +452,34 @@ pub extern "C" fn _start() -> ! {
 	// --- PHASE 4: Loading & Execution ---
 	serial_println!("--- Phase 4: User Mode Transition ---");
 
-	// 1. Create a valid ELF executable (Hardcoded for testing)
-	// This allows us to test the loader without a disk driver or compiler.
-	//
-	// Assembly:
-	//   mov rax, 0xDEADBEEF  ; Just a marker
-	//   jmp $                ; Infinite loop (don't return)
-	//
-	// This byte array is a valid ELF64-x86-64 binary containing that code.
-	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
+	//1. Init VFS Root
+	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
 
-	// 2. Write to VFS
-	let init_file = vfs::RamFile::new("init");
+	//2. Create /dev directory
+	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
+	root.insert("dev", dev_dir.clone())
+		.expect("Failed to create /dev");
+
+	//3. Mount /dev/console
+	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
+	dev_dir
+		.insert("console", console)
+		.expect("Failed to mount console");
+
+	//4. Crate /init (shellcode)
+	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
+	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
 	init_file.write(0, shellcode_elf);
-	serial_println!("Created /init (Size: {} bytes)", init_file.size());
+	root.insert("init", init_file.clone())
+		.expect("Failed to create /init");
+
+	//Test the VFS by writing to /dev/console via lookup
+	if let Some(node) = root.lookup("dev").and_then(|d| d.lookup("console")) {
+		node.write(0, b"Hello from /dev/console!\n");
+	}
+
+	//Continue with loader::load_elf using init_file
+	serial_println!("Crated /init (Size: {} bytes)", init_file.size());
 
 	// 3. Read back from VFS (simulating loading from disk)
 	let mut file_buffer = alloc::vec::Vec::new();
