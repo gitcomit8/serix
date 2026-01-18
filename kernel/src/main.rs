@@ -16,7 +16,6 @@ use capability::CapabilityStore;
 use core::panic::PanicInfo;
 use drivers::pci;
 use drivers::virtio::VirtioBlock;
-use graphics::console::init_console;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
 use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
@@ -378,13 +377,28 @@ pub extern "C" fn _start() -> ! {
 	}
 
 	/* Initialize framebuffer console for kernel output */
-	let fb = fb_response.framebuffers().next().expect("No framebuffer");
-	init_console(
-		fb.addr(),
-		fb.width() as usize,
-		fb.height() as usize,
-		fb.pitch() as usize,
-	);
+	// let fb = fb_response.framebuffers().next().expect("No framebuffer");
+	// init_console(
+	// 	fb.addr(),
+	// 	fb.width() as usize,
+	// 	fb.height() as usize,
+	// 	fb.pitch() as usize,
+	// );
+
+	// Initialize frambuffer TTY
+	if let Some(fb_response) = FRAMEBUFFER_REQ.get_response() {
+		if let Some(fb) = fb_response.framebuffers().next() {
+			unsafe {
+				graphics::init_console(
+					fb.addr(),
+					fb.width() as usize,
+					fb.height() as usize,
+					fb.pitch() as usize,
+				);
+			}
+		}
+	}
+	graphics::kprintln!("Hello from the Serix TTY");
 
 	serial_println!("--- Phase 3 System Check ---");
 	let devices = pci::enumerate_pci();

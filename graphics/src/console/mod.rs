@@ -16,11 +16,138 @@ use spin::{Mutex, MutexGuard};
  * 8x16 bitmap font for ASCII characters 32-127
  * Each character is 16 bytes (16 rows of 8 pixels each)
  */
-const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
+static FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
+const FONT_WIDTH: usize = 8;
+const FONT_HEIGHT: usize = 16;
 
 /* Global console instance */
 #[cfg(feature = "global-console")]
 static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
+
+/*
+ * struct Tty - The terminal state
+ * Owns framebuffer access and terminal cursor state
+ */
+pub struct Tty {
+	fb_base: *mut u8,
+	fb_width: usize,
+	fb_height: usize,
+	fb_pitch: usize,
+
+	// Terminal dimensions
+	cols: usize,
+	rows: usize,
+
+	// Cursor position
+	x: usize,
+	y: usize,
+
+	// Colors (0x00RRGGBB)
+	color_fg: u32,
+	color_bg: u32,
+}
+
+unsafe impl Send for Tty {}
+unsafe impl Sync for Tty {}
+
+pub static KERNEL_TTY: Mutex<Option<Tty>> = Mutex::new(None);
+
+impl Tty {
+	pub fn clear(&mut self) {
+		let total_bytes = self.fb_pitch * self.fb_height;
+		unsafe {
+			core::ptr::write_bytes(self.fb_base, 0, total_bytes);
+		}
+		self.x = 0;
+		self.y = 0;
+	}
+
+	fn scroll(&mut self) {
+		let line_size = self.fb_pitch * FONT_HEIGHT;
+		let total_size = line_size * self.rows;
+
+		unsafe {
+			// Memmove: Copy lines 1..N upto 0..N-1
+			core::ptr::copy(
+				self.fb_base.add(line_size),
+				self.fb_base,
+				total_size - line_size,
+			);
+			// Zero out the new last line
+			core::ptr::write_bytes(self.fb_base.add(total_size - line_size), 0, line_size);
+		}
+	}
+
+	fn new_line(&mut self) {
+		self.x = 0;
+		self.y = 0;
+		if self.y >= self.rows {
+			self.scroll();
+			self.y = self.rows - 1;
+		}
+	}
+
+	pub fn write_char(&mut self, c: char) {
+		match c {
+			'\n' => self.new_line(),
+			'\x08' => {
+				if self.x > 0 {
+					self.draw_char(self.x, self.y, ' ');
+				}
+			}
+			_ => {
+				if self.x >= self.cols {
+					self.new_line();
+				}
+				self.draw_char(self.x, self.y, c);
+				self.x += 1;
+			}
+		}
+	}
+
+	fn draw_char(&mut self, cx: usize, cy: usize, c: char) {
+		let glyph_index = match c {
+			' '..='~' => c as usize,
+			_ => 0xFE,
+		};
+
+		let screen_x = cx * FONT_WIDTH;
+		let screen_y = cy * FONT_HEIGHT;
+		let glyph = &FONT_8X16[glyph_index * 16..(glyph_index + 1) * 16];
+
+		for row in 0..FONT_HEIGHT {
+			let bits = glyph[row];
+			for col in 0..FONT_WIDTH {
+				if (bits & (1 << (7 - col))) != 0 {
+					let offset = (screen_y + row) * self.fb_pitch + (screen_x + col) * 4;
+					unsafe {
+						(self.fb_base.add(offset) as *mut u32).write_volatile(self.color_fg);
+					}
+				}
+			}
+		}
+	}
+}
+
+impl fmt::Write for Tty {
+	fn write_str(&mut self, s: &str) -> fmt::Result {
+		for c in s.chars() {
+			self.write_char(c);
+		}
+		Ok(())
+	}
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+	use x86_64::instructions::interrupts;
+
+	interrupts::without_interrupts(|| {
+		if let Some(tty) = KERNEL_TTY.lock().as_mut() {
+			let _ = fmt::Write::write_fmt(&mut *tty, args);
+		}
+	})
+}
 
 /*
  * struct FramebufferConsole - Text console using framebuffer
@@ -140,7 +267,11 @@ impl FramebufferConsole {
 			for (row, &bits) in glyph.iter().enumerate() {
 				for bit in 0..8 {
 					let pixel_on = (bits & (1 << (7 - bit))) != 0;
-					let pixel = if pixel_on { [0xFF, 0xFF, 0xFF, 0x00] } else { [0x00, 0x00, 0x00, 0x00] };
+					let pixel = if pixel_on {
+						[0xFF, 0xFF, 0xFF, 0x00]
+					} else {
+						[0x00, 0x00, 0x00, 0x00]
+					};
 					let offset = (y_pixel + row) * pitch + (x_pixel + bit) * 4;
 					for p in 0..4 {
 						write_volatile(fb.add(offset + p), pixel[p]);
@@ -164,11 +295,11 @@ impl Write for FramebufferConsole {
 	}
 }
 
-#[cfg(feature = "global-console")]
-pub fn init_console(framebuffer: *mut u8, width: usize, height: usize, pitch: usize) {
-	let mut con = GLOBAL_CONSOLE.lock();
-	*con = Some(unsafe { FramebufferConsole::new(framebuffer, width, height, pitch) });
-}
+// #[cfg(feature = "global-console")]
+// pub fn init_console(framebuffer: *mut u8, width: usize, height: usize, pitch: usize) {
+// 	let mut con = GLOBAL_CONSOLE.lock();
+// 	*con = Some(unsafe { FramebufferConsole::new(framebuffer, width, height, pitch) });
+// }
 
 #[cfg(feature = "global-console")]
 pub fn console() -> impl Write + 'static {
@@ -189,6 +320,26 @@ pub fn console() -> impl Write + 'static {
 	ConsoleGuard {
 		guard: GLOBAL_CONSOLE.lock(),
 	}
+}
+
+pub unsafe fn init_console(base: *mut u8, width: usize, height: usize, pitch: usize) {
+	let cols = width / FONT_WIDTH;
+	let rows = height / FONT_HEIGHT;
+
+	let mut tty = Tty {
+		fb_base: base,
+		fb_width: width,
+		fb_pitch: pitch,
+		fb_height: height,
+		cols,
+		rows,
+		x: 0,
+		y: 0,
+		color_fg: 0x00AAAAAA,
+		color_bg: 0x00000000,
+	};
+	tty.clear();
+	*KERNEL_TTY.lock() = Some(tty);
 }
 
 #[macro_export]
