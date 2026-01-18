@@ -7,6 +7,18 @@
 #![no_std]
 
 pub mod console;
+pub use console::init_console;
+
+#[macro_export]
+macro_rules! kprint {
+    ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! kprintln {
+    () => ($crate::kprint!("\n"));
+    ($($arg:tt)*) => ($crate::kprint!("{}\n", format_args!($($arg)*)));
+}
 
 use limine::framebuffer::Framebuffer;
 use limine::memory_map::Entry;

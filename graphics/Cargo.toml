@@ -10,3 +10,4 @@ global-console = ["spin"]
 [dependencies]
 limine = "0.5.0"
 spin = { version = "0.10.0", optional = true }
+x86_64 = "0.15.4"
