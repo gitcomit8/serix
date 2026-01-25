@@ -6,11 +6,12 @@
  */
 
 use core::arch::naked_asm;
+use hal::serial_println;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
 use x86_64::VirtAddr;
-
 /* System call numbers */
+pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
@@ -95,22 +96,38 @@ fn is_user_accessible(ptr: *const u8, len: usize) -> bool {
  * Naked assembly function that handles the transition from user to kernel mode.
  * Saves user context, switches to kernel stack, and calls the dispatcher.
  */
+/*
+ * syscall_entry - Low-level syscall entry point
+ *
+ * Naked assembly function that handles the transition from user to kernel mode.
+ * Saves ALL user context, switches to kernel stack, calls dispatcher,
+ * and restores context exactly as it was (except RAX).
+ */
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
 	naked_asm!(
-		/* Swap to kernel GS and save/load stacks */
+		/* 1. Swap to kernel GS and save user stack */
 		"swapgs",
 		"mov gs:[16], rsp",      /* Save user stack pointer */
 		"mov rsp, gs:[8]",       /* Load kernel stack pointer */
 
-		/* Align stack to 16 bytes as required by System V ABI */
+		/* 2. Align stack to 16 bytes */
 		"and rsp, ~0xF",
 
-		/* Save user RFLAGS and RIP (saved by SYSCALL instruction) */
-		"push r11",              /* User RFLAGS */
-		"push rcx",              /* User RIP */
+		/* 3. Save User Context (The "Trap Frame") */
+		/* We must save registers that we clobber or that the ABI expects preserved */
+		"push r11",              /* User RFLAGS (clobbered by syscall) */
+		"push rcx",              /* User RIP (clobbered by syscall) */
 
-		/* Save callee-saved registers */
+		/* Save arguments & callee-saved registers */
+		"push r9",
+		"push r8",
+		"push r10",
+		"push rdx",
+		"push rsi",
+		"push rdi",
+		"push rax",              /* Save original RAX (syscall nr) just in case */
+
 		"push rbp",
 		"push rbx",
 		"push r12",
@@ -118,28 +135,30 @@ unsafe extern "C" fn syscall_entry() {
 		"push r14",
 		"push r15",
 
+		/* 4. Prepare Arguments for syscall_dispatcher (System V ABI) */
 		/*
-		 * ABI Mapping from Linux syscall ABI to System V ABI:
-		 * RAX (syscall nr) -> RDI (arg0)
-		 * RDI (arg1) -> RSI (arg1)
-		 * RSI (arg2) -> RDX (arg2)
-		 * R10 (arg3) -> RCX (arg3)
-		 * R8  (arg4) -> R8  (arg4)
-		 * R9  (arg5) -> R9  (arg5)
+		 * Kernel Function: fn(nr, arg1, arg2, arg3, arg4, arg5)
+		 * Mapping:
+		 * RDI <- RAX (nr)
+		 * RSI <- RDI (arg1)
+		 * RDX <- RSI (arg2)
+		 * RCX <- RDX (arg3)
+		 * R8  <- R10 (arg4 - syscall puts it here)
+		 * R9  <- R8  (arg5)
 		 */
 		"mov r9, r8",            /* arg5 */
-		"mov r8, r10",           /* arg4 (was saved in R10 by userspace) */
+		"mov r8, r10",           /* arg4 */
 		"mov rcx, rdx",          /* arg3 */
 		"mov rdx, rsi",          /* arg2 */
 		"mov rsi, rdi",          /* arg1 */
 		"mov rdi, rax",          /* syscall number */
 
-		/* Call the syscall dispatcher - return value comes back in RAX */
+		/* 5. Call Dispatcher */
 		"call {syscall_handler}",
 
-		/* RAX now contains the return value - preserve it */
+		/* RAX now holds the return value. We must NOT overwrite it when restoring. */
 
-		/* Restore callee-saved registers */
+		/* 6. Restore Context */
 		"pop r15",
 		"pop r14",
 		"pop r13",
@@ -147,13 +166,22 @@ unsafe extern "C" fn syscall_entry() {
 		"pop rbx",
 		"pop rbp",
 
-		/* Restore user RIP and RFLAGS for SYSRET */
+		/* Skip RAX on stack (we want to keep the new return value in real RAX) */
+		"add rsp, 8",
+
+		"pop rdi",
+		"pop rsi",
+		"pop rdx",
+		"pop r10",
+		"pop r8",
+		"pop r9",
+
 		"pop rcx",               /* User RIP */
 		"pop r11",               /* User RFLAGS */
 
-		/* Restore user stack and GS, then return to userspace */
-		"mov rsp, gs:[16]",
-		"swapgs",
+		/* 7. Return to Userspace */
+		"mov rsp, gs:[16]",      /* Restore User Stack */
+		"swapgs",                /* Restore User GS */
 		"sysretq",
 		syscall_handler = sym syscall_dispatcher,
 	);
@@ -181,6 +209,42 @@ extern "C" fn syscall_dispatcher(
 	_arg5: u64,
 ) -> u64 {
 	match nr {
+		SYS_READ => {
+			/* Read system call: fd, buffer pointer, length
+			 * Only supports STDIN (fd 0)
+			 */
+			if arg1 != 0 {
+				return ERRNO_EBADF;
+			}
+			let ptr = arg2 as *mut u8;
+			let len = arg3 as usize;
+
+			if len == 0 {
+				return 0;
+			}
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+
+			// Blocking READ
+			// Loop until we get at least one character
+			loop {
+				// DISABLE INTERRUPTS to prevent deadlock with keyboard isr
+				let key =
+					x86_64::instructions::interrupts::without_interrupts(|| keyboard::pop_key());
+				if let Some(k) = key {
+					// Write byte to user buffer
+					unsafe { *ptr = k };
+					// Return 1
+					// TODO: try to fill up len
+					return 1;
+				} else {
+					// No data, yield CPU to other tasks
+					// and try again next time when scheduled
+					task::preempt_executor();
+				}
+			}
+		}
 		SYS_WRITE => {
 			/* Write system call: fd, buffer pointer, length */
 			if arg1 != 1 {

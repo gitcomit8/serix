@@ -23,7 +23,7 @@ use limine::BaseRevision;
 use loader::LoadableSegment;
 use memory::heap::{init_heap, StaticBootFrameAllocator};
 use spin::{Mutex, Once};
-use task::{init_executor, poll_executor, spawn_task};
+use task::{init_executor, poll_executor};
 use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
 use vfs::{INode, RamFile};
@@ -199,26 +199,35 @@ unsafe fn allocate_user_stack(
  * Performs the delicate IRETQ dance to switch privilege levels.
  * DOES NOT RETURN.
  */
-unsafe fn enter_user_mode(entry_point: VirtAddr, stack_pointer: VirtAddr) -> ! {
-	let selectors = gdt::descriptors();
+unsafe fn enter_user_mode(
+	entry_point: VirtAddr,
+	stack_pointer: VirtAddr,
+	user_pml4: x86_64::structures::paging::PhysFrame,
+) -> ! {
+	use x86_64::registers::rflags::RFlags;
 
-	// 1. Enable Interrupts in User Mode (RFLAGS.IF = 1)
+	let selectors = gdt::descriptors();
 	let rflags = RFlags::INTERRUPT_FLAG.bits();
 
-	// 2. Prepare the stack frame for IRETQ
-	// Stack Layout: [SS, RSP, RFLAGS, CS, RIP]
+	// Cast to u64 to ensure proper stack push size
+	let user_ss = selectors.user_data.0 as u64;
+	let user_cs = selectors.user_code.0 as u64;
+
 	core::arch::asm!(
-	"push {user_ds}",   // SS (User Data Segment)
-	"push {rsp}",       // RSP (User Stack Pointer)
-	"push {rflags}",    // RFLAGS
-	"push {user_cs}",   // CS (User Code Segment)
-	"push {rip}",       // RIP (Entry Point)
-	"iretq",            // Interrupt Return (Jump to Ring 3)
-	user_ds = in(reg) selectors.user_data.0,
-	rsp = in(reg) stack_pointer.as_u64(),
-	rflags = in(reg) rflags,
-	user_cs = in(reg) selectors.user_code.0,
-	rip = in(reg) entry_point.as_u64(),
+	"mov cr3, {cr3}",   // 1. Switch Page Table
+	"push {user_ss}",   // 2. Push Stack Segment
+	"push {rsp}",       // 3. Push Stack Pointer
+	"push {rflags}",    // 4. Push RFLAGS
+	"push {user_cs}",   // 5. Push Code Segment
+	"push {rip}",       // 6. Push Instruction Pointer
+	"iretq",            // 7. Jump!
+
+	cr3     = in(reg) user_pml4.start_address().as_u64(),
+	user_ss = in(reg) user_ss,
+	rsp     = in(reg) stack_pointer.as_u64(),
+	rflags  = in(reg) rflags,
+	user_cs = in(reg) user_cs,
+	rip     = in(reg) entry_point.as_u64(),
 	options(noreturn)
 	)
 }
@@ -277,13 +286,13 @@ unsafe fn map_mmio_range(
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
 	serial_println!("Serix Kernel Starting.....");
-	serial_println!("Serial console initialized");
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
 
 	unsafe {
 		gdt::init_per_cpu();
+		hal::cpu::enable_sse();
 		/* Enable APIC and disable legacy PIC */
 		apic::enable();
 		/* Route IRQs through IOAPIC */
@@ -376,15 +385,6 @@ pub extern "C" fn _start() -> ! {
 		draw_memory_map(&fb, mmap_response.entries());
 	}
 
-	/* Initialize framebuffer console for kernel output */
-	// let fb = fb_response.framebuffers().next().expect("No framebuffer");
-	// init_console(
-	// 	fb.addr(),
-	// 	fb.width() as usize,
-	// 	fb.height() as usize,
-	// 	fb.pitch() as usize,
-	// );
-
 	// Initialize frambuffer TTY
 	if let Some(fb_response) = FRAMEBUFFER_REQ.get_response() {
 		if let Some(fb) = fb_response.framebuffers().next() {
@@ -439,26 +439,6 @@ pub extern "C" fn _start() -> ! {
 	fb_println!("Welcome to Serix OS!");
 	fb_println!("Memory map entries: {}", mmap_response.entries().len());
 
-	/* Spawn test async tasks to demonstrate cooperative multitasking */
-	spawn_task(async {
-		for i in 0..5 {
-			serial_println!("Async task 1 iteration {}", i);
-			for _ in 0..10_000_000 {
-				core::hint::spin_loop();
-			}
-			task::yield_now::yield_now().await;
-		}
-	});
-	spawn_task(async {
-		for i in 0..5 {
-			serial_println!("Async task 2 iteration {}", i);
-			for _ in 0..10_000_000 {
-				core::hint::spin_loop();
-			}
-			task::yield_now::yield_now().await;
-		}
-	});
-
 	unsafe {
 		/* Initialize timer hardware */
 		apic::timer::init_hardware();
@@ -491,21 +471,21 @@ pub extern "C" fn _start() -> ! {
 	// --- PHASE 4: Loading & Execution ---
 	serial_println!("--- Phase 4: User Mode Transition ---");
 
-	//1. Init VFS Root
+	// Init VFS Root
 	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
 
-	//2. Create /dev directory
+	// Create /dev directory
 	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
 	root.insert("dev", dev_dir.clone())
 		.expect("Failed to create /dev");
 
-	//3. Mount /dev/console
+	// Mount /dev/console
 	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
 	dev_dir
 		.insert("console", console)
 		.expect("Failed to mount console");
 
-	//4. Crate /init (shellcode)
+	// Crate /init (shellcode)
 	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
 	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
 	init_file.write(0, shellcode_elf);
@@ -520,23 +500,23 @@ pub extern "C" fn _start() -> ! {
 	//Continue with loader::load_elf using init_file
 	serial_println!("Crated /init (Size: {} bytes)", init_file.size());
 
-	// 3. Read back from VFS (simulating loading from disk)
+	//  Read back from VFS (simulating loading from disk)
 	let mut file_buffer = alloc::vec::Vec::new();
 	file_buffer.resize(init_file.size(), 0);
 	init_file.read(0, &mut file_buffer);
 
-	// 4. Parse ELF
+	//  Parse ELF
 	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
 	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
 
-	// 5. Create User Address Space
+	// Create User Address Space
 	let new_pml4_frame =
 		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
 			.expect("Failed to create user page table");
 
 	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
 
-	// 6. Map Segments
+	// Map Segments
 	for segment in image.segments {
 		unsafe {
 			map_segment(
@@ -573,7 +553,7 @@ pub extern "C" fn _start() -> ! {
 
 	serial_println!("Jumping to Ring 3...");
 	unsafe {
-		enter_user_mode(image.entry_point, user_stack);
+		enter_user_mode(image.entry_point, user_stack, new_pml4_frame);
 	}
 
 	/* Main kernel loop: poll executor and halt CPU until next interrupt */
