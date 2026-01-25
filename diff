@@ -1,0 +1,696 @@
+diff --git a/hal/src/cpu.rs b/hal/src/cpu.rs
+index d4de32c..75eff3b 100644
+--- a/hal/src/cpu.rs
++++ b/hal/src/cpu.rs
+@@ -35,3 +35,24 @@ pub fn enable_interrupts() {
+ pub fn disable_interrupts() {
+ 	interrupts::disable();
+ }
++
++/*
++ * enable_sse - Enable SSE/FPU features in CPU
++ *
++ * Sets CR0.MP (Monitor Coprocessor), clears CR0.EM (Emulation),
++ * and sets CR4.OSFXSR + CR4.OSXMMEXCPT_ENABLE.
++ */
++pub fn enable_sse() {
++	unsafe {
++		use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
++
++		let mut cr0 = Cr0::read();
++		cr0.remove(Cr0Flags::EMULATE_COPROCESSOR);
++		cr0.insert(Cr0Flags::MONITOR_COPROCESSOR);
++		Cr0::write(cr0);
++
++		let mut cr4 = Cr4::read();
++		cr4.insert(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
++		Cr4::write(cr4);
++	}
++}
+diff --git a/kernel/Cargo.toml b/kernel/Cargo.toml
+index b2a9150..d819636 100644
+--- a/kernel/Cargo.toml
++++ b/kernel/Cargo.toml
+@@ -18,4 +18,5 @@ spin = "0.10.0"
+ drivers = { path = "../drivers" }
+ vfs = { path = "../vfs" }
+ ipc = { path = "../ipc" }
+-loader = { path = "../loader" }
+\ No newline at end of file
++loader = { path = "../loader" }
++keyboard = { path = "../keyboard" }
+\ No newline at end of file
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index 53f568e..8dac0a9 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -23,7 +23,7 @@ use limine::BaseRevision;
+ use loader::LoadableSegment;
+ use memory::heap::{init_heap, StaticBootFrameAllocator};
+ use spin::{Mutex, Once};
+-use task::{init_executor, poll_executor, spawn_task};
++use task::{init_executor, poll_executor};
+ use task::{Scheduler, TaskCB};
+ use util::panic::halt_loop;
+ use vfs::{INode, RamFile};
+@@ -199,26 +199,35 @@ unsafe fn allocate_user_stack(
+  * Performs the delicate IRETQ dance to switch privilege levels.
+  * DOES NOT RETURN.
+  */
+-unsafe fn enter_user_mode(entry_point: VirtAddr, stack_pointer: VirtAddr) -> ! {
+-	let selectors = gdt::descriptors();
++unsafe fn enter_user_mode(
++	entry_point: VirtAddr,
++	stack_pointer: VirtAddr,
++	user_pml4: x86_64::structures::paging::PhysFrame,
++) -> ! {
++	use x86_64::registers::rflags::RFlags;
+ 
+-	// 1. Enable Interrupts in User Mode (RFLAGS.IF = 1)
++	let selectors = gdt::descriptors();
+ 	let rflags = RFlags::INTERRUPT_FLAG.bits();
+ 
+-	// 2. Prepare the stack frame for IRETQ
+-	// Stack Layout: [SS, RSP, RFLAGS, CS, RIP]
++	// Cast to u64 to ensure proper stack push size
++	let user_ss = selectors.user_data.0 as u64;
++	let user_cs = selectors.user_code.0 as u64;
++
+ 	core::arch::asm!(
+-	"push {user_ds}",   // SS (User Data Segment)
+-	"push {rsp}",       // RSP (User Stack Pointer)
+-	"push {rflags}",    // RFLAGS
+-	"push {user_cs}",   // CS (User Code Segment)
+-	"push {rip}",       // RIP (Entry Point)
+-	"iretq",            // Interrupt Return (Jump to Ring 3)
+-	user_ds = in(reg) selectors.user_data.0,
+-	rsp = in(reg) stack_pointer.as_u64(),
+-	rflags = in(reg) rflags,
+-	user_cs = in(reg) selectors.user_code.0,
+-	rip = in(reg) entry_point.as_u64(),
++	"mov cr3, {cr3}",   // 1. Switch Page Table
++	"push {user_ss}",   // 2. Push Stack Segment
++	"push {rsp}",       // 3. Push Stack Pointer
++	"push {rflags}",    // 4. Push RFLAGS
++	"push {user_cs}",   // 5. Push Code Segment
++	"push {rip}",       // 6. Push Instruction Pointer
++	"iretq",            // 7. Jump!
++
++	cr3     = in(reg) user_pml4.start_address().as_u64(),
++	user_ss = in(reg) user_ss,
++	rsp     = in(reg) stack_pointer.as_u64(),
++	rflags  = in(reg) rflags,
++	user_cs = in(reg) user_cs,
++	rip     = in(reg) entry_point.as_u64(),
+ 	options(noreturn)
+ 	)
+ }
+@@ -277,13 +286,13 @@ unsafe fn map_mmio_range(
+ pub extern "C" fn _start() -> ! {
+ 	hal::init_serial();
+ 	serial_println!("Serix Kernel Starting.....");
+-	serial_println!("Serial console initialized");
+ 
+ 	/* Initialize Global Descriptor Table */
+ 	gdt::init();
+ 
+ 	unsafe {
+ 		gdt::init_per_cpu();
++		hal::cpu::enable_sse();
+ 		/* Enable APIC and disable legacy PIC */
+ 		apic::enable();
+ 		/* Route IRQs through IOAPIC */
+@@ -376,15 +385,6 @@ pub extern "C" fn _start() -> ! {
+ 		draw_memory_map(&fb, mmap_response.entries());
+ 	}
+ 
+-	/* Initialize framebuffer console for kernel output */
+-	// let fb = fb_response.framebuffers().next().expect("No framebuffer");
+-	// init_console(
+-	// 	fb.addr(),
+-	// 	fb.width() as usize,
+-	// 	fb.height() as usize,
+-	// 	fb.pitch() as usize,
+-	// );
+-
+ 	// Initialize frambuffer TTY
+ 	if let Some(fb_response) = FRAMEBUFFER_REQ.get_response() {
+ 		if let Some(fb) = fb_response.framebuffers().next() {
+@@ -439,26 +439,6 @@ pub extern "C" fn _start() -> ! {
+ 	fb_println!("Welcome to Serix OS!");
+ 	fb_println!("Memory map entries: {}", mmap_response.entries().len());
+ 
+-	/* Spawn test async tasks to demonstrate cooperative multitasking */
+-	spawn_task(async {
+-		for i in 0..5 {
+-			serial_println!("Async task 1 iteration {}", i);
+-			for _ in 0..10_000_000 {
+-				core::hint::spin_loop();
+-			}
+-			task::yield_now::yield_now().await;
+-		}
+-	});
+-	spawn_task(async {
+-		for i in 0..5 {
+-			serial_println!("Async task 2 iteration {}", i);
+-			for _ in 0..10_000_000 {
+-				core::hint::spin_loop();
+-			}
+-			task::yield_now::yield_now().await;
+-		}
+-	});
+-
+ 	unsafe {
+ 		/* Initialize timer hardware */
+ 		apic::timer::init_hardware();
+@@ -491,21 +471,21 @@ pub extern "C" fn _start() -> ! {
+ 	// --- PHASE 4: Loading & Execution ---
+ 	serial_println!("--- Phase 4: User Mode Transition ---");
+ 
+-	//1. Init VFS Root
++	// Init VFS Root
+ 	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
+ 
+-	//2. Create /dev directory
++	// Create /dev directory
+ 	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
+ 	root.insert("dev", dev_dir.clone())
+ 		.expect("Failed to create /dev");
+ 
+-	//3. Mount /dev/console
++	// Mount /dev/console
+ 	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
+ 	dev_dir
+ 		.insert("console", console)
+ 		.expect("Failed to mount console");
+ 
+-	//4. Crate /init (shellcode)
++	// Crate /init (shellcode)
+ 	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
+ 	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
+ 	init_file.write(0, shellcode_elf);
+@@ -520,23 +500,23 @@ pub extern "C" fn _start() -> ! {
+ 	//Continue with loader::load_elf using init_file
+ 	serial_println!("Crated /init (Size: {} bytes)", init_file.size());
+ 
+-	// 3. Read back from VFS (simulating loading from disk)
++	//  Read back from VFS (simulating loading from disk)
+ 	let mut file_buffer = alloc::vec::Vec::new();
+ 	file_buffer.resize(init_file.size(), 0);
+ 	init_file.read(0, &mut file_buffer);
+ 
+-	// 4. Parse ELF
++	//  Parse ELF
+ 	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
+ 	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
+ 
+-	// 5. Create User Address Space
++	// Create User Address Space
+ 	let new_pml4_frame =
+ 		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
+ 			.expect("Failed to create user page table");
+ 
+ 	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
+ 
+-	// 6. Map Segments
++	// Map Segments
+ 	for segment in image.segments {
+ 		unsafe {
+ 			map_segment(
+@@ -573,7 +553,7 @@ pub extern "C" fn _start() -> ! {
+ 
+ 	serial_println!("Jumping to Ring 3...");
+ 	unsafe {
+-		enter_user_mode(image.entry_point, user_stack);
++		enter_user_mode(image.entry_point, user_stack, new_pml4_frame);
+ 	}
+ 
+ 	/* Main kernel loop: poll executor and halt CPU until next interrupt */
+diff --git a/kernel/src/syscall.rs b/kernel/src/syscall.rs
+index 7350296..6579c63 100644
+--- a/kernel/src/syscall.rs
++++ b/kernel/src/syscall.rs
+@@ -6,11 +6,12 @@
+  */
+ 
+ use core::arch::naked_asm;
++use hal::serial_println;
+ use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
+ use x86_64::registers::rflags::RFlags;
+ use x86_64::VirtAddr;
+-
+ /* System call numbers */
++pub const SYS_READ: u64 = 0;
+ pub const SYS_WRITE: u64 = 1;
+ pub const SYS_EXIT: u64 = 60;
+ pub const SYS_YIELD: u64 = 24;
+@@ -95,22 +96,38 @@ fn is_user_accessible(ptr: *const u8, len: usize) -> bool {
+  * Naked assembly function that handles the transition from user to kernel mode.
+  * Saves user context, switches to kernel stack, and calls the dispatcher.
+  */
++/*
++ * syscall_entry - Low-level syscall entry point
++ *
++ * Naked assembly function that handles the transition from user to kernel mode.
++ * Saves ALL user context, switches to kernel stack, calls dispatcher,
++ * and restores context exactly as it was (except RAX).
++ */
+ #[unsafe(naked)]
+ unsafe extern "C" fn syscall_entry() {
+ 	naked_asm!(
+-		/* Swap to kernel GS and save/load stacks */
++		/* 1. Swap to kernel GS and save user stack */
+ 		"swapgs",
+ 		"mov gs:[16], rsp",      /* Save user stack pointer */
+ 		"mov rsp, gs:[8]",       /* Load kernel stack pointer */
+ 
+-		/* Align stack to 16 bytes as required by System V ABI */
++		/* 2. Align stack to 16 bytes */
+ 		"and rsp, ~0xF",
+ 
+-		/* Save user RFLAGS and RIP (saved by SYSCALL instruction) */
+-		"push r11",              /* User RFLAGS */
+-		"push rcx",              /* User RIP */
++		/* 3. Save User Context (The "Trap Frame") */
++		/* We must save registers that we clobber or that the ABI expects preserved */
++		"push r11",              /* User RFLAGS (clobbered by syscall) */
++		"push rcx",              /* User RIP (clobbered by syscall) */
++
++		/* Save arguments & callee-saved registers */
++		"push r9",
++		"push r8",
++		"push r10",
++		"push rdx",
++		"push rsi",
++		"push rdi",
++		"push rax",              /* Save original RAX (syscall nr) just in case */
+ 
+-		/* Save callee-saved registers */
+ 		"push rbp",
+ 		"push rbx",
+ 		"push r12",
+@@ -118,28 +135,30 @@ unsafe extern "C" fn syscall_entry() {
+ 		"push r14",
+ 		"push r15",
+ 
++		/* 4. Prepare Arguments for syscall_dispatcher (System V ABI) */
+ 		/*
+-		 * ABI Mapping from Linux syscall ABI to System V ABI:
+-		 * RAX (syscall nr) -> RDI (arg0)
+-		 * RDI (arg1) -> RSI (arg1)
+-		 * RSI (arg2) -> RDX (arg2)
+-		 * R10 (arg3) -> RCX (arg3)
+-		 * R8  (arg4) -> R8  (arg4)
+-		 * R9  (arg5) -> R9  (arg5)
++		 * Kernel Function: fn(nr, arg1, arg2, arg3, arg4, arg5)
++		 * Mapping:
++		 * RDI <- RAX (nr)
++		 * RSI <- RDI (arg1)
++		 * RDX <- RSI (arg2)
++		 * RCX <- RDX (arg3)
++		 * R8  <- R10 (arg4 - syscall puts it here)
++		 * R9  <- R8  (arg5)
+ 		 */
+ 		"mov r9, r8",            /* arg5 */
+-		"mov r8, r10",           /* arg4 (was saved in R10 by userspace) */
++		"mov r8, r10",           /* arg4 */
+ 		"mov rcx, rdx",          /* arg3 */
+ 		"mov rdx, rsi",          /* arg2 */
+ 		"mov rsi, rdi",          /* arg1 */
+ 		"mov rdi, rax",          /* syscall number */
+ 
+-		/* Call the syscall dispatcher - return value comes back in RAX */
++		/* 5. Call Dispatcher */
+ 		"call {syscall_handler}",
+ 
+-		/* RAX now contains the return value - preserve it */
++		/* RAX now holds the return value. We must NOT overwrite it when restoring. */
+ 
+-		/* Restore callee-saved registers */
++		/* 6. Restore Context */
+ 		"pop r15",
+ 		"pop r14",
+ 		"pop r13",
+@@ -147,13 +166,22 @@ unsafe extern "C" fn syscall_entry() {
+ 		"pop rbx",
+ 		"pop rbp",
+ 
+-		/* Restore user RIP and RFLAGS for SYSRET */
++		/* Skip RAX on stack (we want to keep the new return value in real RAX) */
++		"add rsp, 8",
++
++		"pop rdi",
++		"pop rsi",
++		"pop rdx",
++		"pop r10",
++		"pop r8",
++		"pop r9",
++
+ 		"pop rcx",               /* User RIP */
+ 		"pop r11",               /* User RFLAGS */
+ 
+-		/* Restore user stack and GS, then return to userspace */
+-		"mov rsp, gs:[16]",
+-		"swapgs",
++		/* 7. Return to Userspace */
++		"mov rsp, gs:[16]",      /* Restore User Stack */
++		"swapgs",                /* Restore User GS */
+ 		"sysretq",
+ 		syscall_handler = sym syscall_dispatcher,
+ 	);
+@@ -181,6 +209,42 @@ extern "C" fn syscall_dispatcher(
+ 	_arg5: u64,
+ ) -> u64 {
+ 	match nr {
++		SYS_READ => {
++			/* Read system call: fd, buffer pointer, length
++			 * Only supports STDIN (fd 0)
++			 */
++			if arg1 != 0 {
++				return ERRNO_EBADF;
++			}
++			let ptr = arg2 as *mut u8;
++			let len = arg3 as usize;
++
++			if len == 0 {
++				return 0;
++			}
++			if !is_user_accessible(ptr, len) {
++				return ERRNO_EFAULT;
++			}
++
++			// Blocking READ
++			// Loop until we get at least one character
++			loop {
++				// DISABLE INTERRUPTS to prevent deadlock with keyboard isr
++				let key =
++					x86_64::instructions::interrupts::without_interrupts(|| keyboard::pop_key());
++				if let Some(k) = key {
++					// Write byte to user buffer
++					unsafe { *ptr = k };
++					// Return 1
++					// TODO: try to fill up len
++					return 1;
++				} else {
++					// No data, yield CPU to other tasks
++					// and try again next time when scheduled
++					task::preempt_executor();
++				}
++			}
++		}
+ 		SYS_WRITE => {
+ 			/* Write system call: fd, buffer pointer, length */
+ 			if arg1 != 1 {
+diff --git a/keyboard/Cargo.toml b/keyboard/Cargo.toml
+index cd28823..07b5566 100644
+--- a/keyboard/Cargo.toml
++++ b/keyboard/Cargo.toml
+@@ -6,4 +6,6 @@ edition = "2024"
+ [dependencies]
+ hal = { path = "../hal" }
+ x86_64 = "0.15.2"
+-graphics = { path = "../graphics" }
+\ No newline at end of file
++graphics = { path = "../graphics" }
++lazy_static = "1.5.0"
++spin = "0.10.0"
+\ No newline at end of file
+diff --git a/keyboard/src/lib.rs b/keyboard/src/lib.rs
+index 563d775..cabd20d 100644
+--- a/keyboard/src/lib.rs
++++ b/keyboard/src/lib.rs
+@@ -2,37 +2,70 @@
+  * PS/2 Keyboard Driver
+  *
+  * Handles keyboard input via PS/2 controller and scancode translation.
+- * Provides basic US QWERTY layout support.
++ * Uses a fixed-size Ring Buffer to be Interrupt-Safe (No Heap Allocations).
+  */
+ 
+ #![no_std]
+ 
++use spin::Mutex;
++
+ /*
+  * US QWERTY scancode Set 1 to ASCII mapping table
+- * Index is the scancode, value is the ASCII character.
+- * Zero entries represent non-printable keys or unsupported scancodes.
+  */
+ const SCANDCODE_TO_ASCII: [u8; 128] = [
+-	0, 27, b'1', b'2', b'3', b'4', b'5', b'6',
+-	b'7', b'8', b'9', b'0', b'-', b'=', 8, b'\t',
+-	b'q', b'w', b'e', b'r', b't', b'y', b'u', b'i',
+-	b'o', b'p', b'[', b']', b'\n', 0, b'a', b's',
+-	b'd', b'f', b'g', b'h', b'j', b'k', b'l', b';',
+-	b'\'', b'`', 0, b'\\', b'z', b'x', b'c', b'v',
+-	b'b', b'n', b'm', b',', b'.', b'/', 0, b'*',
+-	0, b' ', 0, 0, 0, 0, 0, 0,
+-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 27, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b'-', b'=', 8, b'\t', b'q',
++	b'w', b'e', b'r', b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n', 0, b'a', b's', b'd',
++	b'f', b'g', b'h', b'j', b'k', b'l', b';', b'\'', b'`', 0, b'\\', b'z', b'x', b'c', b'v', b'b',
++	b'n', b'm', b',', b'.', b'/', 0, b'*', 0, b' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ ];
+ 
++/* * Ring Buffer Implementation
++ * Fixed size, no allocation, interrupt safe with Mutex.
++ */
++const BUF_SIZE: usize = 128;
++
++pub struct RingBuffer {
++	data: [u8; BUF_SIZE],
++	head: usize,
++	tail: usize,
++}
++
++impl RingBuffer {
++	const fn new() -> Self {
++		Self {
++			data: [0; BUF_SIZE],
++			head: 0,
++			tail: 0,
++		}
++	}
++
++	fn push(&mut self, val: u8) {
++		let next = (self.head + 1) % BUF_SIZE;
++		if next != self.tail {
++			self.data[self.head] = val;
++			self.head = next;
++		}
++		// If full, drop the key (better than overwriting or allocating)
++	}
++
++	fn pop(&mut self) -> Option<u8> {
++		if self.head == self.tail {
++			None
++		} else {
++			let val = self.data[self.tail];
++			self.tail = (self.tail + 1) % BUF_SIZE;
++			Some(val)
++		}
++	}
++}
++
++// Global static instance
++static INPUT_BUF: Mutex<RingBuffer> = Mutex::new(RingBuffer::new());
++
+ /*
+  * handle_scancode - Process keyboard scancode
+- * @scancode: Raw scancode from keyboard controller
+- *
+- * Translates scancode to ASCII and outputs to serial and framebuffer.
+- * Ignores break codes (key release events).
+  */
+ pub fn handle_scancode(scancode: u8) {
+ 	/* Ignore break codes (bit 7 set) */
+@@ -40,20 +73,26 @@ pub fn handle_scancode(scancode: u8) {
+ 		return;
+ 	}
+ 
+-	/* Translate and output printable characters */
++	/* Translate and buffer printable characters */
+ 	if let Some(&ascii) = SCANDCODE_TO_ASCII.get(scancode as usize) {
+ 		if ascii != 0 {
+-			hal::serial_print!("{}", ascii as char);
+-			graphics::fb_print!("{}", ascii as char);
++			// Push to ring buffer (Interrupt Safe)
++			x86_64::instructions::interrupts::without_interrupts(|| {
++				INPUT_BUF.lock().push(ascii);
++			});
+ 		}
+ 	}
+ }
+ 
+ /*
+- * enable_keyboard_interrupt - Enable keyboard IRQ in PIC
+- *
+- * Unmasks IRQ1 (keyboard) in the legacy PIC.
+- * Note: This function is for legacy PIC; with APIC, use I/O APIC routing instead.
++ * pop_key - Retrieve the next key from the buffer
++ */
++pub fn pop_key() -> Option<u8> {
++	x86_64::instructions::interrupts::without_interrupts(|| INPUT_BUF.lock().pop())
++}
++
++/*
++ * enable_keyboard_interrupt - Legacy PIC helper
+  */
+ pub fn enable_keyboard_interrupt() {
+ 	unsafe {
+@@ -61,4 +100,4 @@ pub fn enable_keyboard_interrupt() {
+ 		let mask: u8 = port.read();
+ 		port.write(mask & !0x02);
+ 	}
+-}
+\ No newline at end of file
++}
+diff --git a/ulib/examples/init.rs b/ulib/examples/init.rs
+index e29b333..3e65c66 100644
+--- a/ulib/examples/init.rs
++++ b/ulib/examples/init.rs
+@@ -2,7 +2,7 @@
+ #![no_main]
+ 
+ use core::panic::PanicInfo;
+-use ulib::{exit, write, STDOUT};
++use ulib::{exit, read, write, STDIN, STDOUT};
+ 
+ #[panic_handler]
+ fn panic(_info: &PanicInfo) -> ! {
+@@ -11,6 +11,24 @@ fn panic(_info: &PanicInfo) -> ! {
+ 
+ #[unsafe(no_mangle)]
+ pub extern "C" fn _start() -> ! {
+-	write(STDOUT, b"Hello from a REAL ELF!\n");
+-	exit(0);
++	write(STDOUT, b"\n--- Serix User Shell ---\n");
++	write(STDOUT, b"$ ");
++
++	let mut buf = [0u8; 1];
++
++	loop {
++		// Block until a key is pressed
++		let n = read(STDIN, &mut buf);
++
++		if n > 0 {
++			let c = buf[0];
++			// Writeback to screen
++			write(STDOUT, &buf);
++
++			// Handle newline aesthetic
++			if c == b'\r' || c == b'\n' {
++				write(STDOUT, b"$ ");
++			}
++		}
++	}
+ }
+diff --git a/ulib/src/lib.rs b/ulib/src/lib.rs
+index 9c8e1db..e08a6fe 100644
+--- a/ulib/src/lib.rs
++++ b/ulib/src/lib.rs
+@@ -2,9 +2,11 @@
+ 
+ use core::arch::asm;
+ 
++const SYS_READ: usize = 0;
+ const SYS_WRITE: usize = 1;
+ const SYS_EXIT: usize = 60;
+ 
++pub const STDIN: usize = 0;
+ pub const STDOUT: usize = 1;
+ 
+ /*
+@@ -17,41 +19,48 @@ pub const STDOUT: usize = 1;
+  */
+ 
+ #[inline(always)]
+-unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize { unsafe {
+-	let ret: usize;
+-	asm!(
+-	"syscall",
+-	in("rax") nr,
+-	in("rdi") arg1,
+-	in("rsi") arg2,
+-	in("rdx") arg3,
+-	lateout("rax") ret,
+-	// Syscalls clobber rcx and r11
+-	out("rcx") _,
+-	out("r11") _,
+-	);
+-	ret
+-}}
++unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
++	unsafe {
++		let ret: usize;
++		asm!(
++		"syscall",
++		in("rax") nr,
++		in("rdi") arg1,
++		in("rsi") arg2,
++		in("rdx") arg3,
++		lateout("rax") ret,
++		// Syscalls clobber rcx and r11
++		out("rcx") _,
++		out("r11") _,
++		);
++		ret
++	}
++}
+ 
+ #[inline(always)]
+-unsafe fn syscall1(nr: usize, arg1: usize) -> usize { unsafe {
+-	let ret: usize;
+-	asm!(
+-	"syscall",
+-	in("rax") nr,
+-	in("rdi") arg1,
+-	lateout("rax") ret,
+-	out("rcx") _,
+-	out("r11") _,
+-	);
+-	ret
+-}}
++unsafe fn syscall1(nr: usize, arg1: usize) -> usize {
++	unsafe {
++		let ret: usize;
++		asm!(
++		"syscall",
++		in("rax") nr,
++		in("rdi") arg1,
++		lateout("rax") ret,
++		out("rcx") _,
++		out("r11") _,
++		);
++		ret
++	}
++}
+ 
+ // --- The "libc" Stubs ---
+ pub fn write(fd: usize, buf: &[u8]) -> isize {
+ 	unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as usize, buf.len()) as isize }
+ }
+ 
++pub fn read(fd: usize, buf: &mut [u8]) -> usize {
++	unsafe { syscall3(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len() as usize) as usize }
++}
+ pub fn exit(code: i32) -> ! {
+ 	unsafe {
+ 		syscall1(SYS_EXIT, code as usize);
+diff --git a/util/src/lib.rs b/util/src/lib.rs
+index e9de947..9f3b414 100644
+--- a/util/src/lib.rs
++++ b/util/src/lib.rs
+@@ -8,6 +8,7 @@
+ #![feature(alloc_error_handler)]
+ 
+ pub mod panic;
++mod tools;
+ 
+ use core::alloc::{GlobalAlloc, Layout};
+ use core::panic::PanicInfo;

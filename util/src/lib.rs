@@ -8,6 +8,7 @@
 #![feature(alloc_error_handler)]
 
 pub mod panic;
+mod tools;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
