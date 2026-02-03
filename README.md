@@ -61,6 +61,19 @@ You should see a **solid blue screen** upon successful boot.
 
 ---
 
+## Contributing
+
+We welcome contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) for:
+
+- Code style and formatting requirements
+- Development setup instructions
+- Pull request process
+- Areas where help is needed
+
+To report bugs or suggest features, please use our [issue templates](.github/ISSUE_TEMPLATE/).
+
+---
+
 ## Documentation
 
 For architecture, contributing, and future roadmap, see the [`docs/`](docs/) folder.
