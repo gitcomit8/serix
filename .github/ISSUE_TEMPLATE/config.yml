@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/gitcomit8/serix/discussions
+    about: Ask questions, share ideas, and discuss with the community
+  - name: 📖 Documentation
+    url: https://github.com/gitcomit8/serix/tree/main/docs
+    about: Read the project documentation
+  - name: 🗺️ Roadmap
+    url: https://github.com/gitcomit8/serix/blob/main/docs/ROADMAP.md
+    about: View the development roadmap
