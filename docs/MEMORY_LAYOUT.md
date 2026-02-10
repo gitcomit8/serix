@@ -79,17 +79,16 @@ Canonical Form:
                        │                                     │
                        │  Unused Virtual Space               │
                        │                                     │
-                       ├─────────────────────────────────────┤
-                       │  Memory-Mapped I/O (Future)         │
-                       │  (GPU framebuffers, PCIe BARs)      │
-                       ├─────────────────────────────────────┤
+0xFFFF_8000_4454_0000  ├─────────────────────────────────────┤
+                       │  Kernel Heap                        │
+                       │  Size: 1 MB (configurable)          │
+0xFFFF_8000_4444_0000  ├─────────────────────────────────────┤
                        │                                     │
                        │  Unused Virtual Space               │
                        │                                     │
-0x4444_4454_0000       ├─────────────────────────────────────┤
-                       │  Kernel Heap                        │
-                       │  Size: 1 MB (configurable)          │
-0x4444_4444_0000       ├─────────────────────────────────────┤
+                       ├─────────────────────────────────────┤
+                       │  Memory-Mapped I/O (Future)         │
+                       │  (GPU framebuffers, PCIe BARs)      │
                        │                                     │
                        │  Unused Virtual Space               │
                        │                                     │
@@ -144,7 +143,7 @@ Physical 0x0000_0001_0000_0000 (4 GB)
 - Consumes virtual address space equal to physical RAM
 - Not suitable for >64 TB systems (exceeds 47-bit canonical limit)
 
-#### Kernel Heap (0x4444_4444_0000 - 0x4444_4454_0000)
+#### Kernel Heap (0xFFFF_8000_4444_0000 - 0xFFFF_8000_4454_0000)
 
 **Purpose**: Dynamic memory allocation for kernel data structures.
 
@@ -551,7 +550,7 @@ SECTIONS {
 
 ### Heap Region
 
-**Virtual Range**: `0x4444_4444_0000` - `0x4444_4454_0000` (1 MB)
+**Virtual Range**: `0xFFFF_8000_4444_0000` - `0xFFFF_8000_4454_0000` (1 MB)
 
 **Physical Backing**: Allocated on demand from frame allocator during `init_heap()`.
 
@@ -753,7 +752,7 @@ let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
 #### Step 5: Initialize Heap
 
 ```rust
-const HEAP_START: usize = 0x4444_4444_0000;
+const HEAP_START: usize = 0xFFFF_8000_4444_0000;
 const HEAP_SIZE: usize = 1024 * 1024;  // 1 MB
 
 init_heap(&mut mapper, &mut frame_alloc);
