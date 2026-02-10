@@ -7,3 +7,5 @@ edition = "2024"
 hal = { path = "../hal" }
 x86_64 = "0.15.2"
 graphics = { path = "../graphics" }
+lazy_static = "1.5.0"
+spin = "0.10.0"
