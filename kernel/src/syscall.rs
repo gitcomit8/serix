@@ -229,20 +229,14 @@ extern "C" fn syscall_dispatcher(
 			// Blocking READ
 			// Loop until we get at least one character
 			loop {
-				// DISABLE INTERRUPTS to prevent deadlock with keyboard isr
-				let key =
-					x86_64::instructions::interrupts::without_interrupts(|| keyboard::pop_key());
-				if let Some(k) = key {
-					// Write byte to user buffer
+				if let Some(k) = keyboard::pop_key() {
 					unsafe { *ptr = k };
-					// Return 1
-					// TODO: try to fill up len
 					return 1;
-				} else {
-					// No data, yield CPU to other tasks
-					// and try again next time when scheduled
-					task::preempt_executor();
 				}
+				// Enable interrupts briefly so keyboard ISR can fire
+				x86_64::instructions::interrupts::enable();
+				core::hint::spin_loop();
+				x86_64::instructions::interrupts::disable();
 			}
 		}
 		SYS_WRITE => {
@@ -268,6 +262,7 @@ extern "C" fn syscall_dispatcher(
 			match core::str::from_utf8(slice) {
 				Ok(s) => {
 					hal::serial_print!("{}", s);
+					graphics::console::_print(format_args!("{}", s));
 					len as u64 /* Return bytes written */
 				}
 				Err(_) => {
