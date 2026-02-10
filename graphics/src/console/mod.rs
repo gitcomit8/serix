@@ -80,7 +80,7 @@ impl Tty {
 
 	fn new_line(&mut self) {
 		self.x = 0;
-		self.y = 0;
+		self.y += 1;
 		if self.y >= self.rows {
 			self.scroll();
 			self.y = self.rows - 1;
@@ -92,6 +92,7 @@ impl Tty {
 			'\n' => self.new_line(),
 			'\x08' => {
 				if self.x > 0 {
+					self.x -= 1;
 					self.draw_char(self.x, self.y, ' ');
 				}
 			}
@@ -118,11 +119,14 @@ impl Tty {
 		for row in 0..FONT_HEIGHT {
 			let bits = glyph[row];
 			for col in 0..FONT_WIDTH {
-				if (bits & (1 << (7 - col))) != 0 {
-					let offset = (screen_y + row) * self.fb_pitch + (screen_x + col) * 4;
-					unsafe {
-						(self.fb_base.add(offset) as *mut u32).write_volatile(self.color_fg);
-					}
+				let offset = (screen_y + row) * self.fb_pitch + (screen_x + col) * 4;
+				let color = if (bits & (1 << (7 - col))) != 0 {
+					self.color_fg
+				} else {
+					self.color_bg
+				};
+				unsafe {
+					(self.fb_base.add(offset) as *mut u32).write_volatile(color);
 				}
 			}
 		}
