@@ -44,7 +44,7 @@ Serix is a **microkernel-style x86_64 OS** written in Rust with these key archit
 - **Workspace-based cargo project**: Kernel and subsystems are separate crates (`kernel/`, `memory/`, `hal/`, `apic/`, `idt/`, `graphics/`, `task/`, `capability/`, `drivers/`, `vfs/`, `ipc/`, `loader/`, `ulib/`)
 - **Limine bootloader**: Uses Limine v10.x boot protocol (not GRUB). Limine sets up initial paging, framebuffer, and memory map before jumping to kernel
 - **Physical memory mapping**: All physical RAM is mapped at virtual offset `0xFFFF_8000_0000_0000` (HHDM - Higher Half Direct Map)
-- **Heap location**: Kernel heap lives at `0x4444_4444_0000` (1 MB by default, configured in `memory/src/heap.rs`)
+- **Heap location**: Kernel heap lives at `0xFFFF_8000_4444_0000` (1 MB by default, configured in `memory/src/heap.rs`)
 
 ### Boot Flow
 
@@ -68,7 +68,7 @@ The kernel entry point (`_start`) executes this initialization sequence:
 ### Memory Layout
 
 - **Physical memory offset (HHDM)**: `0xFFFF_8000_0000_0000`
-- **Kernel heap**: `0x4444_4444_0000` - `0x4444_4454_0000` (1 MB)
+- **Kernel heap**: `0xFFFF_8000_4444_0000` - `0xFFFF_8000_4454_0000` (1 MB)
 - **Kernel code**: High virtual addresses (loaded by Limine at `-2GB` from top typically)
 
 To convert physical to virtual: `virt = phys + HHDM_offset`
