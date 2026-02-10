@@ -5,6 +5,7 @@
  * It sets up the GDT, IDT, APIC, memory management, and task execution.
  */
 
+#![feature(abi_x86_interrupt)]
 #![no_std]
 #![no_main]
 
@@ -29,6 +30,7 @@ use util::panic::halt_loop;
 use vfs::{INode, RamFile};
 use x86_64::instructions::hlt;
 use x86_64::registers::rflags::RFlags;
+use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
 };
@@ -58,6 +60,29 @@ pub fn panic(info: &PanicInfo) -> ! {
 	}
 
 	halt_loop();
+}
+
+/*
+ * keyboard_interrupt_handler - Handle keyboard interrupts (IRQ 1, vector 33)
+ * @_stack_frame: Interrupt stack frame (unused)
+ *
+ * Reads scancode from keyboard controller and sends EOI to APIC.
+ * Defined here (not in idt module) to avoid circular dependency with apic.
+ */
+extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+	use x86_64::instructions::port::Port;
+
+	/* Read scancode from keyboard data port (0x60) */
+	let mut port = Port::new(0x60);
+	let scancode: u8 = unsafe { port.read() };
+	
+	/* Process the scancode via keyboard module */
+	keyboard::handle_scancode(scancode);
+
+	/* Send End of Interrupt to Local APIC */
+	unsafe {
+		apic::send_eoi();
+	}
 }
 
 /*
@@ -277,6 +302,45 @@ unsafe fn map_mmio_range(
 }
 
 /*
+ * init_ps2_keyboard - Initialize PS/2 keyboard controller
+ *
+ * Enables the PS/2 keyboard and clears any stale data in the buffer.
+ * Required for keyboard interrupts to function properly.
+ */
+unsafe fn init_ps2_keyboard() {
+	use x86_64::instructions::port::Port;
+	
+	let mut cmd_port = Port::new(0x64);  // PS/2 command port
+	let mut data_port = Port::new(0x60); // PS/2 data port
+	
+	// Flush output buffer
+	let _  = data_port.read();
+	
+	// Enable keyboard (command 0xAE)
+	cmd_port.write(0xAE_u8);
+	
+	// Read controller configuration
+	cmd_port.write(0x20_u8);
+	for _ in 0..1000 {
+		let status: u8 = cmd_port.read();
+		if status & 0x01 != 0 {
+			break;
+		}
+	}
+	let mut config: u8 = data_port.read();
+	
+	// Enable keyboard interrupt (bit 0), keep scancode translation enabled (bit 6)
+	config |= 0x01;  // Enable keyboard interrupt
+	config |= 0x40;  // Enable scancode translation (Set 2 → Set 1)
+	
+	// Write configuration back
+	cmd_port.write(0x60_u8);
+	data_port.write(config);
+	
+	serial_println!("[PS/2] Keyboard controller initialized");
+}
+
+/*
  * _start - Kernel entry point
  *
  * This is the main kernel initialization function called by the bootloader.
@@ -295,10 +359,11 @@ pub extern "C" fn _start() -> ! {
 		hal::cpu::enable_sse();
 		/* Enable APIC and disable legacy PIC */
 		apic::enable();
-		/* Route IRQs through IOAPIC */
-		apic::ioapic::init_ioapic();
-		/* Register timer handler before IDT is loaded */
+		/* I/O APIC initialization moved to after virtual address remapping */
+		/* Register interrupt handlers before IDT is loaded */
 		apic::timer::register_handler();
+		/* Register keyboard handler (defined in this module to avoid circular deps) */
+		idt::register_interrupt_handler(33, keyboard_interrupt_handler);
 	}
 
 	/* Setup CPU exception handlers and load IDT */
@@ -377,6 +442,12 @@ pub extern "C" fn _start() -> ! {
 		// Tell APIC driver to use these new virtual addresses
 		apic::set_bases(lapic_virt.as_u64());
 		apic::ioapic::set_base(ioapic_virt.as_u64());
+		
+		// Now configure I/O APIC with virtual address
+		apic::ioapic::init_ioapic();
+		
+		// Initialize PS/2 keyboard controller
+		init_ps2_keyboard();
 	}
 
 	/* Paint screen blue and draw memory map visualization */
