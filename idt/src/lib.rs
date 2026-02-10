@@ -35,35 +35,12 @@ lazy_static! {
 		idt.divide_error.set_handler_fn(divide_by_zero_handler);
 		idt.page_fault.set_handler_fn(page_fault_handler);
 		idt.double_fault.set_handler_fn(double_fault_handler);
-		idt[33].set_handler_fn(keyboard_interrupt_handler);
+		/* Keyboard handler (IRQ 1, vector 33) is registered by kernel module */
 		IdtWrapper {
 			idt: UnsafeCell::new(idt),
 			loaded: UnsafeCell::new(false),
 		}
 	};
-}
-
-/*
- * keyboard_interrupt_handler - Handle keyboard interrupts
- * @_stack_frame: Interrupt stack frame (unused)
- *
- * Reads scancode from keyboard controller and sends EOI to APIC.
- */
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-	use x86_64::instructions::port::Port;
-
-	/* Read scancode from keyboard data port */
-	let mut port = Port::new(0x60);
-	let scancode: u8 = unsafe { port.read() };
-
-	/* Process the scancode */
-	keyboard::handle_scancode(scancode);
-
-	/* Send End of Interrupt to Local APIC */
-	unsafe {
-		const APIC_EOI: *mut u32 = 0xFEE000B0 as *mut u32;
-		APIC_EOI.write_volatile(0);
-	}
 }
 
 /*

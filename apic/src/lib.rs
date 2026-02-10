@@ -23,12 +23,9 @@ static APIC_BASE: AtomicU64 = AtomicU64::new(0xFEE00000);
 /*
  * set_bases - Update the base addresses for APIC components
  * @lapic: Virtual address of Local APIC
- * @ioapic: Virtual address of I/O APIC
  */
 pub fn set_bases(lapic: u64) {
 	APIC_BASE.store(lapic, Ordering::Relaxed);
-	// I/O APIC base is managed in ioapic.rs, we'll add a setter there
-	ioapic::set_base(0xFEC00000); // Default or pass as arg if needed
 }
 
 fn lapic_reg(offset: u32) -> *mut u32 {

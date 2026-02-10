@@ -48,11 +48,24 @@ unsafe fn ioapic_write(reg: u32, value: u32) {
  * @irq: IRQ line number
  * @vector: Interrupt vector to map to
  *
- * Routes the specified IRQ to the given interrupt vector.
+ * Routes the specified IRQ to the given interrupt vector and unmasks it.
+ * I/O APIC Redirection Entry format (lower 32 bits):
+ * - Bits 0-7: Vector
+ * - Bits 8-10: Delivery Mode (000 = Fixed)
+ * - Bit 11: Destination Mode (0 = Physical)
+ * - Bit 12: Delivery Status (read-only)
+ * - Bit 13: Polarity (0 = Active High)
+ * - Bit 14: Remote IRR (read-only)
+ * - Bit 15: Trigger Mode (0 = Edge)
+ * - Bit 16: Mask (0 = Enabled, 1 = Disabled)
+ * - Bits 17-31: Reserved
  */
 pub unsafe fn map_irq(irq: u8, vector: u8) {
 	let reg = 0x10 + (irq as u32 * 2);
-	ioapic_write(reg, vector as u32);
+	/* Set vector and enable (mask bit = 0) */
+	let low = vector as u32; // Bits 0-7 = vector, bit 16 = 0 (enabled)
+	ioapic_write(reg, low);
+	/* Upper 32 bits: destination (0 = BSP/CPU 0) */
 	ioapic_write(reg + 1, 0);
 }
 
