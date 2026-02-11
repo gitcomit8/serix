@@ -37,21 +37,21 @@ Status: 100% complete
 
 Bootloader Integration
 
-```~~~~~~~~~~~~~~~~~~~
+```
  * [✓] Limine v10.x bootloader integration
  * [✓] Memory map parsing from Limine responses
  * [✓] Framebuffer initialization
  * [✓] HHDM (Higher Half Direct Map) offset handling
 
 Memory Management
-```~~~~~~~~~~~~~~
+```
  * [✓] Page table initialization using bootloader CR3
  * [✓] Physical frame allocator (StaticBootFrameAllocator)
  * [✓] Heap allocator integration (1 MB at 0xFFFF_8000_4444_0000)
  * [✓] OffsetPageTable wrapper for page manipulation
 
 Hardware Abstraction Layer
-```~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 - [✓] CPU exception handlers (divide-by-zero, page fault, double fault)
 - [✓] APIC setup (Local APIC + I/O APIC)
@@ -66,14 +66,14 @@ Status: 100% complete
 
 Task Management
 
-```~~~~~~~~~~~~
+```
  * [✓] Task control block (TaskCB) structure
  * [✓] Async task creation using Rust futures
  * [✓] Cooperative task executor
  * [✓] Scheduler skeleton (not preemptive yet)
 
 Capability System
-```~~~~~~~~~~~~~~
+```
 
 - [✓] Cryptographic capability handle generation
 - [✓] CapabilityStore with HashMap backend
@@ -82,14 +82,14 @@ Capability System
 
 Syscall Interface
 
-```~~~~~~~~~~~~~~
+```
  * [✓] SYS_WRITE (1) - Write to file descriptor or framebuffer
  * [✓] SYS_READ (0) - Read from keyboard buffer
  * [✓] SYS_EXIT (60) - Terminate task
  * [✓] SYS_YIELD (24) - Cooperative yield
 
 Hardware Detection
-```~~~~~~~~~~~~~~~
+```
 
 - [✓] CPUID parsing for CPU information
 - [✓] CPU topology detection (cores, threads)
@@ -102,7 +102,7 @@ Status: ~40% complete
 
 VirtIO Block Driver (PARTIAL)
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
  * [~] PCI device enumeration
  * [~] VirtIO device detection
  * [ ] VirtIO queue setup
@@ -110,7 +110,7 @@ VirtIO Block Driver (PARTIAL)
  * [ ] Disk read/write syscalls
 
 VFS Foundation (PARTIAL)
-```~~~~~~~~~~~~~~~~~~~~~~
+```
  * [✓] INode trait abstraction
  * [✓] RamFile implementation for ramdisk
  * [✓] Basic VFS operations (read, write)
@@ -120,14 +120,14 @@ VFS Foundation (PARTIAL)
  * [ ] Path resolution
 
 IPC Core (PLANNED)
-```~~~~~~~~~~~~~~~
+```
  * [ ] Message passing between tasks
  * [ ] Shared memory regions with capability protection
  * [ ] IPC channel creation syscall
  * [ ] Send/receive syscalls
 
 Preemptive Scheduling (PLANNED)
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 - [ ] Timer-triggered context switches
 - [ ] Task state save/restore (registers, stack)
@@ -142,14 +142,14 @@ Target: Q2 2026
 
 Linux ABI Layer
 
-```~~~~~~~~~~~~
+```
  * [ ] Enhanced ELF loader with dynamic linking
  * [ ] Basic libc stubs (open, close, read, write, mmap)
  * [ ] Environment variable support
  * [ ] Command-line argument passing
 
 Threading Support
-```~~~~~~~~~~~~~~
+```
 
 - [ ] pthread_create implementation
 - [ ] Thread local storage (TLS)
@@ -158,14 +158,14 @@ Threading Support
 
 Filesystem Operations
 
-```~~~~~~~~~~~~~~~~~~
+```
  * [ ] POSIX file API (open, close, read, write, seek)
  * [ ] File descriptor table per task
  * [ ] Capability-gated file access
  * [ ] Standard file descriptors (0=stdin, 1=stdout, 2=stderr)
 
 Signal Handling
-```~~~~~~~~~~~~
+```
  * [ ] Signal delivery via IPC
  * [ ] Signal handler registration
  * [ ] Default signal handlers (SIGKILL, SIGTERM, SIGSEGV)
@@ -177,7 +177,7 @@ Status: 0% complete
 Target: Q3 2026
 
 Scheduler Optimization
-```~~~~~~~~~~~~~~~~~~~
+```
 
 - [ ] Weighted Fair Queueing (WFQ) implementation
 - [ ] CPU affinity and load balancing
@@ -185,13 +185,13 @@ Scheduler Optimization
 
 IOMMU Protection
 
-```~~~~~~~~~~~~~
+```
  * [ ] IOMMU initialization (Intel VT-d)
  * [ ] DMA memory isolation
  * [ ] Safe zero-copy IPC with IOMMU remapping
 
 Debugging Infrastructure
-```~~~~~~~~~~~~~~~~~~~~~~
+```
 
 - [ ] GDB stub (serix-dbg)
 - [ ] Kernel panic backtraces with symbol resolution
@@ -200,7 +200,7 @@ Debugging Infrastructure
 
 Performance Profiling
 
-```~~~~~~~~~~~~~~~~~~~
+```
  * [ ] Context switch latency measurement
  * [ ] Syscall overhead profiling
  * [ ] Memory allocator statistics
@@ -212,21 +212,21 @@ Status: 0% complete
 Target: Q4 2026
 
 Userspace Shell
-```~~~~~~~~~~~~
+```
  * [ ] Minimal interactive shell (serix-sh)
  * [ ] Built-in commands: ls, cat, echo, ps, kill
  * [ ] Command execution via fork/exec
  * [ ] Pipeline support
 
 CI/CD Pipeline
-```~~~~~~~~~~~
+```
  * [ ] GitHub Actions workflow
  * [ ] Automated QEMU boot tests
  * [ ] Miri undefined behavior checks
  * [ ] Kani formal verification for critical paths
 
 Documentation
-```~~~~~~~~~~
+```
  * [✓] Getting started guide (README.md)
  * [✓] Contributor handbook (CONTRIBUTING.md)
  * [✓] API documentation (docs/)
@@ -234,7 +234,7 @@ Documentation
  * [ ] Syscall reference card
 
 Release Engineering
-```~~~~~~~~~~~~~~~~
+```
  * [ ] v0.1.0 release with bootable ISO
  * [ ] Demo applications (HTTP server, terminal emulator)
  * [ ] Release notes and changelog

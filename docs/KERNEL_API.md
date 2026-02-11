@@ -80,7 +80,7 @@ physical frame allocation. All physical RAM is mapped at virtual offset
 
 init_offset_page_table()
 
-```~~~~~~~~~~~~~~~~~~~~~
+```
 
 Initialize offset page table mapper with active page table
 
@@ -122,7 +122,7 @@ Notes:
 
 
 BootFrameAllocator
-```~~~~~~~~~~~~~~~
+```
 
 Physical frame allocator using bootloader memory map
 
@@ -164,7 +164,7 @@ if let Some(frame) = frame_allocator.allocate_frame() {
 
 ```
 StaticBootFrameAllocator
-```~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Pre-heap frame allocator using static array storage
 
@@ -211,7 +211,7 @@ memory::init_heap(&mut mapper, &mut frame_alloc);
 
 init_heap()
 
-```~~~~~~~~
+```
 
 Map and initialize kernel heap for dynamic memory allocation
 
@@ -295,7 +295,7 @@ preemptive scheduling.
 ## Task Identification
 
 TaskId
-```~~~
+```
 
 Unique identifier for tasks
 
@@ -360,7 +360,7 @@ pub struct CPUContext {
 ## Task Control Block
 
 TaskCB
-```~~~
+```
 
 Represents a schedulable task
 
@@ -451,7 +451,7 @@ impl Scheduler {
 
 ```
 init_global()
-```~~~~~~~~~~
+```
 
 Initialize global scheduler instance
 
@@ -473,7 +473,7 @@ Scheduler::init_global();
 
 global()
 
-```~~~~~
+```
 
 Access global scheduler
 
@@ -495,7 +495,7 @@ serial_println!("Task count: {}", sched.task_count());
 
 ```
 add_task()
-```~~~~~~~
+```
 
 Add task to scheduler run queue
 
@@ -510,7 +510,7 @@ pub fn add_task(&mut self, task: TaskCB)
 
 context_switch()
 
-```~~~~~~~~~~~~~
+```
 
 Low-level context switch between tasks
 
@@ -545,7 +545,7 @@ unsafe {
 
 ```
 task_yield()
-```~~~~~~~~~
+```
 
 Voluntarily yield CPU to another task
 
@@ -733,7 +733,7 @@ The IDT subsystem loads interrupt handlers and manages CPU exceptions.
 ## IDT Initialization
 
 init_idt()
-```~~~~~~~
+```
 
 Load Interrupt Descriptor Table into CPU
 
@@ -763,7 +763,7 @@ Panics:
 ## Dynamic Handler Registration
 
 register_interrupt_handler()
-```~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Register or update interrupt handler after IDT is loaded
 
@@ -805,7 +805,7 @@ Pre-registered CPU exception handlers:
 
 Divide by Zero (Vector 0)
 
-```~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -820,7 +820,7 @@ Action:
     Calls util::panic::oops("Divide by Zero exception")
 
 Page Fault (Vector 14)
-```~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -841,7 +841,7 @@ Action:
     Logs fault details to serial console and halts
 
 Double Fault (Vector 8)
-```~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -860,7 +860,7 @@ Action:
 ## Hardware Interrupt Handlers
 
 Keyboard (Vector 33)
-```~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -887,7 +887,7 @@ including Local APIC, I/O APIC, and LAPIC timer.
 ## Local APIC
 
 enable()
-```~~~~~
+```
 
 Enable Local APIC and disable legacy PIC
 
@@ -912,7 +912,7 @@ unsafe {
 
 ```
 send_eoi()
-```~~~~~~~
+```
 
 Signal End of Interrupt to Local APIC
 
@@ -933,7 +933,7 @@ extern "x86-interrupt" fn interrupt_handler(_frame: InterruptStackFrame) {
 
 ```
 set_timer()
-```~~~~~~~~
+```
 
 Configure Local APIC timer (low-level interface)
 
@@ -967,7 +967,7 @@ Note:
 ## I/O APIC
 
 init_ioapic()
-```~~~~~~~~~~
+```
 
 Initialize I/O APIC with default IRQ routing
 
@@ -989,7 +989,7 @@ unsafe {
 
 ```
 map_irq()
-```~~~~~~
+```
 
 Map hardware IRQ to interrupt vector
 
@@ -1017,7 +1017,7 @@ unsafe {
 ## APIC Timer
 
 register_handler()
-```~~~~~~~~~~~~~~~
+```
 
 Register timer interrupt handler with IDT
 
@@ -1038,7 +1038,7 @@ idt::init_idt();
 
 ```
 init_hardware()
-```~~~~~~~~~~~~
+```
 
 Configure and start LAPIC timer hardware
 
@@ -1066,7 +1066,7 @@ unsafe {
 
 ```
 ticks()
-```~~~~
+```
 
 Get timer tick count since boot
 
@@ -1099,7 +1099,7 @@ serial_println!("Work took {} ticks", end - start);
 ## Serial Console
 
 init_serial()
-```~~~~~~~~~~
+```
 
 Initialize COM1 serial port
 
@@ -1118,7 +1118,7 @@ Configuration:
 Must be called first during kernel initialization for debug output.
 
 serial_println!()
-```~~~~~~~~~~~~~~
+```
 
 Print line to serial console
 
@@ -1145,7 +1145,7 @@ serial_println!("APIC ID: {}", apic_id);
 ## Panic Handling
 
 oops()
-```~~~
+```
 
 Handle kernel oops (non-recoverable error)
 
@@ -1178,7 +1178,7 @@ Use Cases:
     - Unrecoverable kernel state corruption
 
 halt_loop()
-```~~~~~~~~
+```
 
 Enter infinite halt loop (low power)
 
@@ -1257,7 +1257,7 @@ Serial console should be initialized first for debug output.
 ## Data Flow Examples
 
 Keyboard Input Flow
-```~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -1268,7 +1268,7 @@ keyboard::handle_scancode()
 
 ```
 Timer Tick Flow
-```~~~~~~~~~~~~
+```
 
 
 ```
@@ -1278,7 +1278,7 @@ apic::timer::timer_interrupt()
 
 ```
 Page Fault Flow
-```~~~~~~~~~~~~
+```
 
 
 ```
@@ -1303,7 +1303,7 @@ Single-Core Assumptions:
 ## Synchronization Primitives
 
 Spin Mutex
-```~~~~~~~
+```
 
 
 ```
@@ -1319,7 +1319,7 @@ let mut data = DATA.lock();
 
 ```
 Once Initialization
-```~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -1404,7 +1404,7 @@ const TIMER_VECTOR: u8 = 49;        // LAPIC timer
 ## Calling Conventions
 
 Rust (default)
-```~~~~~~~~~~~
+```
 
 Default for Rust-to-Rust calls
 
@@ -1414,7 +1414,6 @@ pub fn rust_function(arg: u32) -> u64 { }
 
 ```
 C
-~
 
 For bootloader interface and assembly interop
 
@@ -1424,7 +1423,7 @@ pub extern "C" fn c_function(arg: u32) -> u64 { }
 
 ```
 x86-interrupt
-```~~~~~~~~~~
+```
 
 For CPU exception and hardware interrupt handlers
 
@@ -1443,7 +1442,7 @@ extern "x86-interrupt" fn handler_with_error(
 ## Current Patterns
 
 Panic
-```~~
+```
 
 Used for unrecoverable programming errors
 
@@ -1455,7 +1454,7 @@ panic!("Error message")
 
 ```
 Oops
-```~
+```
 
 Used for hardware/CPU exceptions
 
@@ -1465,7 +1464,7 @@ util::panic::oops("Exception description")
 
 ```
 Option
-```~~~
+```
 
 Used for nullable values
 
@@ -1499,7 +1498,7 @@ pub fn allocate_frame() -> KernelResult<PhysFrame> {
 ## Planned API Additions
 
 Memory Management
-```~~~~~~~~~~~~~~
+```
 
 - deallocate_frame() - Free physical frames
 - map_range() - Map multiple pages at once
@@ -1507,7 +1506,7 @@ Memory Management
 - Memory statistics and pressure tracking
 
 Task Management
-```~~~~~~~~~~~~
+```
 
 - Preemptive scheduling with timer-based preemption
 - task_sleep() - Sleep for duration
@@ -1517,7 +1516,7 @@ Task Management
 - Priority inheritance for mutexes
 
 Interrupt Management
-```~~~~~~~~~~~~~~~~~
+```
 
 - register_irq_handler() - High-level IRQ registration
 - mask_irq() / unmask_irq() - Dynamic IRQ control
@@ -1525,7 +1524,7 @@ Interrupt Management
 - MSI/MSI-X support
 
 Device Management
-```~~~~~~~~~~~~~~
+```
 
 - PCI enumeration and configuration space access
 - Device driver registration framework
@@ -1533,7 +1532,7 @@ Device Management
 - Power management (ACPI)
 
 System Calls
-```~~~~~~~~~
+```
 
 - File I/O: open, close, read, write, seek, stat
 - Process management: fork, exec, wait, kill

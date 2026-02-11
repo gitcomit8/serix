@@ -51,7 +51,7 @@ Total Boot     1-4 seconds         Typical on modern hardware in QEMU
 
 BIOS Boot
 
-```~~~~~~
+```
 
 The BIOS boot process follows these steps:
 
@@ -78,7 +78,7 @@ A20 Line:   May be disabled (limits addressing to 1 MB)
 
 ```
 UEFI Boot
-```~~~~~~
+```
 
 The UEFI boot process:
 
@@ -213,7 +213,7 @@ Serix defines several requests in kernel code.
 
 Base Revision Request
 
-```~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -228,7 +228,7 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 **Required**: Yes (protocol version check)
 
 Framebuffer Request
-```~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -249,7 +249,7 @@ static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 **Multiple Framebuffers**: Response may include multiple displays
 
 Memory Map Request
-```~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -291,7 +291,7 @@ FRAMEBUFFER
     Framebuffer memory
 
 HHDM Request
-```~~~~~~~~~
+```
 
 
 ```
@@ -305,7 +305,7 @@ static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 (typically 0xFFFF_8000_0000_0000)
 
 Module Request
-```~~~~~~~~~~~
+```
 
 
 ```
@@ -431,7 +431,7 @@ Serial console initialized
 **Purpose**: Setup interrupt controller
 
 Disable Legacy PIC
-```~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -448,7 +448,7 @@ unsafe { apic::enable(); }  // Also calls disable_pic()
 **Why**: Prevent conflicts between PIC and APIC
 
 Enable Local APIC
-```~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -466,7 +466,7 @@ unsafe { apic::enable(); }
 **Verification**: Read SVR, check bit 8 is set
 
 Initialize I/O APIC
-```~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -482,7 +482,7 @@ unsafe { apic::ioapic::init_ioapic(); }
 **Registers**: I/O APIC redirection table entries
 
 Register Timer Handler
-```~~~~~~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -510,7 +510,7 @@ APIC enabled
 
 Load IDT
 
-```~~~~~
+```
 
 
 ```
@@ -538,7 +538,7 @@ Vector Handler
 ====== ========================
 
 Enable Interrupts
-```~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -645,7 +645,7 @@ Memory region:
 
 Initialize Offset Page Table
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -664,7 +664,7 @@ let mut mapper = unsafe {
 **Result**: ``mapper`` can be used to manipulate page tables
 
 Preallocate Frames
-```~~~~~~~~~~~~~~~
+```
 
 Iterate through usable memory regions and store frames
 
@@ -682,7 +682,7 @@ for region in entries.iter()
 **Capacity**: 65,536 frames (256 MB maximum)
 
 Create Frame Allocator
-```~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -734,7 +734,7 @@ HEAP_SIZE:  1 MB (1,048,576 bytes)
 **Purpose**: Setup visual output
 
 Paint Screen Blue
-```~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -754,7 +754,7 @@ if let Some(fb) = fb_response.framebuffers().next() {
 **Visual Result**: Solid blue screen with memory map at bottom
 
 Initialize Text Console
-```~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -808,7 +808,7 @@ vfs::init_ramdisk(&module_response);
 **Purpose**: Load and execute init binary
 
 Load Init Binary
-```~~~~~~~~~~~~~
+```
 
 
 ```
@@ -825,7 +825,7 @@ let init_binary = vfs::read_file("/init")
 5. Setup userspace stack
 
 Execute Init
-```~~~~~~~~~
+```
 
 
 ```

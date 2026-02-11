@@ -275,7 +275,7 @@ Real Hardware
 
 ```
 3.7 Port I/O Implementation Details
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 The serial driver uses hal::io::inb and hal::io::outb for register access.
 These are thin wrappers over x86 IN/OUT instructions.
