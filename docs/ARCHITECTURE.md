@@ -1,14 +1,6 @@
-===================================
 Serix Kernel Architecture
-===================================
+===========================
 
-:Author: Serix Kernel Team
-:Version: v0.0.5
-:Architecture: x86_64
-:Design: Microkernel-inspired monolithic kernel
-
-.. contents::
-    :depth: 3
 
 Overview
 ========
@@ -20,7 +12,7 @@ design, subsystem organization, and implementation philosophy of the kernel.
 Current Status (v0.0.5)
 -----------------------
 
-Serix v0.0.5 is a proof-of-concept kernel with these working features:
+Serix v0.0.5 is a kernel with these working features:
 
 - x86_64 long mode, higher-half kernel
 - APIC interrupt controller (Local APIC + I/O APIC)
