@@ -1595,3 +1595,10 @@ pub type GraphicsResult<T> = Result<T, GraphicsError>;
 - Framebuffer Howto: https://www.kernel.org/doc/Documentation/fb/
 
 # ## End of File
+
+## See Also
+
+- **[Boot Process](BOOT_PROCESS.md)** - Framebuffer initialization during boot
+- **[Architecture Overview](ARCHITECTURE.md)** - Graphics subsystem in overall design
+- **[Graphics Module](../graphics/README.md)** - Detailed implementation documentation
+- **[HAL API](HAL_API.md)** - Serial console (alternative output method)

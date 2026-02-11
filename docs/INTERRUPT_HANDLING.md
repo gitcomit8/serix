@@ -756,3 +756,11 @@ From source code
   * AMD64 Architecture Programmer's Manual, Volume 2
   * OSDev Wiki: https://wiki.osdev.org/Interrupts
   * OSDev Wiki: https://wiki.osdev.org/APIC
+
+## See Also
+
+- **[Boot Process](BOOT_PROCESS.md)** - IDT and APIC initialization sequence
+- **[Architecture Overview](ARCHITECTURE.md)** - System design overview
+- **[APIC Module](../apic/README.md)** - APIC interrupt controller implementation
+- **[IDT Module](../idt/README.md)** - Interrupt Descriptor Table implementation
+- **[Keyboard Module](../keyboard/README.md)** - PS/2 keyboard interrupt handler

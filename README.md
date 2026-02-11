@@ -88,7 +88,6 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
 ## Repository Layout
 
 ```
-
   kernel/         Kernel entry point, syscalls, GDT
   memory/         Page tables, heap allocator, frame allocator  
   hal/            Hardware abstraction (serial, CPU topology, I/O ports)
@@ -107,18 +106,21 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
   limine/         Limine bootloader (git submodule)
 ```
 
-## Documentation [docs/](docs/)
+**Module Documentation**: [kernel](kernel/README.md) | [memory](memory/README.md) | [hal](hal/README.md) | [apic](apic/README.md) | [idt](idt/README.md) | [graphics](graphics/README.md) | [task](task/README.md) | [util](util/README.md) | [keyboard](keyboard/README.md)
 
-```
-  docs/BOOT_PROCESS.md         Boot sequence and initialization
-  docs/MEMORY_LAYOUT.md        Virtual memory layout and addressing
-  docs/INTERRUPT_HANDLING.md   IDT, APIC, and interrupt flow
-  docs/KERNEL_API.md           Syscall interface and usage
-  docs/GRAPHICS_API.md         Framebuffer operations
-  docs/HAL_API.md              Hardware abstraction layer
-  docs/ROADMAP.md              Development roadmap and milestones
-  CONTRIBUTING.md              Contributor guidelines and style
-```
+## Documentation
+
+- **Technical Documentation** ([docs/](docs/))
+  - [Boot Process](docs/BOOT_PROCESS.md) - Boot sequence and initialization
+  - [Memory Layout](docs/MEMORY_LAYOUT.md) - Virtual memory layout and addressing
+  - [Interrupt Handling](docs/INTERRUPT_HANDLING.md) - IDT, APIC, and interrupt flow
+  - [Kernel API](docs/KERNEL_API.md) - Syscall interface and usage
+  - [Graphics API](docs/GRAPHICS_API.md) - Framebuffer operations
+  - [HAL API](docs/HAL_API.md) - Hardware abstraction layer
+  - [Architecture](docs/ARCHITECTURE.md) - System architecture overview
+  - [Roadmap](docs/ROADMAP.md) - Development roadmap and milestones
+- **Developer Guide**
+  - [Contributing Guidelines](CONTRIBUTING.md) - Code style, build, and PR process
 
 ## Contributing
 
@@ -128,10 +130,10 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - Build and test procedures
 - Commit message format
 - Pull request process
-- Areas needing work (see docs/ROADMAP.md Phase 3)
+- Areas needing work (see [Phase 3 of roadmap](docs/ROADMAP.md#phase-3-hardware-integration-in-progress))
 
 Bug reports and feature requests should use GitHub issue templates in
-.github/ISSUE_TEMPLATE/.
+[.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/).
 
 ## License
 

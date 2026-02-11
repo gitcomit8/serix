@@ -699,3 +699,10 @@ Hardware Watchdog
 ================================================================================
 
 ## End of HAL Documentation
+
+## See Also
+
+- **[Boot Process](BOOT_PROCESS.md)** - HAL initialization during boot
+- **[Architecture Overview](ARCHITECTURE.md)** - HAL in system architecture
+- **[HAL Module](../hal/README.md)** - Hardware abstraction layer implementation
+- **[Interrupt Handling](INTERRUPT_HANDLING.md)** - Hardware interrupt management

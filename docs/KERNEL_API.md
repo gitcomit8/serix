@@ -1564,3 +1564,10 @@ API Review:
 - Limine Protocol: https://github.com/limine-bootloader/limine/blob/trunk/PROTOCOL.md
 
 ## **End of Document**
+
+## See Also
+
+- **[Boot Process](BOOT_PROCESS.md)** - Kernel initialization and userspace setup
+- **[Architecture Overview](ARCHITECTURE.md)** - System design and philosophy
+- **[Kernel Module](../kernel/README.md)** - Syscall implementation details
+- **[Memory Layout](MEMORY_LAYOUT.md)** - Address space organization

@@ -251,7 +251,7 @@ Release Engineering
 ```
 
 ## Contributing
-See CONTRIBUTING.md for how to contribute to these roadmap items.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to contribute to these roadmap items.
 High-priority tasks for contributors:
 
  1. VirtIO block driver completion (Phase 3)
