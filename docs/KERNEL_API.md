@@ -1,1324 +1,1517 @@
-# Kernel API Documentation
+============================
+Serix Kernel API Reference
+============================
 
-**Document Version:** 1.0  
-**Last Updated:** 2025-10-13  
-**Target Architecture:** x86_64  
+:Author: Serix Kernel Team
+:Version: 0.0.5
+:Date: 2025-01-13
+:Architecture: x86_64
 
-## Table of Contents
+Overview
+========
 
-1. [Overview](#overview)
-2. [Memory Management API](#memory-management-api)
-3. [Task Management API](#task-management-api)
-4. [Interrupt Management API](#interrupt-management-api)
-5. [APIC API](#apic-api)
-6. [Utility API](#utility-api)
-7. [Keyboard API](#keyboard-api)
-8. [Inter-Subsystem Communication](#inter-subsystem-communication)
+This document provides the internal API reference for Serix kernel subsystems.
+It specifies the contracts between kernel modules including memory management,
+task scheduling, interrupt handling, hardware abstraction, and system calls.
 
----
+The Serix kernel is a microkernel-style operating system written in Rust,
+featuring capability-based security and a workspace-based cargo architecture.
 
-## Overview
+Design Principles
+-----------------
 
-This document specifies the internal APIs used between Serix kernel subsystems. These APIs define the contract between different kernel modules and establish the interfaces for memory management, task scheduling, interrupt handling, and hardware control.
+Type Safety
+    Leverage Rust's type system for compile-time safety guarantees
 
-### Design Principles
+Minimal Unsafe
+    Isolate unsafe operations to specific hardware abstraction modules
 
-1. **Type Safety**: Leverage Rust's type system for compile-time safety
-2. **Minimal Unsafe**: Unsafe operations isolated to specific modules
-3. **Zero-Cost Abstractions**: No runtime overhead for abstractions
-4. **Clear Ownership**: Explicit ownership and borrowing semantics
-5. **Error Handling**: Use `Result` and `Option` types where appropriate
+Zero-Cost Abstractions
+    Ensure abstractions compile to optimal machine code with no runtime overhead
 
-### Module Dependencies
+Clear Ownership
+    Explicit ownership and borrowing semantics throughout the codebase
 
-```
-kernel (main)
-  ├── memory     (no internal deps)
-  ├── hal        (no internal deps)
-  ├── util       (depends on: hal)
-  ├── idt        (depends on: hal, util, keyboard)
-  ├── apic       (depends on: hal, idt, keyboard)
-  ├── graphics   (no internal deps)
-  ├── keyboard   (depends on: hal, graphics)
-  └── task       (depends on: hal)
-```
+Error Handling
+    Use Result and Option types where appropriate; panic on unrecoverable errors
 
----
+Subsystem Architecture
+----------------------
 
-## Memory Management API
+The kernel consists of independent workspace crates::
 
-**Module**: `memory`  
-**Path**: `memory/src/lib.rs`, `memory/src/heap.rs`
+    kernel/         Entry point, syscalls, global initialization
+    memory/         Page tables, heap allocator, frame allocation
+    hal/            Hardware abstraction (serial, CPU topology)
+    apic/           APIC interrupt controller (Local APIC, I/O APIC, timer)
+    idt/            Interrupt Descriptor Table management
+    graphics/       Framebuffer console and drawing primitives
+    task/           Async executor, scheduler, task control blocks
+    capability/     Capability-based security system
+    drivers/        Device drivers (VirtIO, PCI, console)
+    vfs/            Virtual filesystem (ramdisk, INode abstraction)
+    ipc/            Inter-process communication
+    loader/         ELF userspace binary loader
+    ulib/           Userspace library (syscall wrappers)
 
-### Page Table Management
+Current Status (v0.0.5)
+-----------------------
 
-#### init_offset_page_table
+System Calls
+    Basic syscalls implemented: serix_write, serix_read, serix_exit, serix_yield
 
-```rust
-pub unsafe fn init_offset_page_table(offset: VirtAddr) -> OffsetPageTable<'static>
-```
+VFS
+    Initialized with ramdisk support, basic file operations
 
-**Purpose**: Initializes an offset page table mapper with the active page table.
+Task Scheduler
+    Minimal skeletal implementation, no preemptive scheduling yet
 
-**Parameters**:
-- `offset`: Virtual address offset for physical memory mapping (typically `0xFFFF_8000_0000_0000`)
+Userspace
+    Init binary loads and executes from ramdisk
 
-**Returns**: `OffsetPageTable<'static>` - Page table mapper instance
+Memory Management
+    Working page tables, heap allocator, frame allocation
 
-**Safety**: 
-- Caller must ensure offset correctly maps physical memory
-- Must be called only once during boot
-- Requires valid CR3 register value
+Interrupts
+    IDT loaded, APIC enabled, timer and keyboard interrupts functional
 
-**Example**:
-```rust
-let phys_mem_offset = VirtAddr::new(0xFFFF_8000_0000_0000);
-let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 
-// Use mapper to map pages
-use x86_64::structures::paging::{Page, PageTableFlags};
-let page = Page::containing_address(VirtAddr::new(0x4444_4444_0000));
-mapper.translate_page(page);
-```
+Memory Management
+=================
 
-**Notes**:
-- Returns reference to active level-4 page table
-- Enables direct physical memory access via offset mapping
-- All physical addresses can be converted: `virt = 0xFFFF_8000_0000_0000 + phys`
+:Module: memory
+:Files: memory/src/lib.rs, memory/src/heap.rs
 
-#### BootFrameAllocator
+The memory subsystem provides page table management, heap allocation, and
+physical frame allocation. All physical RAM is mapped at virtual offset
+0xFFFF_8000_0000_0000 (HHDM - Higher Half Direct Map).
 
-```rust
-pub struct BootFrameAllocator {
-    frames: &'static [PhysFrame],
-    next: usize,
-}
+Page Table Management
+---------------------
 
-impl BootFrameAllocator {
-    pub fn new(memory_map: &[&Entry]) -> Self
-}
-```
+init_offset_page_table()
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Purpose**: Allocates physical memory frames (4KB pages) from usable memory regions.
+Initialize offset page table mapper with active page table::
 
-**Methods**:
+    pub unsafe fn init_offset_page_table(offset: VirtAddr) -> OffsetPageTable<'static>
 
-##### new
+Parameters:
+    offset
+        Virtual address offset for physical memory mapping, typically
+        0xFFFF_8000_0000_0000 from Limine HHDM response
 
-```rust
-pub fn new(memory_map: &[&Entry]) -> Self
-```
+Returns:
+    OffsetPageTable<'static> mapper instance
 
-**Parameters**:
-- `memory_map`: Slice of memory map entries from bootloader
+Safety:
+    - Caller must ensure offset correctly maps physical memory
+    - Must be called only once during boot
+    - Requires valid CR3 register value
 
-**Returns**: `BootFrameAllocator` instance
+Example usage::
 
-**Example**:
-```rust
-let mmap_response = MMAP_REQ.get_response().expect("No memory map");
-let entries = mmap_response.entries();
-let mut frame_allocator = BootFrameAllocator::new(entries);
+    let phys_mem_offset = VirtAddr::new(0xFFFF_8000_0000_0000);
+    let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 
-// Allocate a frame
-if let Some(frame) = frame_allocator.allocate_frame() {
-    println!("Allocated frame at: {:?}", frame.start_address());
-}
-```
+    // Translate virtual to physical
+    use x86_64::structures::paging::Page;
+    let page = Page::containing_address(VirtAddr::new(0x4444_4444_0000));
+    mapper.translate_page(page);
 
-**Trait Implementation**: `FrameAllocator<Size4KiB>`
+Notes:
+    Returns reference to active level-4 page table. Enables direct physical
+    memory access via offset mapping. All physical addresses converted as:
+    virt = 0xFFFF_8000_0000_0000 + phys
 
-```rust
-unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame>
-}
-```
 
-**Algorithm**: Simple bump allocator (no deallocation)
+BootFrameAllocator
+~~~~~~~~~~~~~~~~~~
 
-### Heap Management
+Physical frame allocator using bootloader memory map::
 
-#### init_heap
+    pub struct BootFrameAllocator {
+        frames: &'static [PhysFrame],
+        next: usize,
+    }
 
-```rust
-pub fn init_heap(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-)
-```
+    impl BootFrameAllocator {
+        pub fn new(memory_map: &[&Entry]) -> Self
+    }
 
-**Purpose**: Maps and initializes the kernel heap for dynamic memory allocation.
+Purpose:
+    Allocates physical memory frames (4KiB pages) from usable memory regions
+    identified by the bootloader
 
-**Parameters**:
-- `mapper`: Page table mapper for creating virtual mappings
-- `frame_allocator`: Allocator for obtaining physical frames
+Trait Implementation::
 
-**Side Effects**:
-- Maps heap region (`0x4444_4444_0000` - `0x4444_4454_0000`)
-- Initializes global heap allocator
-- Enables Rust `alloc` crate functionality
+    unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
+        fn allocate_frame(&mut self) -> Option<PhysFrame>
+    }
 
-**Example**:
-```rust
-// After initializing mapper and frame allocator
-init_heap(&mut mapper, &mut frame_alloc);
+Algorithm:
+    Simple bump allocator, no deallocation support
 
-// Now can use heap allocations
-use alloc::vec::Vec;
-let mut v = Vec::new();
-v.push(1);
-v.push(2);
-```
+Example usage::
 
-**Panics**: If frame allocation fails or mapping fails
+    let mmap_response = MMAP_REQ.get_response().expect("No memory map");
+    let entries = mmap_response.entries();
+    let mut frame_allocator = BootFrameAllocator::new(entries);
 
-**Constants**:
-```rust
-pub const HEAP_START: usize = 0x4444_4444_0000;
-pub const HEAP_SIZE: usize = 1024 * 1024;  // 1 MB
-pub const MAX_BOOT_FRAMES: usize = 65536;
-```
+    // Allocate a frame
+    if let Some(frame) = frame_allocator.allocate_frame() {
+        serial_println!("Allocated frame at: {:?}", frame.start_address());
+    }
 
-#### StaticBootFrameAllocator
+StaticBootFrameAllocator
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-```rust
-pub struct StaticBootFrameAllocator {
-    next: usize,
-    limit: usize,
-}
+Pre-heap frame allocator using static array storage::
 
-impl StaticBootFrameAllocator {
-    pub fn new(frame_count: usize) -> Self
-}
-```
+    pub struct StaticBootFrameAllocator {
+        next: usize,
+        limit: usize,
+    }
 
-**Purpose**: Pre-heap frame allocator using static array storage.
+    impl StaticBootFrameAllocator {
+        pub fn new(frame_count: usize) -> Self
+    }
 
-**Parameters**:
-- `frame_count`: Number of frames stored in `BOOT_FRAMES` array
+Purpose:
+    Frame allocator that works before heap initialization, stores frames
+    in static array
 
-**Returns**: `StaticBootFrameAllocator` instance
+Storage::
 
-**Storage**:
-```rust
-pub static mut BOOT_FRAMES: [Option<PhysFrame>; MAX_BOOT_FRAMES] = [None; MAX_BOOT_FRAMES];
-```
+    pub static mut BOOT_FRAMES: [Option<PhysFrame>; MAX_BOOT_FRAMES] = 
+        [None; MAX_BOOT_FRAMES];
+    pub const MAX_BOOT_FRAMES: usize = 65536;
 
-**Example**:
-```rust
-// Preallocate frames to static array
-let mut frame_count = 0;
-for region in usable_regions {
-    for frame in region.frames() {
-        unsafe {
-            BOOT_FRAMES[frame_count] = Some(frame);
+Example usage::
+
+    // Preallocate frames to static array
+    let mut frame_count = 0;
+    for region in usable_regions {
+        for frame in region.frames() {
+            unsafe {
+                BOOT_FRAMES[frame_count] = Some(frame);
+            }
+            frame_count += 1;
         }
-        frame_count += 1;
     }
-}
 
-// Create allocator
-let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
-```
+    // Create allocator
+    let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
+    memory::init_heap(&mut mapper, &mut frame_alloc);
 
-**Trait Implementation**: `FrameAllocator<Size4KiB>`
+Heap Management
+---------------
 
-### Address Translation
+init_heap()
+~~~~~~~~~~~
 
-```rust
-// Convert physical to virtual (kernel space)
-pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    const OFFSET: u64 = 0xFFFF_8000_0000_0000;
-    VirtAddr::new(OFFSET + phys.as_u64())
-}
+Map and initialize kernel heap for dynamic memory allocation::
 
-// Convert virtual to physical (if in physical mapping region)
-pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
-    const OFFSET: u64 = 0xFFFF_8000_0000_0000;
-    if virt.as_u64() >= OFFSET {
-        Some(PhysAddr::new(virt.as_u64() - OFFSET))
-    } else {
-        None
+    pub fn init_heap(
+        mapper: &mut OffsetPageTable,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    )
+
+Parameters:
+    mapper
+        Page table mapper for creating virtual mappings
+
+    frame_allocator
+        Allocator for obtaining physical frames
+
+Side Effects:
+    - Maps heap region (0xFFFF_8000_4444_0000 to 0xFFFF_8000_4454_0000)
+    - Initializes global heap allocator
+    - Enables Rust alloc crate functionality (Vec, Box, String)
+
+Panics:
+    If frame allocation fails or mapping fails
+
+Constants::
+
+    pub const HEAP_START: usize = 0xFFFF_8000_4444_0000;
+    pub const HEAP_SIZE: usize = 1024 * 1024;  // 1 MiB
+
+Example usage::
+
+    // After initializing mapper and frame allocator
+    memory::init_heap(&mut mapper, &mut frame_alloc);
+
+    // Now heap allocations work
+    extern crate alloc;
+    use alloc::vec::Vec;
+    let mut v = Vec::new();
+    v.push(1);
+    v.push(2);
+
+.. note::
+    Must be called before any heap allocations (Vec, Box, String).
+    Heap initialization is a one-time operation during boot.
+
+Address Translation
+-------------------
+
+Helper functions for physical-virtual address conversion::
+
+    // Convert physical to virtual (kernel space)
+    pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
+        const OFFSET: u64 = 0xFFFF_8000_0000_0000;
+        VirtAddr::new(OFFSET + phys.as_u64())
     }
-}
-```
 
----
-
-## Task Management API
-
-**Module**: `task`  
-**Path**: `task/src/lib.rs`, `task/src/context_switch.rs`
-
-### Task Identification
-
-#### TaskId
-
-```rust
-pub struct TaskId(pub u64);
-
-impl TaskId {
-    pub fn new() -> Self
-    pub fn as_u64(self) -> u64
-}
-```
-
-**Purpose**: Unique identifier for tasks.
-
-**Methods**:
-
-##### new
-```rust
-pub fn new() -> Self
-```
-
-**Returns**: New unique `TaskId`
-
-**Thread Safety**: Uses atomic counter, safe to call from multiple contexts
-
-**Example**:
-```rust
-let task_id = TaskId::new();
-println!("Created task with ID: {}", task_id.as_u64());
-```
-
-### Task State
-
-```rust
-pub enum TaskState {
-    Ready,
-    Running,
-    Blocked,
-    Terminated,
-}
-```
-
-**States**:
-- `Ready`: Task is ready to run, waiting for CPU
-- `Running`: Task is currently executing
-- `Blocked`: Task is waiting for I/O or event
-- `Terminated`: Task has finished execution
-
-### Scheduling Classes
-
-```rust
-pub enum SchedClass {
-    Realtime(u8),  // Priority 0-99
-    Fair(u8),      // Priority 100-139
-    Batch,         // Priority 140
-    Iso,           // Isochronous
-}
-
-impl Default for SchedClass {
-    fn default() -> Self {
-        SchedClass::Fair(120)
+    // Convert virtual to physical (if in physical mapping region)
+    pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
+        const OFFSET: u64 = 0xFFFF_8000_0000_0000;
+        if virt.as_u64() >= OFFSET {
+            Some(PhysAddr::new(virt.as_u64() - OFFSET))
+        } else {
+            None
+        }
     }
-}
-```
 
-**Classes**:
-- `Realtime(priority)`: High-priority FIFO scheduling
-- `Fair(priority)`: CFS-style time-sliced scheduling
-- `Batch`: Background batch processing
-- `Iso`: Isochronous (multimedia) scheduling
+Task Management
+===============
 
-### CPU Context
+:Module: task
+:Files: task/src/lib.rs, task/src/context_switch.rs
 
-```rust
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CPUContext {
-    pub rsp: u64,
-    pub rbp: u64,
-    pub rbx: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    pub rip: u64,
-    pub rflags: u64,
-    pub cs: u64,
-    pub ss: u64,
-    pub fs: u64,
-    pub gs: u64,
-    pub ds: u64,
-    pub es: u64,
-    pub fs_base: u64,
-    pub gs_base: u64,
-    pub cr3: u64,
-}
-```
+The task subsystem provides async-based task execution, scheduling primitives,
+and context switching. Current implementation is minimal (v0.0.5) with no
+preemptive scheduling.
 
-**Purpose**: Stores complete CPU state for context switching.
+.. asciinema:: task-api-demo.cast
+    :title: Task API Demo - Task Creation and Scheduling
+    :alt: Demonstration showing task creation with TaskBuilder, adding tasks
+          to scheduler, and basic cooperative scheduling via task_yield().
+          Shows serial output with task IDs and state transitions.
+          Duration: ~45 seconds.
 
-**Fields**:
-- Callee-saved registers (RSP, RBP, RBX, R12-R15)
-- Execution state (RIP, RFLAGS)
-- Segment selectors (CS, SS, DS, ES, FS, GS)
-- Segment bases (FS_BASE, GS_BASE)
-- Page table base (CR3)
+Task Identification
+-------------------
 
-### Task Control Block
+TaskId
+~~~~~~
 
-```rust
-pub struct TaskCB {
-    pub id: TaskId,
-    pub state: TaskState,
-    pub sched_class: SchedClass,
-    pub context: CPUContext,
-    pub kstack: VirtAddr,
-    pub ustack: Option<VirtAddr>,
-    pub name: &'static str,
-}
+Unique identifier for tasks::
 
-impl TaskCB {
+    pub struct TaskId(pub u64);
+
+    impl TaskId {
+        pub fn new() -> Self
+        pub fn as_u64(self) -> u64
+    }
+
+Thread Safety:
+    Uses atomic counter, safe to call from multiple contexts
+
+Example usage::
+
+    let task_id = TaskId::new();
+    serial_println!("Created task ID: {}", task_id.as_u64());
+
+Task State
+----------
+
+Task lifecycle states::
+
+    pub enum TaskState {
+        Ready,       // Ready to run, waiting for CPU
+        Running,     // Currently executing
+        Blocked,     // Waiting for I/O or event
+        Terminated,  // Finished execution
+    }
+
+Scheduling Classes
+------------------
+
+Scheduling policies and priorities::
+
+    pub enum SchedClass {
+        Realtime(u8),  // Priority 0-99, FIFO scheduling
+        Fair(u8),      // Priority 100-139, CFS-style
+        Batch,         // Priority 140, background batch
+        Iso,           // Isochronous (multimedia)
+    }
+
+    impl Default for SchedClass {
+        fn default() -> Self {
+            SchedClass::Fair(120)
+        }
+    }
+
+CPU Context
+-----------
+
+Complete CPU state for context switching::
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct CPUContext {
+        pub rsp: u64,      // Stack pointer
+        pub rbp: u64,      // Base pointer
+        pub rbx: u64,      // Callee-saved
+        pub r12: u64,      // Callee-saved
+        pub r13: u64,      // Callee-saved
+        pub r14: u64,      // Callee-saved
+        pub r15: u64,      // Callee-saved
+        pub rip: u64,      // Instruction pointer
+        pub rflags: u64,   // CPU flags
+        pub cs: u64,       // Code segment
+        pub ss: u64,       // Stack segment
+        pub fs: u64,       // FS segment
+        pub gs: u64,       // GS segment
+        pub ds: u64,       // Data segment
+        pub es: u64,       // Extra segment
+        pub fs_base: u64,  // FS base address
+        pub gs_base: u64,  // GS base address (TLS)
+        pub cr3: u64,      // Page table base
+    }
+
+Task Control Block
+------------------
+
+TaskCB
+~~~~~~
+
+Represents a schedulable task::
+
+    pub struct TaskCB {
+        pub id: TaskId,
+        pub state: TaskState,
+        pub sched_class: SchedClass,
+        pub context: CPUContext,
+        pub kstack: VirtAddr,
+        pub ustack: Option<VirtAddr>,
+        pub name: &'static str,
+    }
+
+    impl TaskCB {
+        pub fn new(
+            name: &'static str,
+            entry_point: unsafe extern "C" fn() -> !,
+            stack: VirtAddr,
+            sched_class: SchedClass
+        ) -> Self
+        
+        pub fn set_state(&mut self, state: TaskState)
+        pub fn priority(&self) -> u8
+    }
+
+new()
+^^^^^
+
+Create new task control block::
+
     pub fn new(
         name: &'static str,
         entry_point: unsafe extern "C" fn() -> !,
         stack: VirtAddr,
         sched_class: SchedClass
     ) -> Self
-    
-    pub fn set_state(&mut self, state: TaskState)
-    pub fn priority(&self) -> u8
-}
-```
 
-**Purpose**: Represents a schedulable task.
+Parameters:
+    name
+        Human-readable task name for debugging
 
-**Methods**:
+    entry_point
+        Function to execute when task runs, must never return
 
-##### new
-```rust
-pub fn new(
-    name: &'static str,
-    entry_point: unsafe extern "C" fn() -> !,
-    stack: VirtAddr,
-    sched_class: SchedClass
-) -> Self
-```
+    stack
+        Top of kernel stack for this task
 
-**Parameters**:
-- `name`: Human-readable task name
-- `entry_point`: Function to execute when task runs
-- `stack`: Top of stack for this task
-- `sched_class`: Scheduling policy and priority
+    sched_class
+        Scheduling policy and priority
 
-**Returns**: Initialized `TaskCB` in `Ready` state
+Returns:
+    Initialized TaskCB in Ready state
 
-**Example**:
-```rust
-extern "C" fn my_task() -> ! {
-    loop {
-        // Task code
-        task::task_yield();
+Example usage::
+
+    extern "C" fn my_task() -> ! {
+        loop {
+            serial_println!("Task running");
+            task::task_yield();
+        }
     }
-}
 
-let stack = VirtAddr::new(0xFFFF_8000_0001_0000);
-let task = TaskCB::new(
-    "my_task",
-    my_task,
-    stack,
-    SchedClass::Fair(120)
-);
-```
+    let stack = VirtAddr::new(0xFFFF_8000_0001_0000);
+    let task = TaskCB::new(
+        "my_task",
+        my_task,
+        stack,
+        SchedClass::Fair(120)
+    );
 
-##### set_state
-```rust
-pub fn set_state(&mut self, state: TaskState)
-```
+Task Builder
+------------
 
-**Purpose**: Changes task state.
+Builder pattern for task creation::
 
-##### priority
-```rust
-pub fn priority(&self) -> u8
-```
+    pub struct TaskBuilder {
+        name: &'static str,
+        sched_class: SchedClass,
+        stack_size: usize,
+    }
 
-**Returns**: Numeric priority (0-255, lower is higher priority)
+    impl TaskBuilder {
+        pub fn new(name: &'static str) -> Self
+        pub fn sched_class(mut self, sched_class: SchedClass) -> Self
+        pub fn stack_size(mut self, size: usize) -> Self
+        pub fn build_kernel_task(self, entry_point: unsafe extern "C" fn() -> !) 
+            -> TaskCB
+    }
 
-### Task Builder
+Example usage::
 
-```rust
-pub struct TaskBuilder {
-    name: &'static str,
-    sched_class: SchedClass,
-    stack_size: usize,
-}
+    let task = TaskBuilder::new("background_worker")
+        .sched_class(SchedClass::Batch)
+        .stack_size(16384)
+        .build_kernel_task(worker_function);
 
-impl TaskBuilder {
-    pub fn new(name: &'static str) -> Self
-    pub fn sched_class(mut self, sched_class: SchedClass) -> Self
-    pub fn stack_size(mut self, size: usize) -> Self
-    pub fn build_kernel_task(self, entry_point: unsafe extern "C" fn() -> !) -> TaskCB
-}
-```
+    Scheduler::global().lock().add_task(task);
 
-**Purpose**: Builder pattern for creating tasks.
+Scheduler
+---------
 
-**Example**:
-```rust
-let task = TaskBuilder::new("background_worker")
-    .sched_class(SchedClass::Batch)
-    .stack_size(16384)
-    .build_kernel_task(worker_function);
+Global task scheduler::
 
-Scheduler::global().lock().add_task(task);
-```
+    pub struct Scheduler {
+        tasks: Vec<TaskCB>,
+        current: usize,
+    }
 
-### Scheduler
+    impl Scheduler {
+        pub fn new() -> Self
+        pub fn init_global()
+        pub fn global() -> &'static spin::Mutex<Scheduler>
+        pub unsafe fn start() -> !
+        pub fn add_task(&mut self, task: TaskCB)
+        pub fn task_count(&self) -> usize
+    }
 
-```rust
-pub struct Scheduler {
-    tasks: Vec<TaskCB>,
-    current: usize,
-}
+init_global()
+~~~~~~~~~~~~~
 
-impl Scheduler {
-    pub fn new() -> Self
+Initialize global scheduler instance::
+
     pub fn init_global()
+
+Must be called once during kernel initialization before any tasks are created.
+
+Example::
+
+    Scheduler::init_global();
+
+global()
+~~~~~~~~
+
+Access global scheduler::
+
     pub fn global() -> &'static spin::Mutex<Scheduler>
-    pub unsafe fn start() -> !
+
+Returns:
+    Reference to global scheduler protected by spinlock
+
+Example::
+
+    let mut sched = Scheduler::global().lock();
+    sched.add_task(task);
+    serial_println!("Task count: {}", sched.task_count());
+
+add_task()
+~~~~~~~~~~
+
+Add task to scheduler run queue::
+
     pub fn add_task(&mut self, task: TaskCB)
-    pub fn task_count(&self) -> usize
-}
-```
 
-**Purpose**: Global task scheduler.
+Context Switching
+-----------------
 
-**Methods**:
+context_switch()
+~~~~~~~~~~~~~~~~
 
-##### init_global
-```rust
-pub fn init_global()
-```
+Low-level context switch between tasks::
 
-**Purpose**: Initializes global scheduler instance (must be called once during boot).
+    #[naked]
+    pub unsafe extern "C" fn context_switch(
+        old: *mut CPUContext,
+        new: *const CPUContext
+    )
 
-**Example**:
-```rust
-// During kernel initialization
-Scheduler::init_global();
-```
+Parameters:
+    old
+        Pointer to save current CPU context
 
-##### global
-```rust
-pub fn global() -> &'static spin::Mutex<Scheduler>
-```
+    new
+        Pointer to load new CPU context
 
-**Returns**: Reference to global scheduler
+Safety:
+    - Must be called with valid context pointers
+    - Pointers must remain valid for entire operation
+    - Should only be called by scheduler
 
-**Example**:
-```rust
-let mut sched = Scheduler::global().lock();
-sched.add_task(task);
-```
+Example (internal scheduler use)::
 
-##### start
-```rust
-pub unsafe fn start() -> !
-```
-
-**Purpose**: Begins executing tasks (never returns).
-
-**Safety**: Must be called with valid task list
-
-**Example**:
-```rust
-// After adding tasks
-unsafe {
-    Scheduler::start();  // Never returns
-}
-```
-
-##### add_task
-```rust
-pub fn add_task(&mut self, task: TaskCB)
-```
-
-**Purpose**: Adds task to scheduler's task list.
-
-### Context Switching
-
-```rust
-#[naked]
-pub unsafe extern "C" fn context_switch(
-    old: *mut CPUContext,
-    new: *const CPUContext
-)
-```
-
-**Purpose**: Performs low-level context switch between tasks.
-
-**Parameters**:
-- `old`: Pointer to save current CPU context
-- `new`: Pointer to load new CPU context
-
-**Safety**: 
-- Must be called with valid context pointers
-- Pointers must remain valid for entire operation
-- Should only be called by scheduler
-
-**Example**:
-```rust
-// In scheduler
-let old_ctx = &mut tasks[current_idx].context as *mut CPUContext;
-let new_ctx = &tasks[next_idx].context as *const CPUContext;
-
-unsafe {
-    context_switch(old_ctx, new_ctx);
-}
-```
-
-### Task Yielding
-
-```rust
-pub fn task_yield()
-```
-
-**Purpose**: Voluntarily yields CPU to another task.
-
-**Example**:
-```rust
-extern "C" fn cooperative_task() -> ! {
-    loop {
-        // Do some work
-        do_work();
-        
-        // Yield to other tasks
-        task::task_yield();
-    }
-}
-```
-
-### Task Manager
-
-```rust
-pub struct TaskManager {
-    tasks: Mutex<RefCell<Vec<TaskCB>>>,
-    current_task_idx: Mutex<usize>,
-}
-
-impl TaskManager {
-    pub const fn new() -> Self
-    pub fn create_task(name: &'static str) -> TaskBuilder
-    pub fn add_task(&self, task: TaskCB)
-    pub fn next_ready_task(&self) -> Option<TaskCB>
-    pub fn schedule(&self) -> Option<TaskCB>
-    pub fn update_task(&self, updated_task: TaskCB)
-}
-```
-
-**Purpose**: Global task registry (alternative to Scheduler for simple use cases).
-
----
-
-## Interrupt Management API
-
-**Module**: `idt`  
-**Path**: `idt/src/lib.rs`
-
-### IDT Initialization
-
-```rust
-pub fn init_idt()
-```
-
-**Purpose**: Loads the Interrupt Descriptor Table into the CPU.
-
-**Side Effects**:
-- Loads IDT into IDTR register
-- Marks IDT as loaded
-
-**Example**:
-```rust
-// During kernel initialization
-idt::init_idt();
-
-// Now interrupts can be enabled
-x86_64::instructions::interrupts::enable();
-```
-
-**Panics**: None (will triple fault if IDT entries invalid)
-
-### Dynamic Handler Registration
-
-```rust
-pub fn register_interrupt_handler(
-    vector: u8,
-    handler: extern "x86-interrupt" fn(InterruptStackFrame),
-)
-```
-
-**Purpose**: Registers or updates an interrupt handler after IDT is loaded.
-
-**Parameters**:
-- `vector`: Interrupt vector number (32-255 for hardware interrupts)
-- `handler`: Interrupt handler function
-
-**Safety**: Handler must follow x86-interrupt calling convention
-
-**Example**:
-```rust
-extern "x86-interrupt" fn custom_handler(_frame: InterruptStackFrame) {
-    serial_println!("Custom interrupt!");
-    unsafe { apic::send_eoi(); }
-}
-
-// Register handler for vector 50
-unsafe {
-    idt::register_interrupt_handler(50, custom_handler);
-}
-```
-
-**Reloads IDT**: Automatically reloads IDT if already loaded
-
-### Exception Handlers
-
-Pre-registered exception handlers:
-
-#### Divide by Zero (Vector 0)
-
-```rust
-extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame)
-```
-
-**Triggered By**: Division by zero or division overflow
-
-**Action**: Calls `util::panic::oops("Divide by Zero exception")`
-
-#### Page Fault (Vector 14)
-
-```rust
-extern "x86-interrupt" fn page_fault_handler(
-    stack: InterruptStackFrame,
-    err: PageFaultErrorCode
-)
-```
-
-**Triggered By**: Invalid memory access
-
-**Information Provided**:
-- Faulting address (from CR2 register)
-- Error code (present, write, user flags)
-- Instruction pointer
-
-**Action**: Logs fault information and halts
-
-#### Double Fault (Vector 8)
-
-```rust
-extern "x86-interrupt" fn double_fault_handler(
-    _stack: InterruptStackFrame,
-    _err: u64
-) -> !
-```
-
-**Triggered By**: Exception during exception handling
-
-**Action**: Panics (system in inconsistent state)
-
-### Hardware Interrupt Handlers
-
-#### Keyboard (Vector 33)
-
-```rust
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame)
-```
-
-**Action**:
-1. Reads scancode from port 0x60
-2. Calls `keyboard::handle_scancode(scancode)`
-3. Sends EOI to APIC
-
-**IRQ**: IRQ1 (PS/2 keyboard)
-
----
-
-## APIC API
-
-**Module**: `apic`  
-**Path**: `apic/src/lib.rs`, `apic/src/ioapic.rs`, `apic/src/timer.rs`
-
-### Local APIC
-
-#### enable
-
-```rust
-pub unsafe fn enable()
-```
-
-**Purpose**: Enables the Local APIC and disables legacy PIC.
-
-**Side Effects**:
-- Sets APIC Global Enable bit in IA32_APIC_BASE MSR
-- Sets APIC Software Enable bit in SVR register
-- Remaps and masks all PIC interrupts
-
-**Example**:
-```rust
-unsafe {
-    apic::enable();
-}
-```
-
-**Must Call**: Before using any APIC functionality
-
-#### send_eoi
-
-```rust
-pub unsafe fn send_eoi()
-```
-
-**Purpose**: Signals End of Interrupt to Local APIC.
-
-**Example**:
-```rust
-extern "x86-interrupt" fn interrupt_handler(_frame: InterruptStackFrame) {
-    // Handle interrupt
-    
-    // Signal completion
+    let old_ctx = &mut tasks[current_idx].context as *mut CPUContext;
+    let new_ctx = &tasks[next_idx].context as *const CPUContext;
     unsafe {
-        apic::send_eoi();
+        context_switch(old_ctx, new_ctx);
     }
-}
-```
 
-**Critical**: Must be called at end of every interrupt handler (except CPU exceptions)
+task_yield()
+~~~~~~~~~~~~
 
-#### set_timer
+Voluntarily yield CPU to another task::
 
-```rust
-pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
-```
+    pub fn task_yield()
 
-**Purpose**: Configures Local APIC timer (low-level interface).
+Example::
 
-**Parameters**:
-- `vector`: Interrupt vector number (32-255)
-- `divide`: Divider configuration (0-11)
-- `initial_count`: Timer period in bus cycles
+    extern "C" fn cooperative_task() -> ! {
+        loop {
+            do_work();
+            task::task_yield();  // Let other tasks run
+        }
+    }
 
-**Example**:
-```rust
-unsafe {
-    // 625 Hz timer
-    apic::set_timer(49, 0x3, 100_000);
-}
-```
+System Calls
+============
 
-**Note**: Prefer using `apic::timer::init_hardware()` for standard configuration
+:Module: kernel
+:Files: kernel/src/syscall.rs, ulib/src/lib.rs
 
-### I/O APIC
+The syscall subsystem provides the interface between userspace programs and
+the kernel. Currently implements 4 basic syscalls (v0.0.5).
 
-#### init_ioapic
+.. asciinema:: syscall-demo.cast
+    :title: Syscall Demo - Userspace System Calls
+    :alt: Shows userspace init binary making syscalls. Serial output displays
+          syscall numbers and arguments for serix_write (write "Hello" to stdout),
+          serix_read (read from stdin), serix_yield (cooperative multitasking),
+          and serix_exit (terminate with exit code 0). Demonstrates syscall
+          calling convention and kernel syscall handler execution.
+          Duration: ~30 seconds.
 
-```rust
-pub unsafe fn init_ioapic()
-```
+Syscall Numbers
+---------------
 
-**Purpose**: Initializes I/O APIC with default IRQ routing.
+Syscall vector assignments::
 
-**Default Mappings**:
-- IRQ0 (timer) → Vector 32
-- IRQ1 (keyboard) → Vector 33
+    const SYS_READ:  u64 = 0;
+    const SYS_WRITE: u64 = 1;
+    const SYS_YIELD: u64 = 24;
+    const SYS_EXIT:  u64 = 60;
 
-**Example**:
-```rust
-unsafe {
-    apic::ioapic::init_ioapic();
-}
-```
+Calling Convention
+------------------
 
-#### map_irq
+Syscalls use the SYSCALL instruction (x86_64 fast syscall mechanism)::
 
-```rust
-pub unsafe fn map_irq(irq: u8, vector: u8)
-```
+    rax     Syscall number
+    rdi     Argument 1
+    rsi     Argument 2
+    rdx     Argument 3
+    r10     Argument 4 (rcx is clobbered by SYSCALL)
+    r8      Argument 5
+    r9      Argument 6
 
-**Purpose**: Maps hardware IRQ to interrupt vector.
+    Return value in rax
 
-**Parameters**:
-- `irq`: Hardware IRQ number (0-23)
-- `vector`: Interrupt vector (32-255)
+serix_write()
+-------------
 
-**Example**:
-```rust
-unsafe {
-    // Map IRQ3 (COM2 serial) to vector 35
-    apic::ioapic::map_irq(3, 35);
-}
-```
+Write bytes to file descriptor::
 
-### APIC Timer
+    pub fn serix_write(fd: u64, buf: *const u8, count: u64) -> u64
 
-#### register_handler
+Parameters:
+    fd
+        File descriptor (1 = stdout, 2 = stderr)
 
-```rust
-pub unsafe fn register_handler()
-```
+    buf
+        Pointer to data buffer
 
-**Purpose**: Registers timer interrupt handler with IDT.
+    count
+        Number of bytes to write
 
-**Must Call**: Before `idt::init_idt()`
+Returns:
+    Number of bytes written, or error code
 
-**Example**:
-```rust
-unsafe {
-    apic::enable();
-    apic::ioapic::init_ioapic();
-    apic::timer::register_handler();  // Before IDT load
-}
+Example (userspace)::
 
-idt::init_idt();
-```
+    use ulib::serix_write;
 
-#### init_hardware
+    let msg = b"Hello from userspace\n";
+    let written = serix_write(1, msg.as_ptr(), msg.len() as u64);
 
-```rust
-pub unsafe fn init_hardware()
-```
+Kernel Handler::
 
-**Purpose**: Configures and starts LAPIC timer hardware.
+    // kernel/src/syscall.rs
+    fn sys_write(fd: u64, buf: u64, count: u64) -> u64 {
+        // Validate fd, write to console/VFS
+        // Return bytes written
+    }
 
-**Must Call**: After `idt::init_idt()` and interrupts enabled
+serix_read()
+------------
 
-**Example**:
-```rust
-idt::init_idt();
-x86_64::instructions::interrupts::enable();
+Read bytes from file descriptor::
 
-unsafe {
-    apic::timer::init_hardware();  // Start timer
-}
-```
+    pub fn serix_read(fd: u64, buf: *mut u8, count: u64) -> u64
 
-**Configuration**:
-- Vector: 49 (0x31)
-- Mode: Periodic
-- Divider: 16
-- Frequency: ~625 Hz
+Parameters:
+    fd
+        File descriptor (0 = stdin)
 
-#### ticks
+    buf
+        Pointer to buffer for data
 
-```rust
-pub fn ticks() -> u64
-```
+    count
+        Maximum bytes to read
 
-**Purpose**: Returns number of timer interrupts since boot.
+Returns:
+    Number of bytes read, or error code
 
-**Returns**: Tick count (increments at timer frequency)
+Example (userspace)::
 
-**Example**:
-```rust
-let start = apic::timer::ticks();
-do_work();
-let end = apic::timer::ticks();
-let elapsed = end - start;
-println!("Work took {} ticks", elapsed);
-```
+    use ulib::serix_read;
 
-**Thread Safety**: Reads from static variable (atomic not needed for single-core)
+    let mut buf = [0u8; 128];
+    let read_count = serix_read(0, buf.as_mut_ptr(), 128);
 
----
+serix_exit()
+------------
 
-## Utility API
+Terminate current task::
 
-**Module**: `util`  
-**Path**: `util/src/lib.rs`, `util/src/panic.rs`
+    pub fn serix_exit(code: u64) -> !
 
-### Panic Handling
+Parameters:
+    code
+        Exit status code
 
-#### oops
+Never returns (task is terminated).
 
-```rust
-pub fn oops(msg: &str) -> !
-```
+Example (userspace)::
 
-**Purpose**: Handles kernel oops (non-recoverable error).
+    use ulib::serix_exit;
 
-**Parameters**:
-- `msg`: Error message to display
+    serix_exit(0);  // Success
 
-**Behavior**:
-- Prints message to serial console with `[KERNEL OOPS]` prefix
-- Enters infinite halt loop (never returns)
+serix_yield()
+-------------
 
-**Example**:
-```rust
-if !is_valid(value) {
-    util::panic::oops("Invalid value detected");
-}
-```
+Yield CPU to scheduler::
 
-**Use Cases**:
-- CPU exceptions (from exception handlers)
-- Hardware errors
-- Assertion failures
-- Unrecoverable kernel errors
+    pub fn serix_yield()
 
-#### halt_loop
+Voluntarily gives up remaining timeslice to allow other tasks to run.
 
-```rust
-pub fn halt_loop() -> !
-```
+Example (userspace)::
 
-**Purpose**: Enters infinite halt loop (low power).
+    use ulib::serix_yield;
 
-**Behavior**:
-- Executes `HLT` instruction in loop
-- CPU wakes on interrupt, then halts again
-- Never returns
+    loop {
+        do_work();
+        serix_yield();  // Cooperative multitasking
+    }
 
-**Example**:
-```rust
-// After critical error
-serial_println!("System halted");
-halt_loop();
-```
+Interrupt Management
+====================
 
-**Power Efficiency**: Uses ~1% CPU vs busy loop at 100%
+:Module: idt
+:Files: idt/src/lib.rs
 
----
 
-## Keyboard API
+The IDT subsystem loads interrupt handlers and manages CPU exceptions.
 
-**Module**: `keyboard`  
-**Path**: `keyboard/src/lib.rs`
+IDT Initialization
+------------------
 
-### Scancode Handling
+init_idt()
+~~~~~~~~~~
 
-#### handle_scancode
+Load Interrupt Descriptor Table into CPU::
 
-```rust
-pub fn handle_scancode(scancode: u8)
-```
+    pub fn init_idt()
 
-**Purpose**: Processes keyboard scancode and outputs to consoles.
+Side Effects:
+    - Loads IDT into IDTR register
+    - Marks IDT as loaded globally
 
-**Parameters**:
-- `scancode`: Raw scancode from keyboard controller (port 0x60)
+Must be called during kernel initialization before enabling interrupts.
 
-**Behavior**:
-- Ignores break codes (key release)
-- Translates make codes to ASCII
-- Outputs to serial console
-- Outputs to framebuffer console
+Example usage::
 
-**Example**:
-```rust
-extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
-    let scancode = unsafe { inb(0x60) };
-    keyboard::handle_scancode(scancode);
-    unsafe { apic::send_eoi(); }
-}
-```
+    idt::init_idt();
+    x86_64::instructions::interrupts::enable();  // Now safe
 
-**Translation**: US QWERTY layout, lowercase only (no modifier support yet)
+Panics:
+    None (will triple fault if IDT entries are invalid)
 
-#### enable_keyboard_interrupt
+Dynamic Handler Registration
+-----------------------------
 
-```rust
-pub fn enable_keyboard_interrupt()
-```
+register_interrupt_handler()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Purpose**: Enables keyboard interrupt on PIC (legacy, may not be needed with APIC).
+Register or update interrupt handler after IDT is loaded::
 
-**Example**:
-```rust
-unsafe {
-    keyboard::enable_keyboard_interrupt();
-}
-```
+    pub fn register_interrupt_handler(
+        vector: u8,
+        handler: extern "x86-interrupt" fn(InterruptStackFrame),
+    )
 
-**Note**: With APIC, `apic::ioapic::init_ioapic()` handles IRQ routing
+Parameters:
+    vector
+        Interrupt vector number (32-255 for hardware interrupts)
 
----
+    handler
+        Interrupt handler function following x86-interrupt calling convention
 
-## Inter-Subsystem Communication
+Safety:
+    Handler must follow x86-interrupt ABI
 
-### Subsystem Initialization Order
+Example usage::
 
-```rust
-// kernel/src/main.rs
+    extern "x86-interrupt" fn custom_handler(_frame: InterruptStackFrame) {
+        serial_println!("Custom interrupt!");
+        unsafe { apic::send_eoi(); }
+    }
 
-// 1. HAL (Hardware Abstraction Layer)
-hal::init_serial();
+    unsafe {
+        idt::register_interrupt_handler(50, custom_handler);
+    }
 
-// 2. APIC (Interrupt Controller)
-unsafe {
-    apic::enable();
-    apic::ioapic::init_ioapic();
-    apic::timer::register_handler();
-}
+Reloads IDT automatically if already loaded.
 
-// 3. IDT (Interrupt Handlers)
-idt::init_idt();
+Exception Handlers
+------------------
 
-// 4. Enable Interrupts
-x86_64::instructions::interrupts::enable();
+Pre-registered CPU exception handlers:
 
-// 5. Timer Start
-unsafe {
-    apic::timer::init_hardware();
-}
+Divide by Zero (Vector 0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// 6. Memory (Paging and Heap)
-let phys_mem_offset = VirtAddr::new(0xFFFF_8000_0000_0000);
-let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
-// ... frame allocation
-memory::init_heap(&mut mapper, &mut frame_alloc);
+::
 
-// 7. Graphics
-graphics::console::init_console(fb.addr(), fb.width(), fb.height(), fb.pitch());
+    extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame)
 
-// 8. Scheduler
-task::Scheduler::init_global();
-```
+Triggered By:
+    Division by zero or division overflow
 
-### Data Flow Examples
+Action:
+    Calls util::panic::oops("Divide by Zero exception")
 
-#### Keyboard Input Flow
+Page Fault (Vector 14)
+~~~~~~~~~~~~~~~~~~~~~~~
 
-```
-Hardware → Port 0x60 → Keyboard Interrupt (IDT)
-    ↓
-keyboard::handle_scancode()
-    ↓
-    ├─→ hal::serial_print!() → Serial Console
-    └─→ graphics::fb_print!() → Framebuffer Console
-```
+::
 
-#### Timer Tick Flow
+    extern "x86-interrupt" fn page_fault_handler(
+        stack: InterruptStackFrame,
+        err: PageFaultErrorCode
+    )
 
-```
-LAPIC Timer → Timer Interrupt (IDT)
-    ↓
-apic::timer::timer_interrupt()
-    ↓
-    ├─→ Increment TICKS counter
-    └─→ apic::send_eoi()
-```
+Triggered By:
+    Invalid memory access (not present, protection violation, reserved bits)
 
-#### Page Fault Flow
+Information Provided:
+    - Faulting address (from CR2 register)
+    - Error code (present, write, user, reserved, instruction fetch flags)
+    - Instruction pointer from stack frame
 
-```
-Invalid Memory Access → CPU Exception
-    ↓
-idt::page_fault_handler()
-    ↓
-    ├─→ Read CR2 (fault address)
-    ├─→ hal::serial_println!() (log error)
-    └─→ util::panic::oops() → halt_loop()
-```
+Action:
+    Logs fault details to serial console and halts
 
-### Shared Resources
+Double Fault (Vector 8)
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-#### Global Statics
+::
 
-```rust
-// IDT
-static ref IDT: IdtWrapper = { /* ... */ };
+    extern "x86-interrupt" fn double_fault_handler(
+        _stack: InterruptStackFrame,
+        _err: u64
+    ) -> !
 
-// Serial Port
-static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
+Triggered By:
+    Exception during exception handling (system in inconsistent state)
 
-// Framebuffer Console
-static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
+Action:
+    Panics immediately, never returns
 
-// Scheduler
-static GLOBAL_SCHEDULER: spin::Once<spin::Mutex<Scheduler>> = spin::Once::new();
+Hardware Interrupt Handlers
+----------------------------
 
-// Heap Allocator
-#[global_allocator]
-pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
-```
+Keyboard (Vector 33)
+~~~~~~~~~~~~~~~~~~~~
 
-**Synchronization**: All globals use mutexes or atomic initialization (Once)
+::
 
----
+    extern "x86-interrupt" fn keyboard_interrupt_handler(_frame: InterruptStackFrame)
 
-## Error Handling Patterns
+IRQ:
+    IRQ1 (PS/2 keyboard controller)
 
-### Result-Based APIs (Future)
+Action:
+    1. Read scancode from I/O port 0x60
+    2. Call keyboard::handle_scancode(scancode)
+    3. Send EOI to APIC
 
-```rust
-pub enum KernelError {
-    OutOfMemory,
-    InvalidAddress,
-    PermissionDenied,
-    HardwareError,
-}
+APIC Management
+===============
 
-pub type KernelResult<T> = Result<T, KernelError>;
+:Module: apic
+:Files: apic/src/lib.rs, apic/src/ioapic.rs, apic/src/timer.rs
 
-// Example usage
-pub fn allocate_frame() -> KernelResult<PhysFrame> {
-    if let Some(frame) = FRAME_ALLOCATOR.allocate() {
-        Ok(frame)
+The APIC subsystem manages the Advanced Programmable Interrupt Controller,
+including Local APIC, I/O APIC, and LAPIC timer.
+
+Local APIC
+----------
+
+enable()
+~~~~~~~~
+
+Enable Local APIC and disable legacy PIC::
+
+    pub unsafe fn enable()
+
+Side Effects:
+    - Sets APIC Global Enable bit in IA32_APIC_BASE MSR
+    - Sets APIC Software Enable bit in SVR register
+    - Remaps and masks all legacy PIC interrupts
+
+Must be called before using any APIC functionality.
+
+Example usage::
+
+    unsafe {
+        apic::enable();
+    }
+
+send_eoi()
+~~~~~~~~~~
+
+Signal End of Interrupt to Local APIC::
+
+    pub unsafe fn send_eoi()
+
+Must be called at end of every hardware interrupt handler (not CPU exceptions).
+
+Example usage::
+
+    extern "x86-interrupt" fn interrupt_handler(_frame: InterruptStackFrame) {
+        // Handle interrupt
+        handle_device();
+        
+        // Signal completion to APIC
+        unsafe {
+            apic::send_eoi();
+        }
+    }
+
+set_timer()
+~~~~~~~~~~~
+
+Configure Local APIC timer (low-level interface)::
+
+    pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
+
+Parameters:
+    vector
+        Interrupt vector number (32-255)
+
+    divide
+        Divider configuration value (0-11)
+
+    initial_count
+        Timer period in bus cycles
+
+Example usage::
+
+    unsafe {
+        apic::set_timer(49, 0x3, 100_000);  // ~625 Hz
+    }
+
+Note:
+    Prefer using apic::timer::init_hardware() for standard timer configuration.
+
+I/O APIC
+--------
+
+init_ioapic()
+~~~~~~~~~~~~~
+
+Initialize I/O APIC with default IRQ routing::
+
+    pub unsafe fn init_ioapic()
+
+Default Mappings:
+    - IRQ0 (PIT timer) → Vector 32
+    - IRQ1 (keyboard) → Vector 33
+
+Example usage::
+
+    unsafe {
+        apic::ioapic::init_ioapic();
+    }
+
+map_irq()
+~~~~~~~~~
+
+Map hardware IRQ to interrupt vector::
+
+    pub unsafe fn map_irq(irq: u8, vector: u8)
+
+Parameters:
+    irq
+        Hardware IRQ number (0-23)
+
+    vector
+        Interrupt vector number (32-255)
+
+Example usage::
+
+    unsafe {
+        // Map IRQ3 (COM2 serial) to vector 35
+        apic::ioapic::map_irq(3, 35);
+    }
+
+APIC Timer
+----------
+
+register_handler()
+~~~~~~~~~~~~~~~~~~
+
+Register timer interrupt handler with IDT::
+
+    pub unsafe fn register_handler()
+
+Must be called before idt::init_idt().
+
+Example usage::
+
+    unsafe {
+        apic::enable();
+        apic::ioapic::init_ioapic();
+        apic::timer::register_handler();  // Before IDT load
+    }
+    idt::init_idt();
+
+init_hardware()
+~~~~~~~~~~~~~~~
+
+Configure and start LAPIC timer hardware::
+
+    pub unsafe fn init_hardware()
+
+Must be called after idt::init_idt() and interrupts enabled.
+
+Configuration:
+    - Vector: 49 (0x31)
+    - Mode: Periodic
+    - Divider: 16
+    - Frequency: ~625 Hz
+
+Example usage::
+
+    idt::init_idt();
+    x86_64::instructions::interrupts::enable();
+    unsafe {
+        apic::timer::init_hardware();
+    }
+
+ticks()
+~~~~~~~
+
+Get timer tick count since boot::
+
+    pub fn ticks() -> u64
+
+Returns:
+    Number of timer interrupts since kernel started
+
+Thread Safety:
+    Safe to call (reads from static variable)
+
+Example usage::
+
+    let start = apic::timer::ticks();
+    do_work();
+    let end = apic::timer::ticks();
+    serial_println!("Work took {} ticks", end - start);
+
+Hardware Abstraction Layer
+===========================
+
+:Module: hal
+:Files: hal/src/serial.rs, hal/src/cpu.rs, hal/src/topology.rs
+
+Serial Console
+--------------
+
+init_serial()
+~~~~~~~~~~~~~
+
+Initialize COM1 serial port::
+
+    pub fn init_serial()
+
+Configuration:
+    - Port: COM1 (0x3F8)
+    - Baud rate: 38400
+    - Data bits: 8
+    - Stop bits: 1
+    - Parity: None
+
+Must be called first during kernel initialization for debug output.
+
+serial_println!()
+~~~~~~~~~~~~~~~~~
+
+Print line to serial console::
+
+    serial_println!("format string", args...)
+
+Macro for formatted output to serial port. Safe to call from interrupt context.
+
+Example usage::
+
+    serial_println!("Kernel booting...");
+    serial_println!("APIC ID: {}", apic_id);
+
+Utility Functions
+=================
+
+:Module: util
+:Files: util/src/panic.rs
+
+Panic Handling
+--------------
+
+oops()
+~~~~~~
+
+Handle kernel oops (non-recoverable error)::
+
+    pub fn oops(msg: &str) -> !
+
+Parameters:
+    msg
+        Error message to display
+
+Behavior:
+    - Prints message with [KERNEL OOPS] prefix to serial console
+    - Enters infinite halt loop
+    - Never returns
+
+Example usage::
+
+    if !is_valid(ptr) {
+        util::panic::oops("Invalid pointer detected");
+    }
+
+Use Cases:
+    - CPU exceptions (from exception handlers)
+    - Hardware errors
+    - Assertion failures
+    - Unrecoverable kernel state corruption
+
+halt_loop()
+~~~~~~~~~~~
+
+Enter infinite halt loop (low power)::
+
+    pub fn halt_loop() -> !
+
+Behavior:
+    - Executes HLT instruction in infinite loop
+    - CPU wakes on interrupt, then halts again
+    - Never returns
+
+Power Efficiency:
+    Uses ~1% CPU vs busy-wait loop at 100%
+
+Example usage::
+
+    serial_println!("System halted");
+    halt_loop();
+
+Virtual Filesystem
+==================
+
+:Module: vfs
+:Files: vfs/src/lib.rs
+
+The VFS subsystem provides filesystem abstraction with ramdisk support (v0.0.5).
+
+INode Operations (basic, v0.0.5)
+---------------------------------
+
+File operations through INode interface, ramdisk backend initialized during
+boot. Full API under development.
+
+Boot Sequence
+=============
+
+Initialization Order
+--------------------
+
+Critical subsystem initialization sequence::
+
+    1. HAL (Hardware Abstraction Layer)
+       hal::init_serial();
+
+    2. APIC (Interrupt Controller)
+       unsafe {
+           apic::enable();
+           apic::ioapic::init_ioapic();
+           apic::timer::register_handler();
+       }
+
+    3. IDT (Interrupt Handlers)
+       idt::init_idt();
+
+    4. Enable Interrupts
+       x86_64::instructions::interrupts::enable();
+
+    5. Timer Start
+       unsafe {
+           apic::timer::init_hardware();
+       }
+
+    6. Memory (Paging and Heap)
+       let offset = VirtAddr::new(0xFFFF_8000_0000_0000);
+       let mut mapper = unsafe { 
+           memory::init_offset_page_table(offset) 
+       };
+       memory::init_heap(&mut mapper, &mut frame_alloc);
+
+    7. Graphics
+       graphics::console::init_console(
+           fb.addr(), fb.width(), fb.height(), fb.pitch()
+       );
+
+    8. VFS
+       vfs::init_ramdisk();
+
+    9. Scheduler
+       task::Scheduler::init_global();
+
+   10. Userspace
+       loader::load_elf(&init_binary);
+
+.. warning::
+    Heap must be initialized before any allocations (Vec, Box, String).
+    Interrupts must be enabled after IDT is loaded.
+    Serial console should be initialized first for debug output.
+
+Data Flow Examples
+------------------
+
+Keyboard Input Flow
+~~~~~~~~~~~~~~~~~~~
+
+::
+
+    PS/2 Hardware → I/O Port 0x60 → I/O APIC → LAPIC
+        ↓
+    Keyboard Interrupt (Vector 33, IDT)
+        ↓
+    keyboard::handle_scancode()
+        ↓
+        ├─→ hal::serial_print!() → Serial Console (COM1)
+        └─→ graphics::fb_print!() → Framebuffer Console
+
+Timer Tick Flow
+~~~~~~~~~~~~~~~
+
+::
+
+    LAPIC Timer → Timer Interrupt (Vector 49, IDT)
+        ↓
+    apic::timer::timer_interrupt()
+        ↓
+        ├─→ Increment TICKS counter (static atomic)
+        └─→ apic::send_eoi()
+
+Page Fault Flow
+~~~~~~~~~~~~~~~
+
+::
+
+    Invalid Memory Access → CPU Exception #14
+        ↓
+    idt::page_fault_handler()
+        ↓
+        ├─→ Read CR2 register (faulting address)
+        ├─→ Parse error code (present, write, user flags)
+        ├─→ hal::serial_println!() (log error details)
+        └─→ util::panic::oops() → halt_loop()
+
+Synchronization
+===============
+
+Thread Safety Guarantees
+-------------------------
+
+Single-Core Assumptions:
+    Current Serix assumes single-core BSP only:
+    - No SMP support
+    - No true parallel execution
+    - Interrupts provide only concurrency
+
+Synchronization Primitives
+---------------------------
+
+Spin Mutex
+~~~~~~~~~~
+
+::
+
+    use spin::Mutex;
+
+    static DATA: Mutex<u32> = Mutex::new(0);
+
+    // Usage
+    let mut data = DATA.lock();
+    *data += 1;
+    // Lock automatically released when guard drops
+
+Once Initialization
+~~~~~~~~~~~~~~~~~~~
+
+::
+
+    use spin::Once;
+
+    static INIT: Once<MyStruct> = Once::new();
+
+    fn get_instance() -> &'static MyStruct {
+        INIT.call_once(|| MyStruct::new())
+    }
+
+Interrupt Safety
+----------------
+
+Disable interrupts for critical sections::
+
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        // Critical section - interrupts disabled
+        let mut data = SHARED_DATA.lock();
+        data.modify();
+    }); // Interrupts restored here
+
+Common Types and Constants
+===========================
+
+Type Aliases
+------------
+
+::
+
+    use x86_64::{VirtAddr, PhysAddr};
+    use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
+    use x86_64::structures::idt::InterruptStackFrame;
+
+Memory Constants
+----------------
+
+::
+
+    // Physical memory mapping
+    const PHYS_MEM_OFFSET: u64 = 0xFFFF_8000_0000_0000;  // HHDM offset
+    
+    // Kernel heap
+    const HEAP_START: usize = 0xFFFF_8000_4444_0000;
+    const HEAP_SIZE: usize = 1024 * 1024;  // 1 MiB
+    const MAX_BOOT_FRAMES: usize = 65536;
+
+APIC Constants
+--------------
+
+::
+
+    const APIC_BASE: u64 = 0xFEE00000;        // Local APIC MMIO base
+    const IOAPIC_BASE: u64 = 0xFEC00000;      // I/O APIC MMIO base
+
+Interrupt Vectors
+-----------------
+
+::
+
+    // CPU exceptions: 0-31
+    const DIV_BY_ZERO_VECTOR: u8 = 0;
+    const DEBUG_VECTOR: u8 = 1;
+    const PAGE_FAULT_VECTOR: u8 = 14;
+    const DOUBLE_FAULT_VECTOR: u8 = 8;
+    
+    // Hardware interrupts: 32-255
+    const PIT_TIMER_VECTOR: u8 = 32;    // Legacy (disabled)
+    const KEYBOARD_VECTOR: u8 = 33;     // PS/2 keyboard
+    const TIMER_VECTOR: u8 = 49;        // LAPIC timer
+
+Calling Conventions
+-------------------
+
+Rust (default)
+~~~~~~~~~~~~~~
+
+Default for Rust-to-Rust calls::
+
+    pub fn rust_function(arg: u32) -> u64 { }
+
+C
+~
+
+For bootloader interface and assembly interop::
+
+    pub extern "C" fn c_function(arg: u32) -> u64 { }
+
+x86-interrupt
+~~~~~~~~~~~~~
+
+For CPU exception and hardware interrupt handlers::
+
+    extern "x86-interrupt" fn handler(frame: InterruptStackFrame) { }
+
+    extern "x86-interrupt" fn handler_with_error(
+        frame: InterruptStackFrame,
+        error_code: u64
+    ) { }
+
+Error Handling
+==============
+
+Current Patterns
+----------------
+
+Panic
+~~~~~
+
+Used for unrecoverable programming errors::
+
+    value.expect("Description of requirement")
+    value.unwrap()
+    panic!("Error message")
+
+Oops
+~~~~
+
+Used for hardware/CPU exceptions::
+
+    util::panic::oops("Exception description")
+
+Option
+~~~~~~
+
+Used for nullable values::
+
+    if let Some(value) = optional_value {
+        // Use value
     } else {
-        Err(KernelError::OutOfMemory)
+        // Handle absence
     }
-}
-```
 
-### Current Error Handling
+Future: Result-Based APIs
+-------------------------
 
-**Panic**: Used for unrecoverable errors
-```rust
-.expect("Description")
-.unwrap()
-panic!("Error message")
-```
+Planned for post-v1.0::
 
-**Oops**: Used for hardware/CPU exceptions
-```rust
-util::panic::oops("Exception description")
-```
+    pub enum KernelError {
+        OutOfMemory,
+        InvalidAddress,
+        PermissionDenied,
+        HardwareError,
+        NotFound,
+    }
 
-**Option**: Used for nullable values
-```rust
-if let Some(value) = optional_value {
-    // Use value
-}
-```
+    pub type KernelResult<T> = Result<T, KernelError>;
 
----
+    pub fn allocate_frame() -> KernelResult<PhysFrame> {
+        match FRAME_ALLOCATOR.allocate() {
+            Some(frame) => Ok(frame),
+            None => Err(KernelError::OutOfMemory),
+        }
+    }
 
-## Thread Safety Guarantees
+Future Extensions
+=================
 
-### Single-Core Assumptions
+Planned API Additions
+---------------------
 
-Current Serix assumes single-core (BSP only):
-- No SMP support
-- No atomic synchronization beyond spin locks
-- Interrupts provide only concurrency
+Memory Management
+~~~~~~~~~~~~~~~~~
 
-### Synchronization Primitives
+- deallocate_frame() - Free physical frames
+- map_range() - Map multiple pages at once
+- protect_page() - Change page permissions (RO, RW, NX)
+- Memory statistics and pressure tracking
 
-#### Spin Mutex
+Task Management
+~~~~~~~~~~~~~~~
 
-```rust
-use spin::Mutex;
+- Preemptive scheduling with timer-based preemption
+- task_sleep() - Sleep for duration
+- task_block() - Block on condition variable
+- task_wake() - Wake blocked task
+- Process and thread creation API
+- Priority inheritance for mutexes
 
-static DATA: Mutex<u32> = Mutex::new(0);
+Interrupt Management
+~~~~~~~~~~~~~~~~~~~~
 
-// Usage
-let mut data = DATA.lock();
-*data += 1;
-// Lock automatically released when guard drops
-```
+- register_irq_handler() - High-level IRQ registration
+- mask_irq() / unmask_irq() - Dynamic IRQ control
+- Interrupt statistics and profiling
+- MSI/MSI-X support
 
-#### Once Initialization
+Device Management
+~~~~~~~~~~~~~~~~~
 
-```rust
-use spin::Once;
+- PCI enumeration and configuration space access
+- Device driver registration framework
+- DMA buffer allocation with IOMMU support
+- Power management (ACPI)
 
-static INIT: Once<MyStruct> = Once::new();
+System Calls
+~~~~~~~~~~~~
 
-fn get_instance() -> &'static MyStruct {
-    INIT.call_once(|| MyStruct::new())
-}
-```
+- File I/O: open, close, read, write, seek, stat
+- Process management: fork, exec, wait, kill
+- Memory: mmap, munmap, mprotect, brk
+- IPC: pipe, socket, sendmsg, recvmsg
+- Signals: sigaction, kill, sigreturn
 
-### Interrupt Safety
+API Stability
+=============
 
-**Disable Interrupts for Critical Sections**:
-```rust
-x86_64::instructions::interrupts::without_interrupts(|| {
-    // Critical section - interrupts disabled
-    let mut data = SHARED_DATA.lock();
-    data.modify();
-}); // Interrupts restored here
-```
+Current Status:
+    Pre-alpha (v0.0.5), APIs subject to change without notice
 
----
+Versioning:
+    Not yet established, will follow semantic versioning post-v1.0
 
-## Future API Extensions
+Deprecation Policy:
+    Not yet established
 
-### Planned Additions
+API Review:
+    Comprehensive review required before v1.0 release
 
-#### Memory Management
-- `deallocate_frame()` - Free physical frames
-- `map_range()` - Map multiple pages at once
-- `protect_page()` - Change page permissions
-- Memory statistics API
+See Also
+========
 
-#### Task Management
-- `task_sleep()` - Sleep for duration
-- `task_block()` - Block on condition
-- `task_wake()` - Wake blocked task
-- Process creation API
-- Thread creation API
-
-#### Interrupt Management
-- `register_irq_handler()` - Register IRQ handler
-- `mask_irq()` / `unmask_irq()` - IRQ control
-- Interrupt statistics API
-
-#### Device Management
-- PCI enumeration API
-- Device driver registration
-- DMA buffer allocation
-
----
-
-## API Stability
-
-**Current Status**: Pre-alpha, APIs subject to change
-
-**Versioning**: Not yet established
-
-**Deprecation Policy**: Not yet established
-
-**API Review**: Required before 1.0 release
-
----
-
-## Appendix
-
-### Common Type Aliases
-
-```rust
-use x86_64::{VirtAddr, PhysAddr};
-use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
-use x86_64::structures::idt::InterruptStackFrame;
-```
-
-### Common Constants
-
-```rust
-// Memory
-const PHYS_MEM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
-const HEAP_START: usize = 0x4444_4444_0000;
-const HEAP_SIZE: usize = 1024 * 1024;
-
-// APIC
-const APIC_BASE: u64 = 0xFEE00000;
-const IOAPIC_BASE: u64 = 0xFEC00000;
-
-// Vectors
-const KEYBOARD_VECTOR: u8 = 33;
-const TIMER_VECTOR: u8 = 49;
-```
-
-### Calling Conventions
-
-**Rust**: Default for Rust-to-Rust calls
-```rust
-pub fn rust_function(arg: u32) -> u64 { /* ... */ }
-```
-
-**C**: For bootloader interface and assembly
-```rust
-pub extern "C" fn c_function(arg: u32) -> u64 { /* ... */ }
-```
-
-**x86-interrupt**: For interrupt handlers
-```rust
-extern "x86-interrupt" fn handler(frame: InterruptStackFrame) { /* ... */ }
-```
+- MEMORY_LAYOUT.md - Complete memory map documentation
+- CONTRIBUTING.md - Development guidelines
+- Limine Protocol: https://github.com/limine-bootloader/limine/blob/trunk/PROTOCOL.md
 
 ---
 

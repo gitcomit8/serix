@@ -1,1156 +1,1277 @@
-# Interrupt Handling Technical Specification
+=======================================
+Interrupt Handling in Serix (x86_64)
+=======================================
 
-**Document Version:** 1.0  
-**Last Updated:** 2025-10-13  
-**Target Architecture:** x86_64  
+:Version: 0.0.5
+:Last Updated: 2025-10-13
+:Architecture: x86_64
 
-## Table of Contents
+Overview
+========
 
-1. [Overview](#overview)
-2. [Interrupt Architecture](#interrupt-architecture)
-3. [IDT Structure and Setup](#idt-structure-and-setup)
-4. [APIC Configuration](#apic-configuration)
-5. [Interrupt Processing Flow](#interrupt-processing-flow)
-6. [Exception Handlers](#exception-handlers)
-7. [Hardware Interrupt Handlers](#hardware-interrupt-handlers)
-8. [Interrupt Routing](#interrupt-routing)
-9. [Performance and Optimization](#performance-and-optimization)
-10. [Debugging and Troubleshooting](#debugging-and-troubleshooting)
+Serix implements a modern interrupt handling infrastructure based on the x86_64
+Interrupt Descriptor Table (IDT) and Advanced Programmable Interrupt Controller
+(APIC). This document describes the complete interrupt handling mechanism from
+hardware signal to software handler execution.
 
----
+.. asciinema:: interrupt-handling-demo.cast
+   :alt: Interrupt handling demonstration showing: (1) Boot sequence with serial
+         output, (2) Timer ticks incrementing at ~625 Hz with counter display,
+         (3) Keyboard interrupt firing when keys are pressed showing scancodes,
+         (4) Serial console output displaying interrupt counts for vector 33
+         (keyboard) and vector 49 (timer). Duration: 30 seconds. Actions: Wait
+         5 seconds for boot, observe timer ticks for 10 seconds, press keys
+         a/b/c/Enter to trigger keyboard interrupts, wait 10 seconds showing
+         accumulated interrupt counts.
 
-## Overview
+Current Status (v0.0.5)
+-----------------------
 
-Serix uses a modern interrupt handling infrastructure based on the x86_64 Interrupt Descriptor Table (IDT) and Advanced Programmable Interrupt Controller (APIC). This document specifies the complete interrupt handling mechanism from hardware signal to software handler execution.
+Working features::
 
-### Key Components
+  * APIC fully enabled (Local APIC + I/O APIC)
+  * Legacy PIC disabled and masked
+  * IDT loaded with 256 entries (exceptions + interrupts)
+  * Timer interrupts operational (vector 49, ~625 Hz)
+  * Keyboard interrupts operational (vector 33, PS/2)
+  * Exception handlers registered (divide-by-zero, page fault, double fault)
+  * EOI (End of Interrupt) correctly sent to LAPIC
 
-| Component | Purpose | Location |
-|-----------|---------|----------|
-| IDT | Maps interrupt vectors to handlers | IDTR register |
-| Local APIC | Per-CPU interrupt controller | MMIO at 0xFEE00000 |
-| I/O APIC | Routes hardware IRQs to CPUs | MMIO at 0xFEC00000 |
-| Legacy PIC | Disabled, not used | Ports 0x20/0x21, 0xA0/0xA1 |
+Key Components
+--------------
 
-### Interrupt Vector Allocation
+===========  ===================================  =============================
+Component    Purpose                              Location
+===========  ===================================  =============================
+IDT          Maps interrupt vectors to handlers   IDTR register
+Local APIC   Per-CPU interrupt controller         MMIO at 0xFEE00000
+I/O APIC     Routes hardware IRQs to CPUs         MMIO at 0xFEC00000
+Legacy PIC   Disabled, not used                   Ports 0x20/0x21, 0xA0/0xA1
+===========  ===================================  =============================
 
-```
-Vector Range    Usage                       Handler Location
-──────────────────────────────────────────────────────────────
-0-31            CPU Exceptions              idt/src/lib.rs
-32              Timer (PIT, remapped)       Not actively used
-33 (0x21)       Keyboard (IRQ1)             idt/src/lib.rs
-34-48           Reserved for future IRQs    Not implemented
-49 (0x31)       LAPIC Timer                 apic/src/timer.rs
-50-254          Available                   Not implemented
-255 (0xFF)      Spurious (APIC)             Not implemented
-```
+Interrupt Vector Allocation
+---------------------------
 
----
+Current vector assignments in v0.0.5::
 
-## Interrupt Architecture
+  Vector Range    Usage                       Handler Location
+  ────────────────────────────────────────────────────────────────
+  0-31            CPU Exceptions              idt/src/lib.rs
+  32              Timer (PIT, remapped)       Not actively used
+  33 (0x21)       Keyboard (IRQ1)             idt/src/lib.rs (WORKING)
+  34-48           Reserved for future IRQs    Not implemented
+  49 (0x31)       LAPIC Timer                 apic/src/timer.rs (WORKING)
+  50-254          Available                   Not implemented
+  255 (0xFF)      Spurious (APIC)             Not implemented
 
-### x86_64 Interrupt Model
+Interrupt Architecture
+======================
 
-```
-Hardware Event
-      │
-      ▼
-  ┌───────────────┐
-  │   APIC/CPU    │
-  │  Determines   │
-  │    Vector     │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  CPU looks up │
-  │  vector in    │
-  │     IDT       │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  CPU pushes   │
-  │  state to     │
-  │    stack      │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  Jump to      │
-  │  handler      │
-  │  address      │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  Handler      │
-  │  executes     │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  Send EOI     │
-  │  to APIC      │
-  └───────┬───────┘
-          │
-          ▼
-  ┌───────────────┐
-  │  IRETQ back   │
-  │  to code      │
-  └───────────────┘
-```
+x86_64 Interrupt Model
+----------------------
 
-### Interrupt vs Exception
+Hardware interrupt flow from device to handler execution::
 
-| Aspect | Exception | Interrupt |
-|--------|-----------|-----------|
-| Source | CPU (synchronous) | Hardware/Software (asynchronous) |
-| Timing | Precise (at instruction boundary) | Approximate (between instructions) |
-| Vector | 0-31 (fixed) | 32-255 (configurable) |
-| Error Code | Some push error code | None (interrupt number only) |
-| Examples | Page fault, divide by zero | Timer, keyboard, disk I/O |
+  Hardware Event
+        │
+        ▼
+    ┌───────────────┐
+    │   APIC/CPU    │
+    │  Determines   │
+    │    Vector     │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  CPU looks up │
+    │  vector in    │
+    │     IDT       │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  CPU pushes   │
+    │  state to     │
+    │    stack      │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  Jump to      │
+    │  handler      │
+    │  address      │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  Handler      │
+    │  executes     │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  Send EOI     │
+    │  to APIC      │
+    └───────┬───────┘
+            │
+            ▼
+    ┌───────────────┐
+    │  IRETQ back   │
+    │  to code      │
+    └───────────────┘
 
----
+Interrupt vs Exception
+----------------------
 
-## IDT Structure and Setup
+=========  ===================================  ================================
+Aspect     Exception                            Interrupt
+=========  ===================================  ================================
+Source     CPU (synchronous)                    Hardware/Software (asynchronous)
+Timing     Precise (at instruction boundary)    Approximate (between instructions)
+Vector     0-31 (fixed)                         32-255 (configurable)
+Error Code Some push error code                 None (interrupt number only)
+Examples   Page fault, divide by zero           Timer, keyboard, disk I/O
+=========  ===================================  ================================
 
-### Interrupt Descriptor Table (IDT)
+IDT Structure and Setup
+=======================
+
+Interrupt Descriptor Table (IDT)
+---------------------------------
 
 **Size**: 256 entries × 16 bytes = 4096 bytes (1 page)
 
 **Location**: Kernel memory, address loaded into IDTR register
 
-**Entry Format** (16 bytes per entry):
+Entry Format
+~~~~~~~~~~~~
 
-```
-Bits    Field               Description
-────────────────────────────────────────────────────────────────
-0-15    Offset Low          Handler address bits [15:0]
-16-31   Segment Selector    Code segment (typically 0x08 for kernel)
-32-34   IST                 Interrupt Stack Table index (0 = don't use)
-35-39   Reserved            Must be zero
-40-43   Gate Type           0xE = Interrupt Gate, 0xF = Trap Gate
-44      Zero                Must be zero
-45-46   DPL                 Descriptor Privilege Level (0 for kernel)
-47      Present             Must be 1 for valid entry
-48-63   Offset Middle       Handler address bits [31:16]
-64-95   Offset High         Handler address bits [63:32]
-96-127  Reserved            Must be zero
-```
+16 bytes per entry::
 
-### Gate Types
+  Bits    Field               Description
+  ────────────────────────────────────────────────────────────────
+  0-15    Offset Low          Handler address bits [15:0]
+  16-31   Segment Selector    Code segment (typically 0x08 for kernel)
+  32-34   IST                 Interrupt Stack Table index (0 = don't use)
+  35-39   Reserved            Must be zero
+  40-43   Gate Type           0xE = Interrupt Gate, 0xF = Trap Gate
+  44      Zero                Must be zero
+  45-46   DPL                 Descriptor Privilege Level (0 for kernel)
+  47      Present             Must be 1 for valid entry
+  48-63   Offset Middle       Handler address bits [31:16]
+  64-95   Offset High         Handler address bits [63:32]
+  96-127  Reserved            Must be zero
+
+Gate Types
+~~~~~~~~~~
 
 **Interrupt Gate (0xE)**:
-- Automatically disables interrupts (clears IF flag)
-- Used for most interrupt handlers
-- Prevents reentrant interrupts during handler execution
+  * Automatically disables interrupts (clears IF flag)
+  * Used for most interrupt handlers
+  * Prevents reentrant interrupts during handler execution
 
 **Trap Gate (0xF)**:
-- Does not disable interrupts (IF flag unchanged)
-- Used for debugging and system calls
-- Allows interrupts during handler execution
+  * Does not disable interrupts (IF flag unchanged)
+  * Used for debugging and system calls
+  * Allows interrupts during handler execution
 
 **Serix Policy**: Use interrupt gates for all handlers (safety first).
 
-### IDT Initialization
+IDT Initialization
+------------------
 
-```rust
-// idt/src/lib.rs
+Implementation in idt/src/lib.rs::
 
-use lazy_static::lazy_static;
-use x86_64::structures::idt::InterruptDescriptorTable;
+  use lazy_static::lazy_static;
+  use x86_64::structures::idt::InterruptDescriptorTable;
 
-lazy_static! {
-    static ref IDT: IdtWrapper = {
-        let mut idt = InterruptDescriptorTable::new();
-        
-        // CPU Exceptions (vectors 0-31)
-        idt.divide_error.set_handler_fn(divide_by_zero_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        idt.double_fault.set_handler_fn(double_fault_handler);
-        
-        // Hardware Interrupts (vectors 32+)
-        idt[33].set_handler_fn(keyboard_interrupt_handler);
-        
-        IdtWrapper {
-            idt: UnsafeCell::new(idt),
-            loaded: UnsafeCell::new(false),
-        }
-    };
-}
+  lazy_static! {
+      static ref IDT: IdtWrapper = {
+          let mut idt = InterruptDescriptorTable::new();
+          
+          // CPU Exceptions (vectors 0-31)
+          idt.divide_error.set_handler_fn(divide_by_zero_handler);
+          idt.page_fault.set_handler_fn(page_fault_handler);
+          idt.double_fault.set_handler_fn(double_fault_handler);
+          
+          // Hardware Interrupts (vectors 32+)
+          idt[33].set_handler_fn(keyboard_interrupt_handler);
+          
+          IdtWrapper {
+              idt: UnsafeCell::new(idt),
+              loaded: UnsafeCell::new(false),
+          }
+      };
+  }
 
-pub fn init_idt() {
-    unsafe {
-        (*IDT.idt.get()).load();
-        *IDT.loaded.get() = true;
-    }
-}
-```
+  pub fn init_idt() {
+      unsafe {
+          (*IDT.idt.get()).load();
+          *IDT.loaded.get() = true;
+      }
+  }
 
-### IDTR Register
+IDTR Register
+~~~~~~~~~~~~~
 
-**Format** (10 bytes):
+**Format** (10 bytes)::
 
-```
-┌─────────────────────────────────────────────────────┬────────────────┐
-│        Base Address (64-bit)                        │  Limit (16-bit)│
-├─────────────────────────────────────────────────────┼────────────────┤
-│                    Bits 79-16                       │   Bits 15-0    │
-└─────────────────────────────────────────────────────┴────────────────┘
-```
+  ┌─────────────────────────────────────────────────────┬────────────────┐
+  │        Base Address (64-bit)                        │  Limit (16-bit)│
+  ├─────────────────────────────────────────────────────┼────────────────┤
+  │                    Bits 79-16                       │   Bits 15-0    │
+  └─────────────────────────────────────────────────────┴────────────────┘
 
 **Fields**:
-- **Limit**: Size of IDT - 1 (typically 4095 for 256 entries)
-- **Base**: Linear address of IDT
+  * **Limit**: Size of IDT - 1 (typically 4095 for 256 entries)
+  * **Base**: Linear address of IDT
 
-**Loading IDTR**:
-```rust
-// Executed by load() method
-core::arch::asm!("lidt [{}]", in(reg) &idtr_value);
-```
+**Loading IDTR**::
 
----
+  // Executed by load() method
+  core::arch::asm!("lidt [{}]", in(reg) &idtr_value);
 
-## APIC Configuration
+APIC Configuration
+==================
 
-### Legacy PIC Disable
+Legacy PIC Disable
+------------------
 
-**Why Disable?**
-- APIC is superior (better multiprocessor support, more IRQs)
-- PIC conflicts with APIC if both active
-- PIC defaults to vectors 0-15 (overlaps CPU exceptions)
+Why Disable?
+~~~~~~~~~~~~
 
-**Procedure** (apic/src/lib.rs):
+  * APIC is superior (better multiprocessor support, more IRQs)
+  * PIC conflicts with APIC if both active
+  * PIC defaults to vectors 0-15 (overlaps CPU exceptions)
 
-```rust
-pub unsafe fn disable_pic() {
-    use x86_64::instructions::port::Port;
-    
-    let mut pic1_cmd: Port<u8> = Port::new(0x20);
-    let mut pic1_data: Port<u8> = Port::new(0x21);
-    let mut pic2_cmd: Port<u8> = Port::new(0xA0);
-    let mut pic2_data: Port<u8> = Port::new(0xA1);
-    
-    // Initialize PIC (ICW1-ICW4)
-    pic1_cmd.write(0x11);      // ICW1: Start init, cascade mode
-    pic2_cmd.write(0x11);
-    
-    pic1_data.write(0x20);     // ICW2: Remap to vectors 32-39
-    pic2_data.write(0x28);     // ICW2: Remap to vectors 40-47
-    
-    pic1_data.write(0x04);     // ICW3: Slave on IRQ2
-    pic2_data.write(0x02);     // ICW3: Cascade identity
-    
-    pic1_data.write(0x01);     // ICW4: 8086 mode
-    pic2_data.write(0x01);
-    
-    // Mask all interrupts
-    pic1_data.write(0xFF);     // Disable all IRQs on master
-    pic2_data.write(0xFF);     // Disable all IRQs on slave
-}
-```
+Disable Procedure
+~~~~~~~~~~~~~~~~~
 
-**PIC Ports**:
-| Port | PIC | Register |
-|------|-----|----------|
-| 0x20 | Master | Command |
-| 0x21 | Master | Data |
-| 0xA0 | Slave | Command |
-| 0xA1 | Slave | Data |
+Implementation in apic/src/lib.rs::
 
-### Local APIC Enable
+  pub unsafe fn disable_pic() {
+      use x86_64::instructions::port::Port;
+      
+      let mut pic1_cmd: Port<u8> = Port::new(0x20);
+      let mut pic1_data: Port<u8> = Port::new(0x21);
+      let mut pic2_cmd: Port<u8> = Port::new(0xA0);
+      let mut pic2_data: Port<u8> = Port::new(0xA1);
+      
+      // Initialize PIC (ICW1-ICW4)
+      pic1_cmd.write(0x11);      // ICW1: Start init, cascade mode
+      pic2_cmd.write(0x11);
+      
+      pic1_data.write(0x20);     // ICW2: Remap to vectors 32-39
+      pic2_data.write(0x28);     // ICW2: Remap to vectors 40-47
+      
+      pic1_data.write(0x04);     // ICW3: Slave on IRQ2
+      pic2_data.write(0x02);     // ICW3: Cascade identity
+      
+      pic1_data.write(0x01);     // ICW4: 8086 mode
+      pic2_data.write(0x01);
+      
+      // Mask all interrupts
+      pic1_data.write(0xFF);     // Disable all IRQs on master
+      pic2_data.write(0xFF);     // Disable all IRQs on slave
+  }
+
+PIC Ports::
+
+  ======  ======  ========
+  Port    PIC     Register
+  ======  ======  ========
+  0x20    Master  Command
+  0x21    Master  Data
+  0xA0    Slave   Command
+  0xA1    Slave   Data
+  ======  ======  ========
+
+Local APIC Enable
+-----------------
 
 **MMIO Base**: 0xFEE00000 (4 KB region)
 
-**Registers**:
+APIC Registers
+~~~~~~~~~~~~~~
 
-| Offset | Register | Purpose |
-|--------|----------|---------|
-| 0x020 | ID | Local APIC ID (CPU identifier) |
-| 0x030 | Version | APIC version and max LVT entries |
-| 0x080 | TPR | Task Priority Register |
-| 0x0B0 | EOI | End of Interrupt |
-| 0x0F0 | SVR | Spurious Interrupt Vector Register |
-| 0x320 | LVT Timer | Timer interrupt configuration |
-| 0x350 | LVT LINT0 | External interrupt 0 |
-| 0x360 | LVT LINT1 | External interrupt 1 (NMI) |
-| 0x370 | LVT Error | Error interrupt |
-| 0x380 | Timer Initial Count | Timer countdown value |
-| 0x390 | Timer Current Count | Current timer value (read-only) |
-| 0x3E0 | Timer Divide Config | Timer divider |
+======  ==========  ================================
+Offset  Register    Purpose
+======  ==========  ================================
+0x020   ID          Local APIC ID (CPU identifier)
+0x030   Version     APIC version and max LVT entries
+0x080   TPR         Task Priority Register
+0x0B0   EOI         End of Interrupt
+0x0F0   SVR         Spurious Interrupt Vector Register
+0x320   LVT Timer   Timer interrupt configuration
+0x350   LVT LINT0   External interrupt 0
+0x360   LVT LINT1   External interrupt 1 (NMI)
+0x370   LVT Error   Error interrupt
+0x380   Timer Init  Timer countdown value
+0x390   Timer Cur   Current timer value (read-only)
+0x3E0   Timer Div   Timer divider
+======  ==========  ================================
 
-**Enabling APIC** (apic/src/lib.rs):
+Enabling APIC
+~~~~~~~~~~~~~
 
-```rust
-pub unsafe fn enable() {
-    // Step 1: Enable via MSR
-    let mut apic_base: u64;
-    core::arch::asm!(
-        "rdmsr",
-        in("ecx") 0x1B_u32,  // IA32_APIC_BASE MSR
-        lateout("eax") apic_base,
-        lateout("edx") _
-    );
-    
-    // Set bit 11 (APIC Global Enable)
-    if (apic_base & (1 << 11)) == 0 {
-        apic_base |= 1 << 11;
-        let eax = (apic_base & 0xFFFFFFFF) as u32;
-        let edx = ((apic_base >> 32) & 0xFFFFFFFF) as u32;
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") 0x1B_u32,
-            in("eax") eax,
-            in("edx") edx
-        );
-    }
-    
-    // Step 2: Enable via SVR (Spurious Interrupt Vector Register)
-    let svr = lapic_reg(0xF0);
-    let val = svr.read_volatile() | 0x100;  // Set bit 8
-    svr.write_volatile(val);
-}
-```
+Implementation in apic/src/lib.rs::
 
-**IA32_APIC_BASE MSR (0x1B)**:
+  pub unsafe fn enable() {
+      // Step 1: Enable via MSR
+      let mut apic_base: u64;
+      core::arch::asm!(
+          "rdmsr",
+          in("ecx") 0x1B_u32,  // IA32_APIC_BASE MSR
+          lateout("eax") apic_base,
+          lateout("edx") _
+      );
+      
+      // Set bit 11 (APIC Global Enable)
+      if (apic_base & (1 << 11)) == 0 {
+          apic_base |= 1 << 11;
+          let eax = (apic_base & 0xFFFFFFFF) as u32;
+          let edx = ((apic_base >> 32) & 0xFFFFFFFF) as u32;
+          core::arch::asm!(
+              "wrmsr",
+              in("ecx") 0x1B_u32,
+              in("eax") eax,
+              in("edx") edx
+          );
+      }
+      
+      // Step 2: Enable via SVR (Spurious Interrupt Vector Register)
+      let svr = lapic_reg(0xF0);
+      let val = svr.read_volatile() | 0x100;  // Set bit 8
+      svr.write_volatile(val);
+  }
 
-```
-Bits    Field
-────────────────────────────────────────
-0-7     Reserved
-8       BSP Flag (1 = Bootstrap Processor)
-9-10    Reserved
-11      APIC Global Enable
-12-35   APIC Base Address (4KB aligned)
-36-63   Reserved
-```
+IA32_APIC_BASE MSR (0x1B)
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**SVR Register (0xF0)**:
+::
 
-```
-Bits    Field
-────────────────────────────────────────
-0-7     Spurious Vector Number
-8       APIC Software Enable (must be 1)
-9       Focus Processor Checking (legacy)
-10-11   Reserved
-12      EOI Broadcast Suppression
-13-31   Reserved
-```
+  Bits    Field
+  ────────────────────────────────────────
+  0-7     Reserved
+  8       BSP Flag (1 = Bootstrap Processor)
+  9-10    Reserved
+  11      APIC Global Enable
+  12-35   APIC Base Address (4KB aligned)
+  36-63   Reserved
 
-### I/O APIC Configuration
+SVR Register (0xF0)
+~~~~~~~~~~~~~~~~~~~
+
+::
+
+  Bits    Field
+  ────────────────────────────────────────
+  0-7     Spurious Vector Number
+  8       APIC Software Enable (must be 1)
+  9       Focus Processor Checking (legacy)
+  10-11   Reserved
+  12      EOI Broadcast Suppression
+  13-31   Reserved
+
+I/O APIC Configuration
+----------------------
 
 **MMIO Base**: 0xFEC00000 (256 bytes)
 
-**Registers**:
-| Offset | Register | Access |
-|--------|----------|--------|
-| 0x00 | IOREGSEL | Write: Select register |
-| 0x10 | IOWIN | Read/Write: Data window |
+I/O APIC Registers
+~~~~~~~~~~~~~~~~~~
 
-**Indirect Access Model**:
-```rust
-unsafe fn ioapic_read(reg: u32) -> u32 {
-    ioapic_reg(0x00).write_volatile(reg);
-    ioapic_reg(0x10).read_volatile()
-}
+======  ========  =========================
+Offset  Register  Access
+======  ========  =========================
+0x00    IOREGSEL  Write: Select register
+0x10    IOWIN     Read/Write: Data window
+======  ========  =========================
 
-unsafe fn ioapic_write(reg: u32, value: u32) {
-    ioapic_reg(0x00).write_volatile(reg);
-    ioapic_reg(0x10).write_volatile(value);
-}
-```
+Indirect Access Model
+~~~~~~~~~~~~~~~~~~~~~
 
-**Redirection Table Registers**:
+::
 
-Each IRQ has a 64-bit redirection entry (two 32-bit registers):
+  unsafe fn ioapic_read(reg: u32) -> u32 {
+      ioapic_reg(0x00).write_volatile(reg);
+      ioapic_reg(0x10).read_volatile()
+  }
 
-```
-Register Index = 0x10 + (IRQ × 2)
+  unsafe fn ioapic_write(reg: u32, value: u32) {
+      ioapic_reg(0x00).write_volatile(reg);
+      ioapic_reg(0x10).write_volatile(value);
+  }
 
-Low 32 bits (0x10 + IRQ×2):
-┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
-│ 31-24│ 23-17│ 16   │ 15   │ 14   │ 13   │ 12   │ 11   │
-├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
-│ Res  │ Res  │ Mask │Trigger│Remote│Polarity│DelStat│DestMode│
-└──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
-┌──────┬──────────────────────────┐
-│ 10-8 │        7-0               │
-├──────┼──────────────────────────┤
-│DelMode│     Vector              │
-└──────┴──────────────────────────┘
+Redirection Table Registers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-High 32 bits (0x10 + IRQ×2 + 1):
-┌────────────────────────┬──────────┐
-│        31-24           │  23-0    │
-├────────────────────────┼──────────┤
-│     Destination        │ Reserved │
-└────────────────────────┴──────────┘
-```
+Each IRQ has a 64-bit redirection entry (two 32-bit registers)::
 
-**Field Descriptions**:
+  Register Index = 0x10 + (IRQ × 2)
 
-| Field | Bits | Values | Description |
-|-------|------|--------|-------------|
-| Vector | 0-7 | 32-255 | Interrupt vector to deliver |
-| Delivery Mode | 8-10 | 000=Fixed | How to deliver (Fixed, Lowest Priority, SMI, NMI, INIT, ExtINT) |
-| Destination Mode | 11 | 0=Physical | Physical APIC ID or logical |
-| Delivery Status | 12 | RO | 0=Idle, 1=Pending |
-| Polarity | 13 | 0=High | 0=Active high, 1=Active low |
-| Remote IRR | 14 | RO | Level-triggered interrupt status |
-| Trigger Mode | 15 | 0=Edge | 0=Edge triggered, 1=Level triggered |
-| Mask | 16 | 0=Enabled | 0=Not masked, 1=Masked |
-| Destination | 56-63 | CPU ID | Target APIC ID |
+  Low 32 bits (0x10 + IRQ×2):
+  ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+  │ 31-24│ 23-17│ 16   │ 15   │ 14   │ 13   │ 12   │ 11   │
+  ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+  │ Res  │ Res  │ Mask │Trigger│Remote│Polarity│DelStat│DestMode│
+  └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
+  ┌──────┬──────────────────────────┐
+  │ 10-8 │        7-0               │
+  ├──────┼──────────────────────────┤
+  │DelMode│     Vector              │
+  └──────┴──────────────────────────┘
 
-**IRQ Routing** (apic/src/ioapic.rs):
+  High 32 bits (0x10 + IRQ×2 + 1):
+  ┌────────────────────────┬──────────┐
+  │        31-24           │  23-0    │
+  ├────────────────────────┼──────────┤
+  │     Destination        │ Reserved │
+  └────────────────────────┴──────────┘
 
-```rust
-pub unsafe fn map_irq(irq: u8, vector: u8) {
-    let reg = 0x10 + (irq as u32 * 2);
-    
-    // Low 32 bits: Vector + Fixed delivery + Edge triggered + Not masked
-    ioapic_write(reg, vector as u32);
-    
-    // High 32 bits: Destination = 0 (BSP)
-    ioapic_write(reg + 1, 0);
-}
+Field Descriptions:
 
-pub unsafe fn init_ioapic() {
-    map_irq(0, 32);   // Timer (IRQ0) → Vector 32
-    map_irq(1, 33);   // Keyboard (IRQ1) → Vector 33
-}
-```
+================  ======  ================  ======================================
+Field             Bits    Values            Description
+================  ======  ================  ======================================
+Vector            0-7     32-255            Interrupt vector to deliver
+Delivery Mode     8-10    000=Fixed         How to deliver (Fixed, etc.)
+Destination Mode  11      0=Physical        Physical APIC ID or logical
+Delivery Status   12      RO                0=Idle, 1=Pending
+Polarity          13      0=High            0=Active high, 1=Active low
+Remote IRR        14      RO                Level-triggered interrupt status
+Trigger Mode      15      0=Edge            0=Edge triggered, 1=Level triggered
+Mask              16      0=Enabled         0=Not masked, 1=Masked
+Destination       56-63   CPU ID            Target APIC ID
+================  ======  ================  ======================================
 
-### LAPIC Timer Configuration
+IRQ Routing
+~~~~~~~~~~~
 
-**Purpose**: Periodic interrupts for scheduling and timekeeping.
+Implementation in apic/src/ioapic.rs::
 
-**Configuration** (apic/src/timer.rs):
+  pub unsafe fn map_irq(irq: u8, vector: u8) {
+      let reg = 0x10 + (irq as u32 * 2);
+      
+      // Low 32 bits: Vector + Fixed delivery + Edge triggered + Not masked
+      ioapic_write(reg, vector as u32);
+      
+      // High 32 bits: Destination = 0 (BSP)
+      ioapic_write(reg + 1, 0);
+  }
 
-```rust
-pub const TIMER_VECTOR: u8 = 0x31;              // Vector 49
-pub const TIMER_DIVIDE_CONFIG: u32 = 0x3;       // Divide by 16
-pub const TIMER_INITIAL_COUNT: u32 = 100_000;   // Period
+  pub unsafe fn init_ioapic() {
+      map_irq(0, 32);   // Timer (IRQ0) → Vector 32
+      map_irq(1, 33);   // Keyboard (IRQ1) → Vector 33 (WORKING IN v0.0.5)
+  }
 
-pub unsafe fn init_hardware() {
-    // Divide Configuration Register (0x3E0)
-    lapic_reg(0x3E0).write_volatile(TIMER_DIVIDE_CONFIG);
-    
-    // LVT Timer Register (0x320): Periodic mode
-    lapic_reg(0x320).write_volatile((TIMER_VECTOR as u32) | 0x20000);
-    
-    // Initial Count Register (0x380)
-    lapic_reg(0x380).write_volatile(TIMER_INITIAL_COUNT);
-}
-```
+LAPIC Timer Configuration
+--------------------------
 
-**LVT Timer Register (0x320)**:
+Purpose
+~~~~~~~
 
-```
-Bits    Field
-────────────────────────────────────────
-0-7     Vector
-8-10    Reserved (0)
-11      Reserved (0)
-12      Delivery Status (RO)
-13-15   Reserved (0)
-16      Mask (0 = Not masked)
-17-18   Timer Mode (00=One-shot, 01=Periodic, 10=TSC-Deadline)
-19-31   Reserved (0)
-```
+Periodic interrupts for scheduling and timekeeping.
 
-**Timer Frequency Calculation**:
-```
-Frequency = Bus Clock / (Divider × Initial Count)
+.. asciinema:: timer-interrupt-flow.cast
+   :alt: LAPIC timer interrupt flow demonstration showing: (1) Initial LAPIC
+         timer configuration with divide config 0x3 and initial count 100000,
+         (2) Timer firing at vector 49 with periodic interrupts visible in
+         serial output, (3) Each interrupt incrementing TICKS counter, (4) EOI
+         being written to LAPIC register 0xFEE000B0, (5) Counter continuing
+         to increment showing ~625 Hz frequency. Duration: 20 seconds. Actions:
+         Display LAPIC timer registers, enable timer, show periodic ticks
+         for 15 seconds with counter overlay.
 
-Example:
-Bus Clock = 1 GHz
-Divider = 16
-Initial Count = 100,000
+Configuration
+~~~~~~~~~~~~~
 
-Frequency = 1,000,000,000 / (16 × 100,000)
-         = 1,000,000,000 / 1,600,000
-         ≈ 625 Hz
-         
-Period = 1 / 625 ≈ 1.6 ms
-```
+Implementation in apic/src/timer.rs::
 
----
+  pub const TIMER_VECTOR: u8 = 0x31;              // Vector 49
+  pub const TIMER_DIVIDE_CONFIG: u32 = 0x3;       // Divide by 16
+  pub const TIMER_INITIAL_COUNT: u32 = 100_000;   // Period
 
-## Interrupt Processing Flow
+  pub unsafe fn init_hardware() {
+      // Divide Configuration Register (0x3E0)
+      lapic_reg(0x3E0).write_volatile(TIMER_DIVIDE_CONFIG);
+      
+      // LVT Timer Register (0x320): Periodic mode
+      lapic_reg(0x320).write_volatile((TIMER_VECTOR as u32) | 0x20000);
+      
+      // Initial Count Register (0x380)
+      lapic_reg(0x380).write_volatile(TIMER_INITIAL_COUNT);
+  }
 
-### Hardware to Handler Execution
+LVT Timer Register (0x320)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-```
-┌─────────────────────────────────────────────────┐
-│ 1. Hardware Event                               │
-│    (e.g., key press on keyboard)                │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 2. Device asserts IRQ line                      │
-│    (e.g., IRQ1 for keyboard)                    │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 3. I/O APIC receives IRQ                        │
-│    - Looks up redirection table entry           │
-│    - Determines destination CPU                 │
-│    - Determines vector number                   │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 4. I/O APIC sends interrupt message to LAPIC    │
-│    via system bus                               │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 5. Local APIC receives interrupt                │
-│    - Checks Task Priority Register (TPR)        │
-│    - If priority sufficient, signals CPU        │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 6. CPU finishes current instruction             │
-│    - Checks INTR pin                            │
-│    - Interrupts enabled (IF=1)?                 │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 7. CPU looks up vector in IDT                   │
-│    - Reads IDTR for IDT base                    │
-│    - Calculates entry address                   │
-│    - Loads handler address and segment          │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 8. CPU saves state to stack                     │
-│    - SS (if privilege change)                   │
-│    - RSP (if privilege change)                  │
-│    - RFLAGS                                     │
-│    - CS                                         │
-│    - RIP                                        │
-│    - Error code (if applicable)                 │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 9. CPU clears IF flag (if interrupt gate)       │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 10. CPU jumps to handler                        │
-│     Handler prologue (if not naked)             │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 11. Handler executes                            │
-│     - Reads device registers                    │
-│     - Processes data                            │
-│     - Updates kernel state                      │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 12. Handler sends EOI to LAPIC                  │
-│     write_volatile(0xFEE000B0, 0)               │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 13. Handler returns (IRETQ)                     │
-│     - Pops error code (if present)              │
-│     - Pops RIP, CS, RFLAGS                      │
-│     - Pops RSP, SS (if privilege change)        │
-│     - Restores IF flag from RFLAGS              │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│ 14. Execution resumes at interrupted code       │
-└─────────────────────────────────────────────────┘
-```
+::
 
-### Stack Layout During Interrupt
+  Bits    Field
+  ────────────────────────────────────────
+  0-7     Vector
+  8-10    Reserved (0)
+  11      Reserved (0)
+  12      Delivery Status (RO)
+  13-15   Reserved (0)
+  16      Mask (0 = Not masked)
+  17-18   Timer Mode (00=One-shot, 01=Periodic, 10=TSC-Deadline)
+  19-31   Reserved (0)
 
-**Same Privilege Level (ring 0 → ring 0)**:
+Timer Frequency Calculation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-```
-        ┌──────────────┐  ← RSP before interrupt
-        │   (previous) │
-        ├──────────────┤
-        │      SS      │  ← Pushed by CPU
-        ├──────────────┤
-        │     RSP      │  ← Pushed by CPU
-        ├──────────────┤
-        │   RFLAGS     │  ← Pushed by CPU
-        ├──────────────┤
-        │      CS      │  ← Pushed by CPU
-        ├──────────────┤
-        │     RIP      │  ← Pushed by CPU
-        ├──────────────┤
-        │ Error Code   │  ← Pushed by CPU (if applicable)
-        ├──────────────┤  ← RSP in handler
-        │   Handler    │
-        │    Stack     │
-        └──────────────┘
-```
+::
 
-**Privilege Change (ring 3 → ring 0)**:
+  Frequency = Bus Clock / (Divider × Initial Count)
 
-```
-Kernel Stack:
-        ┌──────────────┐
-        │      SS      │  ← User SS
-        ├──────────────┤
-        │     RSP      │  ← User RSP
-        ├──────────────┤
-        │   RFLAGS     │
-        ├──────────────┤
-        │      CS      │  ← User CS
-        ├──────────────┤
-        │     RIP      │  ← User RIP
-        ├──────────────┤
-        │ Error Code   │  ← (if applicable)
-        ├──────────────┤  ← RSP in handler
-        │   Handler    │
-        │    Stack     │
-        └──────────────┘
+  Example:
+  Bus Clock = 1 GHz
+  Divider = 16
+  Initial Count = 100,000
 
-User Stack:
-        ┌──────────────┐  ← User RSP before interrupt
-        │   (previous) │
-        └──────────────┘
-```
+  Frequency = 1,000,000,000 / (16 × 100,000)
+           = 1,000,000,000 / 1,600,000
+           ≈ 625 Hz
+           
+  Period = 1 / 625 ≈ 1.6 ms
 
-### Handler Function Signature
+Interrupt Processing Flow
+==========================
 
-```rust
-extern "x86-interrupt" fn handler_name(stack_frame: InterruptStackFrame)
-```
+Hardware to Handler Execution
+------------------------------
 
-**`extern "x86-interrupt"`**:
-- Special calling convention for interrupt handlers
-- Compiler generates proper prologue/epilogue
-- Handles stack alignment
-- Uses `IRETQ` instead of `RET`
+Complete flow from hardware event to handler completion::
 
-**InterruptStackFrame**:
-```rust
-pub struct InterruptStackFrame {
-    pub instruction_pointer: VirtAddr,  // RIP
-    pub code_segment: u64,              // CS
-    pub cpu_flags: u64,                 // RFLAGS
-    pub stack_pointer: VirtAddr,        // RSP
-    pub stack_segment: u64,             // SS
-}
-```
+  ┌─────────────────────────────────────────────────┐
+  │ 1. Hardware Event                               │
+  │    (e.g., key press on keyboard)                │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 2. Device asserts IRQ line                      │
+  │    (e.g., IRQ1 for keyboard)                    │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 3. I/O APIC receives IRQ                        │
+  │    - Looks up redirection table entry           │
+  │    - Determines destination CPU                 │
+  │    - Determines vector number                   │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 4. I/O APIC sends interrupt message to LAPIC    │
+  │    via system bus                               │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 5. Local APIC receives interrupt                │
+  │    - Checks Task Priority Register (TPR)        │
+  │    - If priority sufficient, signals CPU        │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 6. CPU finishes current instruction             │
+  │    - Checks INTR pin                            │
+  │    - Interrupts enabled (IF=1)?                 │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 7. CPU looks up vector in IDT                   │
+  │    - Reads IDTR for IDT base                    │
+  │    - Calculates entry address                   │
+  │    - Loads handler address and segment          │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 8. CPU saves state to stack                     │
+  │    - SS (if privilege change)                   │
+  │    - RSP (if privilege change)                  │
+  │    - RFLAGS                                     │
+  │    - CS                                         │
+  │    - RIP                                        │
+  │    - Error code (if applicable)                 │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 9. CPU clears IF flag (if interrupt gate)       │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 10. CPU jumps to handler                        │
+  │     Handler prologue (if not naked)             │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 11. Handler executes                            │
+  │     - Reads device registers                    │
+  │     - Processes data                            │
+  │     - Updates kernel state                      │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 12. Handler sends EOI to LAPIC                  │
+  │     write_volatile(0xFEE000B0, 0)               │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 13. Handler returns (IRETQ)                     │
+  │     - Pops error code (if present)              │
+  │     - Pops RIP, CS, RFLAGS                      │
+  │     - Pops RSP, SS (if privilege change)        │
+  │     - Restores IF flag from RFLAGS              │
+  └──────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────┐
+  │ 14. Execution resumes at interrupted code       │
+  └─────────────────────────────────────────────────┘
 
----
+Stack Layout During Interrupt
+------------------------------
 
-## Exception Handlers
+Same Privilege Level (ring 0 → ring 0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-### Exception Vector Table
+::
 
-| Vector | Mnemonic | Name | Error Code | Description |
-|--------|----------|------|------------|-------------|
-| 0 | #DE | Divide Error | No | Division by zero or overflow |
-| 1 | #DB | Debug | No | Debug exception |
-| 2 | - | NMI | No | Non-maskable interrupt |
-| 3 | #BP | Breakpoint | No | INT3 instruction |
-| 4 | #OF | Overflow | No | INTO instruction with OF=1 |
-| 5 | #BR | BOUND Range Exceeded | No | BOUND instruction |
-| 6 | #UD | Invalid Opcode | No | Undefined or reserved opcode |
-| 7 | #NM | Device Not Available | No | FPU not available |
-| 8 | #DF | Double Fault | Yes (0) | Exception while handling exception |
-| 9 | - | Coprocessor Segment Overrun | No | (Legacy, not used) |
-| 10 | #TS | Invalid TSS | Yes | Invalid Task State Segment |
-| 11 | #NP | Segment Not Present | Yes | Segment not present |
-| 12 | #SS | Stack Fault | Yes | Stack segment fault |
-| 13 | #GP | General Protection | Yes | General protection violation |
-| 14 | #PF | Page Fault | Yes | Page not present or protection violation |
-| 15 | - | Reserved | No | (Reserved by Intel) |
-| 16 | #MF | x87 FPU Error | No | x87 floating point error |
-| 17 | #AC | Alignment Check | Yes (0) | Unaligned memory access (if AM=1, AC=1) |
-| 18 | #MC | Machine Check | No | Model-specific fatal hardware error |
-| 19 | #XM | SIMD Floating Point | No | SSE/AVX floating point exception |
-| 20 | #VE | Virtualization Exception | No | EPT violation (Intel VT-x) |
-| 21-31 | - | Reserved | - | Reserved by Intel |
+          ┌──────────────┐  ← RSP before interrupt
+          │   (previous) │
+          ├──────────────┤
+          │      SS      │  ← Pushed by CPU
+          ├──────────────┤
+          │     RSP      │  ← Pushed by CPU
+          ├──────────────┤
+          │   RFLAGS     │  ← Pushed by CPU
+          ├──────────────┤
+          │      CS      │  ← Pushed by CPU
+          ├──────────────┤
+          │     RIP      │  ← Pushed by CPU
+          ├──────────────┤
+          │ Error Code   │  ← Pushed by CPU (if applicable)
+          ├──────────────┤  ← RSP in handler
+          │   Handler    │
+          │    Stack     │
+          └──────────────┘
 
-### Divide by Zero Handler
+Privilege Change (ring 3 → ring 0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-```rust
-extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame) {
-    util::panic::oops("Divide by Zero exception");
-}
-```
+Kernel Stack::
+
+          ┌──────────────┐
+          │      SS      │  ← User SS
+          ├──────────────┤
+          │     RSP      │  ← User RSP
+          ├──────────────┤
+          │   RFLAGS     │
+          ├──────────────┤
+          │      CS      │  ← User CS
+          ├──────────────┤
+          │     RIP      │  ← User RIP
+          ├──────────────┤
+          │ Error Code   │  ← (if applicable)
+          ├──────────────┤  ← RSP in handler
+          │   Handler    │
+          │    Stack     │
+          └──────────────┘
+
+User Stack::
+
+          ┌──────────────┐  ← User RSP before interrupt
+          │   (previous) │
+          └──────────────┘
+
+Handler Function Signature
+---------------------------
+
+Rust calling convention for interrupt handlers::
+
+  extern "x86-interrupt" fn handler_name(stack_frame: InterruptStackFrame)
+
+**extern "x86-interrupt"**:
+  * Special calling convention for interrupt handlers
+  * Compiler generates proper prologue/epilogue
+  * Handles stack alignment
+  * Uses IRETQ instead of RET
+
+**InterruptStackFrame**::
+
+  pub struct InterruptStackFrame {
+      pub instruction_pointer: VirtAddr,  // RIP
+      pub code_segment: u64,              // CS
+      pub cpu_flags: u64,                 // RFLAGS
+      pub stack_pointer: VirtAddr,        // RSP
+      pub stack_segment: u64,             // SS
+  }
+
+Exception Handlers
+==================
+
+Exception Vector Table
+----------------------
+
+Complete x86_64 exception vector table:
+
+======  ========  =====================  ==========  ====================================
+Vector  Mnemonic  Name                   Error Code  Description
+======  ========  =====================  ==========  ====================================
+0       #DE       Divide Error           No          Division by zero or overflow
+1       #DB       Debug                  No          Debug exception
+2       \-        NMI                    No          Non-maskable interrupt
+3       #BP       Breakpoint             No          INT3 instruction
+4       #OF       Overflow               No          INTO instruction with OF=1
+5       #BR       BOUND Range Exceeded   No          BOUND instruction
+6       #UD       Invalid Opcode         No          Undefined or reserved opcode
+7       #NM       Device Not Available   No          FPU not available
+8       #DF       Double Fault           Yes (0)     Exception while handling exception
+9       \-        Coprocessor Overrun    No          (Legacy, not used)
+10      #TS       Invalid TSS            Yes         Invalid Task State Segment
+11      #NP       Segment Not Present    Yes         Segment not present
+12      #SS       Stack Fault            Yes         Stack segment fault
+13      #GP       General Protection     Yes         General protection violation
+14      #PF       Page Fault             Yes         Page not present or protection violation
+15      \-        Reserved               No          (Reserved by Intel)
+16      #MF       x87 FPU Error          No          x87 floating point error
+17      #AC       Alignment Check        Yes (0)     Unaligned memory access (if AM=1, AC=1)
+18      #MC       Machine Check          No          Model-specific fatal hardware error
+19      #XM       SIMD Floating Point    No          SSE/AVX floating point exception
+20      #VE       Virtualization         No          EPT violation (Intel VT-x)
+21-31   \-        Reserved               \-          Reserved by Intel
+======  ========  =====================  ==========  ====================================
+
+Divide by Zero Handler
+----------------------
+
+Implementation in idt/src/lib.rs::
+
+  extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame) {
+      util::panic::oops("Divide by Zero exception");
+  }
 
 **Triggered By**:
-- `x / 0` where x is integer
-- `i64::MIN / -1` (overflow)
+  * ``x / 0`` where x is integer
+  * ``i64::MIN / -1`` (overflow)
 
 **Action**: Logs error and halts system.
 
-### Page Fault Handler
+Page Fault Handler
+------------------
 
-```rust
-extern "x86-interrupt" fn page_fault_handler(
-    stack: InterruptStackFrame,
-    error_code: PageFaultErrorCode
-) {
-    // Read CR2 (faulting address)
-    let cr2: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr2", out(reg) cr2);
-    }
-    
-    serial_println!("Page fault at instruction pointer: {:#x}", 
-                    stack.instruction_pointer.as_u64());
-    serial_println!("Page fault address: {:#x}", cr2);
-    serial_println!("Error Code: {:?}", error_code);
-    
-    util::panic::oops("Page fault exception");
-}
-```
+Implementation in idt/src/lib.rs::
 
-**Error Code Format**:
+  extern "x86-interrupt" fn page_fault_handler(
+      stack: InterruptStackFrame,
+      error_code: PageFaultErrorCode
+  ) {
+      // Read CR2 (faulting address)
+      let cr2: u64;
+      unsafe {
+          core::arch::asm!("mov {}, cr2", out(reg) cr2);
+      }
+      
+      serial_println!("Page fault at instruction pointer: {:#x}", 
+                      stack.instruction_pointer.as_u64());
+      serial_println!("Page fault address: {:#x}", cr2);
+      serial_println!("Error Code: {:?}", error_code);
+      
+      util::panic::oops("Page fault exception");
+  }
 
-```
-Bit     Name    Description
-─────────────────────────────────────────────────────
-0       P       0 = Not present, 1 = Protection violation
-1       W/R     0 = Read, 1 = Write
-2       U/S     0 = Supervisor, 1 = User mode
-3       RSVD    1 = Reserved bit set in page table
-4       I/D     1 = Instruction fetch
-5-31    -       Reserved
-```
+Error Code Format
+~~~~~~~~~~~~~~~~~
+
+::
+
+  Bit     Name    Description
+  ─────────────────────────────────────────────────────
+  0       P       0 = Not present, 1 = Protection violation
+  1       W/R     0 = Read, 1 = Write
+  2       U/S     0 = Supervisor, 1 = User mode
+  3       RSVD    1 = Reserved bit set in page table
+  4       I/D     1 = Instruction fetch
+  5-31    -       Reserved
 
 **CR2 Register**: Contains the linear (virtual) address that caused the page fault.
 
-### Double Fault Handler
+Double Fault Handler
+--------------------
 
-```rust
-extern "x86-interrupt" fn double_fault_handler(
-    _stack: InterruptStackFrame,
-    _err: u64
-) -> ! {
-    serial_println!("Double fault at instruction pointer: {:#x}",
-                    _stack.instruction_pointer.as_u64());
-    panic!("Double fault exception");
-}
-```
+Implementation in idt/src/lib.rs::
+
+  extern "x86-interrupt" fn double_fault_handler(
+      _stack: InterruptStackFrame,
+      _err: u64
+  ) -> ! {
+      serial_println!("Double fault at instruction pointer: {:#x}",
+                      _stack.instruction_pointer.as_u64());
+      panic!("Double fault exception");
+  }
 
 **Causes**:
-- Exception during exception handling
-- Stack overflow during exception
-- Invalid IDT entry
+  * Exception during exception handling
+  * Stack overflow during exception
+  * Invalid IDT entry
 
-**Note**: Handler never returns (`-> !`). System is in inconsistent state.
+**Note**: Handler never returns (``-> !``). System is in inconsistent state.
 
-**Future Enhancement**: Use IST (Interrupt Stack Table) to provide separate stack for double fault handler, preventing stack overflow from causing double fault.
+**Future Enhancement**: Use IST (Interrupt Stack Table) to provide separate
+stack for double fault handler, preventing stack overflow from causing double
+fault.
 
----
+Hardware Interrupt Handlers
+============================
 
-## Hardware Interrupt Handlers
+Keyboard Interrupt (Vector 33)
+-------------------------------
 
-### Keyboard Interrupt (Vector 33)
+Status: **WORKING IN v0.0.5**
 
-```rust
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use x86_64::instructions::port::Port;
-    
-    // Read scancode from keyboard data port
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    
-    // Process scancode
-    keyboard::handle_scancode(scancode);
-    
-    // Send EOI to APIC
-    unsafe {
-        const APIC_EOI: *mut u32 = 0xFEE000B0 as *mut u32;
-        APIC_EOI.write_volatile(0);
-    }
-}
-```
+Implementation in idt/src/lib.rs::
+
+  extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+      use x86_64::instructions::port::Port;
+      
+      // Read scancode from keyboard data port
+      let mut port = Port::new(0x60);
+      let scancode: u8 = unsafe { port.read() };
+      
+      // Process scancode
+      keyboard::handle_scancode(scancode);
+      
+      // Send EOI to APIC
+      unsafe {
+          const APIC_EOI: *mut u32 = 0xFEE000B0 as *mut u32;
+          APIC_EOI.write_volatile(0);
+      }
+  }
 
 **Steps**:
-1. Read scancode from port 0x60 (must read or interrupt won't clear)
-2. Process scancode (translate to ASCII, output to console)
-3. Send EOI to LAPIC (allows next interrupt)
+  1. Read scancode from port 0x60 (must read or interrupt won't clear)
+  2. Process scancode (translate to ASCII, output to console)
+  3. Send EOI to LAPIC (allows next interrupt)
 
 **Critical**: Must read port 0x60 before EOI, or scancode is lost.
 
-### Timer Interrupt (Vector 49)
+Timer Interrupt (Vector 49)
+----------------------------
 
-```rust
-extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
-    unsafe {
-        TICKS += 1;  // Increment global tick counter
-        apic::send_eoi();
-    }
-}
-```
+Status: **WORKING IN v0.0.5** (~625 Hz)
+
+Implementation in apic/src/timer.rs::
+
+  extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
+      unsafe {
+          TICKS += 1;  // Increment global tick counter
+          apic::send_eoi();
+      }
+  }
 
 **Purpose**: 
-- Timekeeping (system uptime)
-- Task scheduling (preemption point)
-- Timeout handling
+  * Timekeeping (system uptime)
+  * Task scheduling (preemption point)
+  * Timeout handling
 
 **Frequency**: Currently ~625 Hz (1.6 ms period).
 
----
+Interrupt Routing
+=================
 
-## Interrupt Routing
+IRQ to Vector Mapping
+---------------------
 
-### IRQ to Vector Mapping
+Complete routing from hardware IRQ to handler::
 
-```
-Hardware IRQ → I/O APIC → Vector → IDT Entry → Handler
+  Hardware IRQ → I/O APIC → Vector → IDT Entry → Handler
 
-Example: Keyboard
-IRQ1 → I/O APIC Redirection[1] → Vector 33 → IDT[33] → keyboard_interrupt_handler
-```
+  Example: Keyboard
+  IRQ1 → I/O APIC Redirection[1] → Vector 33 → IDT[33] → keyboard_interrupt_handler
 
-### I/O APIC Redirection Table
+I/O APIC Redirection Table
+---------------------------
 
-```
-IRQ     Device              Vector  Handler
-────────────────────────────────────────────────────────
-0       PIT Timer           32      (Not actively used)
-1       Keyboard            33      keyboard_interrupt_handler
-2       Cascade (unused)    -       -
-3-15    Available           -       (Not configured)
-```
+Current configuration in v0.0.5::
 
-### Local APIC Interrupt Sources
+  IRQ     Device              Vector  Handler
+  ────────────────────────────────────────────────────────
+  0       PIT Timer           32      (Not actively used)
+  1       Keyboard            33      keyboard_interrupt_handler (WORKING)
+  2       Cascade (unused)    -       -
+  3-15    Available           -       (Not configured)
 
-```
-Source              Vector      Configuration
-─────────────────────────────────────────────────────────
-LAPIC Timer         49 (0x31)   LVT Timer Register (0x320)
-LINT0 (ExtINT)      -           LVT LINT0 Register (0x350)
-LINT1 (NMI)         -           LVT LINT1 Register (0x360)
-Error               -           LVT Error Register (0x370)
-Performance         -           LVT Performance (0x340)
-Thermal             -           LVT Thermal (0x330)
-```
+Local APIC Interrupt Sources
+-----------------------------
 
-### EOI (End of Interrupt)
+LAPIC-generated interrupts::
 
-**Purpose**: Signals to APIC that interrupt has been serviced.
+  Source              Vector      Configuration
+  ─────────────────────────────────────────────────────────
+  LAPIC Timer         49 (0x31)   LVT Timer Register (0x320) (WORKING)
+  LINT0 (ExtINT)      -           LVT LINT0 Register (0x350)
+  LINT1 (NMI)         -           LVT LINT1 Register (0x360)
+  Error               -           LVT Error Register (0x370)
+  Performance         -           LVT Performance (0x340)
+  Thermal             -           LVT Thermal (0x330)
+
+EOI (End of Interrupt)
+----------------------
+
+Purpose
+~~~~~~~
+
+Signals to APIC that interrupt has been serviced.
 
 **Location**: LAPIC EOI Register at offset 0xB0
 
 **Address**: 0xFEE000B0 (physical) = 0xFEE000B0 (direct mapped in Serix)
 
-**Operation**:
-```rust
-pub unsafe fn send_eoi() {
-    let eoi = lapic_reg(0xB0);
-    eoi.write_volatile(0);  // Write any value (typically 0)
-}
-```
+Operation
+~~~~~~~~~
 
-**Critical**: 
-- Must be called at end of every interrupt handler
-- Failure to send EOI blocks future interrupts at same/lower priority
-- Should be last operation before `IRETQ`
+Implementation in apic/src/lib.rs::
+
+  pub unsafe fn send_eoi() {
+      let eoi = lapic_reg(0xB0);
+      eoi.write_volatile(0);  // Write any value (typically 0)
+  }
+
+Critical Requirements
+~~~~~~~~~~~~~~~~~~~~~
+
+  * Must be called at end of every interrupt handler
+  * Failure to send EOI blocks future interrupts at same/lower priority
+  * Should be last operation before IRETQ
 
 **Exception**: Not needed for CPU exceptions (page fault, divide by zero, etc.)
 
----
+Performance and Optimization
+=============================
 
-## Performance and Optimization
+Interrupt Latency
+-----------------
 
-### Interrupt Latency
+Latency breakdown::
 
-**Components**:
-```
-1. Hardware propagation:           ~100 ns   (Device → I/O APIC → LAPIC)
-2. CPU interrupt latency:          ~50 ns    (Current instruction finish)
-3. IDT lookup:                     ~10 ns    (TLB hit)
-4. State save:                     ~50 ns    (Push registers)
-5. Handler dispatch:               ~10 ns    (Jump to handler)
-───────────────────────────────────────────────────────────────
-Total minimum latency:             ~220 ns
+  1. Hardware propagation:           ~100 ns   (Device → I/O APIC → LAPIC)
+  2. CPU interrupt latency:          ~50 ns    (Current instruction finish)
+  3. IDT lookup:                     ~10 ns    (TLB hit)
+  4. State save:                     ~50 ns    (Push registers)
+  5. Handler dispatch:               ~10 ns    (Jump to handler)
+  ───────────────────────────────────────────────────────────────
+  Total minimum latency:             ~220 ns
 
-Handler execution:                 Variable  (Depends on handler)
-EOI write:                         ~50 ns
-State restore:                     ~50 ns
-───────────────────────────────────────────────────────────────
-Total overhead (excluding handler): ~370 ns
-```
+  Handler execution:                 Variable  (Depends on handler)
+  EOI write:                         ~50 ns
+  State restore:                     ~50 ns
+  ───────────────────────────────────────────────────────────────
+  Total overhead (excluding handler): ~370 ns
 
-**Factors Affecting Latency**:
-- Cache misses (IDT, handler code not in cache)
-- TLB misses (stack not in TLB)
-- Interrupt masking (IF flag clear)
-- Task priority (TPR register in LAPIC)
-- Pending higher priority interrupts
+Factors Affecting Latency
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-### Handler Optimization
+  * Cache misses (IDT, handler code not in cache)
+  * TLB misses (stack not in TLB)
+  * Interrupt masking (IF flag clear)
+  * Task priority (TPR register in LAPIC)
+  * Pending higher priority interrupts
 
-**Keep Handlers Short**:
-```rust
-// Good: Minimal work in handler
-extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
-    let data = read_device_register();
-    BUFFER.push(data);  // Quick operation
-    send_eoi();
-}
+Handler Optimization
+--------------------
 
-// Bad: Long operation in handler
-extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
-    let data = read_device_register();
-    process_data(data);     // Long operation
-    update_display(data);   // Slow framebuffer access
-    send_eoi();
-}
-```
+Keep Handlers Short
+~~~~~~~~~~~~~~~~~~~
 
-**Defer Work**: Use "top half / bottom half" pattern:
-```rust
-// Top half (fast, in handler)
-extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
-    let data = read_device_register();
-    WORK_QUEUE.push(data);  // Defer processing
-    send_eoi();
-}
+Good: Minimal work in handler::
 
-// Bottom half (slow, in main loop or separate task)
-fn process_work_queue() {
-    while let Some(data) = WORK_QUEUE.pop() {
-        process_data(data);
-        update_display(data);
-    }
-}
-```
+  extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
+      let data = read_device_register();
+      BUFFER.push(data);  // Quick operation
+      send_eoi();
+  }
 
-### Interrupt Prioritization
+Bad: Long operation in handler::
 
-**Hardware Priority**: I/O APIC can route interrupts by priority.
+  extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
+      let data = read_device_register();
+      process_data(data);     // Long operation
+      update_display(data);   // Slow framebuffer access
+      send_eoi();
+  }
 
-**Software Priority**: LAPIC Task Priority Register (TPR):
-```rust
-pub unsafe fn set_task_priority(priority: u8) {
-    let tpr = lapic_reg(0x80);
-    tpr.write_volatile((priority as u32) << 4);
-}
-```
+Defer Work
+~~~~~~~~~~
+
+Use "top half / bottom half" pattern::
+
+  // Top half (fast, in handler)
+  extern "x86-interrupt" fn interrupt_handler(_stack: InterruptStackFrame) {
+      let data = read_device_register();
+      WORK_QUEUE.push(data);  // Defer processing
+      send_eoi();
+  }
+
+  // Bottom half (slow, in main loop or separate task)
+  fn process_work_queue() {
+      while let Some(data) = WORK_QUEUE.pop() {
+          process_data(data);
+          update_display(data);
+      }
+  }
+
+Interrupt Prioritization
+-------------------------
+
+Hardware Priority
+~~~~~~~~~~~~~~~~~
+
+I/O APIC can route interrupts by priority.
+
+Software Priority
+~~~~~~~~~~~~~~~~~
+
+LAPIC Task Priority Register (TPR)::
+
+  pub unsafe fn set_task_priority(priority: u8) {
+      let tpr = lapic_reg(0x80);
+      tpr.write_volatile((priority as u32) << 4);
+  }
 
 **Priority Levels**: 0-15 (0 = lowest, 15 = highest)
 
 **Masking**: Interrupts with priority ≤ TPR are masked.
 
-### Spurious Interrupts
+Spurious Interrupts
+-------------------
 
-**Cause**: LAPIC can generate spurious interrupt if conditions change between interrupt acceptance and delivery.
+**Cause**: LAPIC can generate spurious interrupt if conditions change between
+interrupt acceptance and delivery.
 
 **Vector**: Typically 255 (0xFF), configured in SVR[0:7].
 
-**Handler**:
-```rust
-extern "x86-interrupt" fn spurious_interrupt_handler(_stack: InterruptStackFrame) {
-    // Do NOT send EOI for spurious interrupts
-    // Just return
-}
-```
+Handler Implementation
+~~~~~~~~~~~~~~~~~~~~~~
+
+::
+
+  extern "x86-interrupt" fn spurious_interrupt_handler(_stack: InterruptStackFrame) {
+      // Do NOT send EOI for spurious interrupts
+      // Just return
+  }
 
 **Note**: Spurious interrupts do not require EOI.
 
----
+Debugging and Troubleshooting
+==============================
 
-## Debugging and Troubleshooting
+Common Issues
+-------------
 
-### Common Issues
-
-#### Interrupts Not Firing
+Interrupts Not Firing
+~~~~~~~~~~~~~~~~~~~~~~
 
 **Symptoms**: No keyboard input, timer not ticking.
 
 **Checks**:
-1. **IDT loaded?** `init_idt()` called?
-2. **Interrupts enabled?** IF flag set (`sti` instruction)?
-3. **APIC enabled?** MSR bit 11 and SVR bit 8 set?
-4. **I/O APIC configured?** IRQ mapped to vector?
-5. **Vector registered?** IDT entry has valid handler?
-6. **Device enabled?** Device interrupt not masked?
+  1. **IDT loaded?** init_idt() called?
+  2. **Interrupts enabled?** IF flag set (sti instruction)?
+  3. **APIC enabled?** MSR bit 11 and SVR bit 8 set?
+  4. **I/O APIC configured?** IRQ mapped to vector?
+  5. **Vector registered?** IDT entry has valid handler?
+  6. **Device enabled?** Device interrupt not masked?
 
-**Debug**:
-```rust
-// Check IF flag
-let rflags: u64;
-unsafe {
-    core::arch::asm!("pushfq; pop {}", out(reg) rflags);
-}
-if rflags & (1 << 9) != 0 {
-    serial_println!("Interrupts enabled");
-} else {
-    serial_println!("Interrupts DISABLED");
-}
+Debug Code
+++++++++++
 
-// Check APIC enabled
-let svr = unsafe { lapic_reg(0xF0).read_volatile() };
-if svr & 0x100 != 0 {
-    serial_println!("APIC enabled");
-} else {
-    serial_println!("APIC DISABLED");
-}
-```
+::
 
-#### Interrupt Storm
+  // Check IF flag
+  let rflags: u64;
+  unsafe {
+      core::arch::asm!("pushfq; pop {}", out(reg) rflags);
+  }
+  if rflags & (1 << 9) != 0 {
+      serial_println!("Interrupts enabled");
+  } else {
+      serial_println!("Interrupts DISABLED");
+  }
+
+  // Check APIC enabled
+  let svr = unsafe { lapic_reg(0xF0).read_volatile() };
+  if svr & 0x100 != 0 {
+      serial_println!("APIC enabled");
+  } else {
+      serial_println!("APIC DISABLED");
+  }
+
+Interrupt Storm
+~~~~~~~~~~~~~~~
 
 **Symptoms**: System hangs, 100% CPU usage, no serial output.
 
 **Causes**:
-1. Missing EOI (interrupt keeps reasserting)
-2. Device not acknowledging (level-triggered interrupt)
-3. Infinite loop in handler
+  1. Missing EOI (interrupt keeps reasserting)
+  2. Device not acknowledging (level-triggered interrupt)
+  3. Infinite loop in handler
 
-**Prevention**:
-```rust
-extern "x86-interrupt" fn handler(_stack: InterruptStackFrame) {
-    // Always send EOI, even on error paths
-    let result = process_interrupt();
-    
-    unsafe { send_eoi(); }  // Guaranteed to execute
-    
-    if result.is_err() {
-        serial_println!("Error in handler");
-    }
-}
-```
+Prevention
+++++++++++
 
-#### Double/Triple Fault
+::
+
+  extern "x86-interrupt" fn handler(_stack: InterruptStackFrame) {
+      // Always send EOI, even on error paths
+      let result = process_interrupt();
+      
+      unsafe { send_eoi(); }  // Guaranteed to execute
+      
+      if result.is_err() {
+          serial_println!("Error in handler");
+      }
+  }
+
+Double/Triple Fault
+~~~~~~~~~~~~~~~~~~~
 
 **Symptoms**: System reboots or hangs without output.
 
 **Causes**:
-1. Stack overflow during exception
-2. Invalid IDT entry
-3. Page fault in exception handler
-4. Exception during double fault
+  1. Stack overflow during exception
+  2. Invalid IDT entry
+  3. Page fault in exception handler
+  4. Exception during double fault
 
 **Debug**:
-- Use separate stack for double fault (IST)
-- Add debug output at start of exception handlers
-- Check page table mappings for handler code and stack
+  * Use separate stack for double fault (IST)
+  * Add debug output at start of exception handlers
+  * Check page table mappings for handler code and stack
 
-### Diagnostic Tools
+Diagnostic Tools
+----------------
 
-#### Interrupt Counters
+Interrupt Counters
+~~~~~~~~~~~~~~~~~~
 
-```rust
-static mut IRQ_COUNTS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+::
 
-extern "x86-interrupt" fn handler(_stack: InterruptStackFrame) {
-    unsafe {
-        IRQ_COUNTS[VECTOR].fetch_add(1, Ordering::Relaxed);
-    }
-    // ... rest of handler
-}
+  static mut IRQ_COUNTS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 
-pub fn dump_irq_counts() {
-    for (vector, count) in IRQ_COUNTS.iter().enumerate() {
-        let c = count.load(Ordering::Relaxed);
-        if c > 0 {
-            serial_println!("Vector {}: {} interrupts", vector, c);
-        }
-    }
-}
-```
+  extern "x86-interrupt" fn handler(_stack: InterruptStackFrame) {
+      unsafe {
+          IRQ_COUNTS[VECTOR].fetch_add(1, Ordering::Relaxed);
+      }
+      // ... rest of handler
+  }
 
-#### APIC Register Dump
+  pub fn dump_irq_counts() {
+      for (vector, count) in IRQ_COUNTS.iter().enumerate() {
+          let c = count.load(Ordering::Relaxed);
+          if c > 0 {
+              serial_println!("Vector {}: {} interrupts", vector, c);
+          }
+      }
+  }
 
-```rust
-pub unsafe fn dump_apic_state() {
-    serial_println!("=== APIC State ===");
-    serial_println!("ID:      {:#010x}", lapic_reg(0x020).read_volatile());
-    serial_println!("Version: {:#010x}", lapic_reg(0x030).read_volatile());
-    serial_println!("TPR:     {:#010x}", lapic_reg(0x080).read_volatile());
-    serial_println!("SVR:     {:#010x}", lapic_reg(0x0F0).read_volatile());
-    serial_println!("LVT Timer: {:#010x}", lapic_reg(0x320).read_volatile());
-    serial_println!("Timer Init: {:#010x}", lapic_reg(0x380).read_volatile());
-    serial_println!("Timer Cur:  {:#010x}", lapic_reg(0x390).read_volatile());
-}
-```
+APIC Register Dump
+~~~~~~~~~~~~~~~~~~
 
-#### I/O APIC Redirection Dump
+::
 
-```rust
-pub unsafe fn dump_ioapic_redirects() {
-    serial_println!("=== I/O APIC Redirection Table ===");
-    for irq in 0..24 {
-        let reg = 0x10 + (irq * 2);
-        let low = ioapic_read(reg);
-        let high = ioapic_read(reg + 1);
-        
-        let vector = low & 0xFF;
-        let masked = (low >> 16) & 1;
-        let dest = high >> 24;
-        
-        serial_println!("IRQ {}: Vector={} Mask={} Dest={}",
-                        irq, vector, masked, dest);
-    }
-}
-```
+  pub unsafe fn dump_apic_state() {
+      serial_println!("=== APIC State ===");
+      serial_println!("ID:      {:#010x}", lapic_reg(0x020).read_volatile());
+      serial_println!("Version: {:#010x}", lapic_reg(0x030).read_volatile());
+      serial_println!("TPR:     {:#010x}", lapic_reg(0x080).read_volatile());
+      serial_println!("SVR:     {:#010x}", lapic_reg(0x0F0).read_volatile());
+      serial_println!("LVT Timer: {:#010x}", lapic_reg(0x320).read_volatile());
+      serial_println!("Timer Init: {:#010x}", lapic_reg(0x380).read_volatile());
+      serial_println!("Timer Cur:  {:#010x}", lapic_reg(0x390).read_volatile());
+  }
 
----
+I/O APIC Redirection Dump
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-## Appendix
+::
 
-### Interrupt Vector Summary
+  pub unsafe fn dump_ioapic_redirects() {
+      serial_println!("=== I/O APIC Redirection Table ===");
+      for irq in 0..24 {
+          let reg = 0x10 + (irq * 2);
+          let low = ioapic_read(reg);
+          let high = ioapic_read(reg + 1);
+          
+          let vector = low & 0xFF;
+          let masked = (low >> 16) & 1;
+          let dest = high >> 24;
+          
+          serial_println!("IRQ {}: Vector={} Mask={} Dest={}",
+                          irq, vector, masked, dest);
+      }
+  }
 
-```
-Vector  Type        Handler                          Module
-────────────────────────────────────────────────────────────────────
-0       Exception   divide_by_zero_handler           idt/src/lib.rs
-8       Exception   double_fault_handler             idt/src/lib.rs
-14      Exception   page_fault_handler               idt/src/lib.rs
-33      Hardware    keyboard_interrupt_handler       idt/src/lib.rs
-49      Hardware    timer_interrupt                  apic/src/timer.rs
-```
+Appendix
+========
 
-### Register Addresses
+Interrupt Vector Summary
+------------------------
 
-```
-Local APIC:     0xFEE00000 (MMIO, 4 KB)
-I/O APIC:       0xFEC00000 (MMIO, 256 bytes)
-PIC1 Command:   0x20 (Port I/O)
-PIC1 Data:      0x21 (Port I/O)
-PIC2 Command:   0xA0 (Port I/O)
-PIC2 Data:      0xA1 (Port I/O)
-Keyboard Data:  0x60 (Port I/O)
-```
+Active vectors in v0.0.5::
 
-### Key Constants
+  Vector  Type        Handler                          Module                Status
+  ──────────────────────────────────────────────────────────────────────────────────
+  0       Exception   divide_by_zero_handler           idt/src/lib.rs        Registered
+  8       Exception   double_fault_handler             idt/src/lib.rs        Registered
+  14      Exception   page_fault_handler               idt/src/lib.rs        Registered
+  33      Hardware    keyboard_interrupt_handler       idt/src/lib.rs        WORKING
+  49      Hardware    timer_interrupt                  apic/src/timer.rs     WORKING
 
-```rust
-// apic/src/lib.rs
-const APIC_BASE: u64 = 0xFEE00000;
+Register Addresses
+------------------
 
-// apic/src/ioapic.rs
-const IOAPIC_BASE: u64 = 0xFEC00000;
+MMIO and I/O port addresses::
 
-// apic/src/timer.rs
-pub const TIMER_VECTOR: u8 = 0x31;
-pub const TIMER_DIVIDE_CONFIG: u32 = 0x3;
-pub const TIMER_INITIAL_COUNT: u32 = 100_000;
-```
+  Local APIC:     0xFEE00000 (MMIO, 4 KB)
+  I/O APIC:       0xFEC00000 (MMIO, 256 bytes)
+  PIC1 Command:   0x20 (Port I/O)
+  PIC1 Data:      0x21 (Port I/O)
+  PIC2 Command:   0xA0 (Port I/O)
+  PIC2 Data:      0xA1 (Port I/O)
+  Keyboard Data:  0x60 (Port I/O)
 
----
+Key Constants
+-------------
 
-**End of Document**
+From source code::
+
+  // apic/src/lib.rs
+  const APIC_BASE: u64 = 0xFEE00000;
+
+  // apic/src/ioapic.rs
+  const IOAPIC_BASE: u64 = 0xFEC00000;
+
+  // apic/src/timer.rs
+  pub const TIMER_VECTOR: u8 = 0x31;              // Vector 49
+  pub const TIMER_DIVIDE_CONFIG: u32 = 0x3;       // Divide by 16
+  pub const TIMER_INITIAL_COUNT: u32 = 100_000;   // ~625 Hz frequency
+
+See Also
+--------
+
+  * Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 3
+  * AMD64 Architecture Programmer's Manual, Volume 2
+  * OSDev Wiki: https://wiki.osdev.org/Interrupts
+  * OSDev Wiki: https://wiki.osdev.org/APIC
