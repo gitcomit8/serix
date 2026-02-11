@@ -1,8 +1,8 @@
 /*
- * PS/2 Keyboard Driver
+ * lib.rs - PS/2 Keyboard Driver
  *
  * Handles keyboard input via PS/2 controller and scancode translation.
- * Uses a fixed-size Ring Buffer to be Interrupt-Safe (No Heap Allocations).
+ * Uses a fixed-size ring buffer to be interrupt-safe (no heap allocations).
  */
 
 #![no_std]
@@ -21,11 +21,18 @@ const SCANDCODE_TO_ASCII: [u8; 128] = [
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-/* * Ring Buffer Implementation
+/*
+ * Ring Buffer Implementation
  * Fixed size, no allocation, interrupt safe with Mutex.
  */
 const BUF_SIZE: usize = 128;
 
+/*
+ * struct RingBuffer - Fixed-size circular buffer
+ * @data: Buffer array
+ * @head: Write index
+ * @tail: Read index
+ */
 pub struct RingBuffer {
 	data: [u8; BUF_SIZE],
 	head: usize,
@@ -33,6 +40,11 @@ pub struct RingBuffer {
 }
 
 impl RingBuffer {
+	/*
+	 * new - Create an empty ring buffer
+	 *
+	 * Return: New RingBuffer instance
+	 */
 	const fn new() -> Self {
 		Self {
 			data: [0; BUF_SIZE],
@@ -41,15 +53,25 @@ impl RingBuffer {
 		}
 	}
 
+	/*
+	 * push - Add a byte to the buffer
+	 * @val: Byte to add
+	 *
+	 * Drops the value if buffer is full.
+	 */
 	fn push(&mut self, val: u8) {
 		let next = (self.head + 1) % BUF_SIZE;
 		if next != self.tail {
 			self.data[self.head] = val;
 			self.head = next;
 		}
-		// If full, drop the key (better than overwriting or allocating)
 	}
 
+	/*
+	 * pop - Remove and return a byte from the buffer
+	 *
+	 * Return: Some(byte) if buffer not empty, None otherwise
+	 */
 	fn pop(&mut self) -> Option<u8> {
 		if self.head == self.tail {
 			None
@@ -66,17 +88,21 @@ static INPUT_BUF: Mutex<RingBuffer> = Mutex::new(RingBuffer::new());
 
 /*
  * handle_scancode - Process keyboard scancode
+ * @scancode: Raw scancode from keyboard controller
+ *
+ * Translates scancode to ASCII and buffers printable characters.
+ * Ignores break codes (key release events).
  */
 pub fn handle_scancode(scancode: u8) {
-	/* Ignore break codes (bit 7 set) */
+	// Ignore break codes (bit 7 set)
 	if scancode & 0x80 != 0 {
 		return;
 	}
 
-	/* Translate and buffer printable characters */
+	// Translate and buffer printable characters
 	if let Some(&ascii) = SCANDCODE_TO_ASCII.get(scancode as usize) {
 		if ascii != 0 {
-			// Push to ring buffer (Interrupt Safe)
+			// Push to ring buffer (interrupt safe)
 			x86_64::instructions::interrupts::without_interrupts(|| {
 				INPUT_BUF.lock().push(ascii);
 			});
@@ -86,13 +112,17 @@ pub fn handle_scancode(scancode: u8) {
 
 /*
  * pop_key - Retrieve the next key from the buffer
+ *
+ * Return: Some(character) if available, None if buffer empty
  */
 pub fn pop_key() -> Option<u8> {
 	x86_64::instructions::interrupts::without_interrupts(|| INPUT_BUF.lock().pop())
 }
 
 /*
- * enable_keyboard_interrupt - Legacy PIC helper
+ * enable_keyboard_interrupt - Enable keyboard interrupt on legacy PIC
+ *
+ * Unmasks IRQ 1 on the master PIC. Used for legacy PIC mode only.
  */
 pub fn enable_keyboard_interrupt() {
 	unsafe {

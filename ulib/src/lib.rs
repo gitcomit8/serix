@@ -11,13 +11,15 @@ pub const STDOUT: usize = 1;
 
 /*
  * syscall3 - Generic syscall wrapper for 3 arguments
- * Follows Linux x86_64 API:
- * - NR: rax
- * - Arg1: rdi
- * - Arg2: rsi
- * - Arg3: rdx
+ * @nr: System call number
+ * @arg1: First argument (passed in rdi)
+ * @arg2: Second argument (passed in rsi)
+ * @arg3: Third argument (passed in rdx)
+ *
+ * Follows Linux x86_64 syscall ABI.
+ *
+ * Return: System call return value
  */
-
 #[inline(always)]
 unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
 	unsafe {
@@ -37,6 +39,13 @@ unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
 	}
 }
 
+/*
+ * syscall1 - Generic syscall wrapper for 1 argument
+ * @nr: System call number
+ * @arg1: First argument (passed in rdi)
+ *
+ * Return: System call return value
+ */
 #[inline(always)]
 unsafe fn syscall1(nr: usize, arg1: usize) -> usize {
 	unsafe {
@@ -53,14 +62,34 @@ unsafe fn syscall1(nr: usize, arg1: usize) -> usize {
 	}
 }
 
-// --- The "libc" Stubs ---
+/*
+ * write - Write data to a file descriptor
+ * @fd: File descriptor (should be STDOUT)
+ * @buf: Buffer containing data to write
+ *
+ * Return: Number of bytes written, or negative errno on error
+ */
 pub fn write(fd: usize, buf: &[u8]) -> isize {
 	unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as usize, buf.len()) as isize }
 }
 
+/*
+ * read - Read data from a file descriptor
+ * @fd: File descriptor (should be STDIN)
+ * @buf: Buffer to read data into
+ *
+ * Return: Number of bytes read
+ */
 pub fn read(fd: usize, buf: &mut [u8]) -> usize {
 	unsafe { syscall3(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len() as usize) as usize }
 }
+
+/*
+ * exit - Terminate the current process
+ * @code: Exit status code
+ *
+ * Does not return.
+ */
 pub fn exit(code: i32) -> ! {
 	unsafe {
 		syscall1(SYS_EXIT, code as usize);

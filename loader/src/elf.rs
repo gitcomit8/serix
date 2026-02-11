@@ -1,12 +1,24 @@
+/*
+ * elf.rs - ELF file format definitions
+ *
+ * Defines structures and constants for parsing ELF64 executables.
+ */
+
 // ELF Magic Number: 0x7F 'E' 'L' 'F'
 pub const ELF_MAGIC: [u8; 4] = [0x7F, 0x45, 0x4C, 0x46];
 
+/*
+ * enum Machine - ELF machine architecture types
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Machine {
 	X86_64 = 0x3E,
 }
 
+/*
+ * enum SegmentType - ELF program header types
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SegmentType {
@@ -20,6 +32,9 @@ pub enum SegmentType {
 	Tls = 7,
 }
 
+/*
+ * struct Elf64Header - ELF64 file header
+ */
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct Elf64Header {
@@ -39,6 +54,9 @@ pub struct Elf64Header {
 	pub e_shstrndx: u16,
 }
 
+/*
+ * struct ProgramHeader - ELF64 program header
+ */
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct ProgramHeader {
@@ -52,12 +70,21 @@ pub struct ProgramHeader {
 	pub p_align: u64,  // Segment alignment
 }
 
-// Permissions flags
+/*
+ * Permission flags for program headers
+ */
 pub const PF_X: u32 = 1; // Execute
 pub const PF_W: u32 = 2; // Write
 pub const PF_R: u32 = 4; // Read
 
 impl Elf64Header {
+	/*
+	 * validate - Validate ELF header
+	 *
+	 * Checks magic number, class (64-bit), and machine type.
+	 *
+	 * Return: Ok(()) if valid, Err with message if invalid
+	 */
 	pub fn validate(&self) -> Result<(), &'static str> {
 		if self.e_ident[0..4] != ELF_MAGIC {
 			return Err("ELF magic doesn't match");

@@ -7,9 +7,9 @@
 
 use core::arch::naked_asm;
 use hal::serial_println;
+use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
-use x86_64::VirtAddr;
 /* System call numbers */
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;

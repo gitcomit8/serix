@@ -4,10 +4,10 @@
  * Wraps Rust futures for use in the task executor.
  */
 
+use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use alloc::boxed::Box;
 
 /*
  * struct AsyncTask - Wrapper for async futures
