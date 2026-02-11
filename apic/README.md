@@ -78,6 +78,7 @@ pub unsafe fn disable_pic()
 **Purpose**: Properly disables the legacy 8259 PIC to prevent conflicts with APIC.
 
 **Procedure**:
+
 1. **Initialization Command Word 1 (ICW1)**: Start initialization sequence (0x11)
 2. **Initialization Command Word 2 (ICW2)**: Remap IRQs to vectors 32-47
    - Master PIC (IRQ 0-7) → Vectors 32-39
@@ -92,6 +93,7 @@ pub unsafe fn disable_pic()
 The PIC defaults to vectors 0-15, which conflict with CPU exceptions. Even when disabling, we remap to safe vectors to prevent spurious interrupts from causing confusion.
 
 **Port Addresses**:
+
 - Master PIC Command: 0x20
 - Master PIC Data: 0x21
 - Slave PIC Command: 0xA0
@@ -123,6 +125,7 @@ if (apic_base & (1 << 11)) == 0 {
 ```
 
 **MSR Layout (IA32_APIC_BASE)**:
+
 - Bits 0-7: Reserved
 - Bits 8-11: BSP flag (bit 8), Reserved, Reserved, Global Enable (bit 11)
 - Bits 12-35: APIC Base address (4KB aligned)
@@ -137,6 +140,7 @@ svr.write_volatile(val);
 ```
 
 **SVR Register (0xF0)**:
+
 - Bits 0-7: Spurious vector number
 - Bit 8: APIC Software Enable (must be 1)
 - Bit 9: Focus Processor Checking (legacy, should be 0)
@@ -154,6 +158,7 @@ pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
 **Purpose**: Configures the LAPIC timer for periodic interrupts.
 
 **Parameters**:
+
 - `vector`: Interrupt vector number (e.g., 0x31 = 49 decimal)
 - `divide`: Divider configuration (0x3 = divide by 16)
 - `initial_count`: Timer period in bus cycles
@@ -161,28 +166,35 @@ pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
 **Register Configuration**:
 
 1. **Divide Configuration Register (0x3E0)**:
+
    ```rust
    lapic_reg(0x3E0).write_volatile(divide);
    ```
+
    - Determines timer frequency divider
    - Value 0x3 = divide bus clock by 16
 
 2. **LVT Timer Register (0x320)**:
+
    ```rust
    lapic_reg(0x320).write_volatile((vector as u32) | 0x20000);
    ```
+
    - Bits 0-7: Vector number
    - Bit 17 (0x20000): Timer mode (0 = one-shot, 1 = periodic)
    - Bit 16: Mask (0 = not masked)
 
 3. **Initial Count Register (0x380)**:
+
    ```rust
    lapic_reg(0x380).write_volatile(initial_count);
    ```
+
    - Timer countdown value
    - Counts down to zero, then reloads (in periodic mode)
 
 **Timer Frequency Calculation**:
+
 ```
 Interrupt Frequency = Bus Clock / (Divider × Initial Count)
 Example: 1 GHz bus / (16 × 100,000) ≈ 625 Hz (1.6 ms period)
@@ -199,6 +211,7 @@ pub unsafe fn send_eoi()
 **Critical**: Must be called at the end of every interrupt handler, or the LAPIC will not deliver further interrupts at the same or lower priority.
 
 **Implementation**:
+
 ```rust
 let eoi = lapic_reg(0xB0);
 eoi.write_volatile(0);
@@ -215,6 +228,7 @@ const IOAPIC_BASE: u64 = 0xFEC00000;
 ```
 
 The I/O APIC is accessed via MMIO at a fixed address. Unlike LAPIC, I/O APIC uses an indirect access model with two registers:
+
 - **IOREGSEL (0x00)**: Register selector
 - **IOWIN (0x10)**: Register data window
 
@@ -237,6 +251,7 @@ unsafe fn ioapic_write(reg: u32, value: u32) {
 ```
 
 **Procedure**:
+
 1. Write register index to IOREGSEL (offset 0x00)
 2. Read/write data via IOWIN (offset 0x10)
 
@@ -249,6 +264,7 @@ pub unsafe fn map_irq(irq: u8, vector: u8)
 **Purpose**: Routes a hardware IRQ to a specific interrupt vector.
 
 **Implementation**:
+
 ```rust
 let reg = 0x10 + (irq as u32 * 2);
 ioapic_write(reg, vector as u32);
@@ -260,6 +276,7 @@ ioapic_write(reg + 1, 0);
 Each IRQ has a 64-bit redirection entry split across two 32-bit registers:
 
 **Lower 32 bits (reg)**: Configuration
+
 - Bits 0-7: Vector number
 - Bits 8-10: Delivery mode (000 = Fixed)
 - Bit 11: Destination mode (0 = Physical)
@@ -270,6 +287,7 @@ Each IRQ has a 64-bit redirection entry split across two 32-bit registers:
 - Bit 16: Mask (0 = Not masked)
 
 **Upper 32 bits (reg + 1)**: Destination
+
 - Bits 24-31: Destination CPU (APIC ID)
 
 ### Initialization
@@ -286,6 +304,7 @@ map_irq(0, 32);  // Timer (IRQ0) → Vector 32
 ```
 
 **Standard IRQ Assignments**:
+
 - IRQ 0: PIT Timer (usually disabled in favor of LAPIC timer)
 - IRQ 1: Keyboard (PS/2)
 - IRQ 2: Cascade from slave PIC (unused in APIC mode)
@@ -312,6 +331,7 @@ extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame)
 **Purpose**: Handles LAPIC timer interrupts for timekeeping and scheduling.
 
 **Implementation**:
+
 ```rust
 unsafe {
     TICKS += 1;
@@ -320,6 +340,7 @@ unsafe {
 ```
 
 **Tick Counter**:
+
 ```rust
 static mut TICKS: u64 = 0;
 
@@ -329,6 +350,7 @@ pub fn ticks() -> u64 {
 ```
 
 **Usage**: Provides a monotonically increasing counter for:
+
 - Uptime measurement
 - Timeout implementation
 - Scheduling quantum tracking
@@ -348,6 +370,7 @@ pub unsafe fn register_handler()
 **Called**: Before `idt::init_idt()` in kernel initialization
 
 **Implementation**:
+
 ```rust
 idt::register_interrupt_handler(TIMER_VECTOR, timer_interrupt);
 ```
@@ -363,6 +386,7 @@ pub unsafe fn init_hardware()
 **Called**: After `x86_64::instructions::interrupts::enable()` in kernel initialization
 
 **Implementation**:
+
 ```rust
 // Divide Configuration Register
 lapic_reg(0x3E0).write_volatile(TIMER_DIVIDE_CONFIG);
@@ -378,6 +402,7 @@ hal::cpu::enable_interrupts();
 ```
 
 **Why Two Phases?**
+
 - IDT must have handler entry before timer starts firing
 - Hardware can't be configured until LAPIC is fully enabled
 - Interrupts must be enabled before timer generates interrupts
@@ -482,6 +507,7 @@ Registers:
 ### LAPIC Timer Resolution
 
 With current configuration:
+
 ```
 Divider: 16
 Initial Count: 100,000
@@ -497,6 +523,7 @@ Interrupt Frequency ≈ 625 Hz
 ### Calibration (Future Enhancement)
 
 Proper timer calibration involves:
+
 1. Read TSC (Time Stamp Counter) before timer start
 2. Wait for known number of PIT ticks
 3. Read TSC after
@@ -532,6 +559,7 @@ pub unsafe fn send_ipi(dest_cpu: u8, vector: u8) {
 ```
 
 **Use Cases**:
+
 - TLB shootdown (invalidate TLB on other CPUs)
 - Scheduler wakeup
 - Panic synchronization
@@ -565,6 +593,7 @@ let relocated_base = apic_base_msr & 0xFFFF_F000;
 **Symptoms**: Timer handler never called, keyboard unresponsive
 
 **Checks**:
+
 1. APIC enabled in MSR and SVR?
 2. IDT handler registered?
 3. Global interrupts enabled (IF flag)?
@@ -576,6 +605,7 @@ let relocated_base = apic_base_msr & 0xFFFF_F000;
 **Symptoms**: System hangs, serial output stops
 
 **Causes**:
+
 - Missing `send_eoi()` in handler
 - PIC not properly disabled (dual interrupts)
 - IRQ triggered faster than handler completes
@@ -621,14 +651,17 @@ pub unsafe fn dump_ioapic_redirs() {
 ### Timer Frequency Trade-offs
 
 **Higher Frequency (shorter period)**:
+
 - Pros: More responsive scheduling, better time resolution
 - Cons: Higher interrupt overhead, reduced throughput
 
 **Lower Frequency (longer period)**:
+
 - Pros: Lower overhead, better throughput
 - Cons: Coarser time resolution, less responsive scheduling
 
 **Typical Values**:
+
 - Linux: 100-1000 Hz (1-10 ms period)
 - Windows: ~64 Hz (15.6 ms period)
 - Real-time systems: 1000+ Hz

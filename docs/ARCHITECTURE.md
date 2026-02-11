@@ -1,7 +1,6 @@
 Serix Kernel Architecture
 ===========================
 
-
 Overview
 ========
 

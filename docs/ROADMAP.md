@@ -12,32 +12,35 @@ availability and technical challenges.
 
 Current Status (v0.0.5)
 -----------------------
+
 Released: 2026-02-11
 
 The kernel has completed Phase 1 and Phase 2, with partial Phase 3
 completion. Current capabilities:
 
- * Boots via Limine v10.x on BIOS and UEFI
- * APIC interrupt controller fully operational
- * IDT with exception and hardware interrupt handlers
- * Physical memory management with boot-time frame allocator
- * Virtual memory with 4-level paging
- * 1 MB kernel heap with linked_list_allocator
- * LAPIC timer at ~625 Hz (vector 49)
- * PS/2 keyboard driver (vector 33)
- * Framebuffer graphics with text console
- * VFS with ramdisk support (RamFile INode implementation)
- * ELF loader for userspace binaries
- * Basic syscalls: SYS_WRITE (1), SYS_READ (0), SYS_EXIT (60), SYS_YIELD (24)
- * Async task executor with cooperative scheduling
- * Capability system infrastructure (CapabilityStore)
- * Serial console debug output (COM1, 115200 baud)
+- Boots via Limine v10.x on BIOS and UEFI
+- APIC interrupt controller fully operational
+- IDT with exception and hardware interrupt handlers
+- Physical memory management with boot-time frame allocator
+- Virtual memory with 4-level paging
+- 1 MB kernel heap with linked_list_allocator
+- LAPIC timer at ~625 Hz (vector 49)
+- PS/2 keyboard driver (vector 33)
+- Framebuffer graphics with text console
+- VFS with ramdisk support (RamFile INode implementation)
+- ELF loader for userspace binaries
+- Basic syscalls: SYS_WRITE (1), SYS_READ (0), SYS_EXIT (60), SYS_YIELD (24)
+- Async task executor with cooperative scheduling
+- Capability system infrastructure (CapabilityStore)
+- Serial console debug output (COM1, 115200 baud)
 
 Phase 1: Core Foundation (COMPLETED)
 -------------------------------------
+
 Status: 100% complete
 
 Bootloader Integration
+
 ~~~~~~~~~~~~~~~~~~~~~~
  * [✓] Limine v10.x bootloader integration
  * [✓] Memory map parsing from Limine responses
@@ -53,17 +56,20 @@ Memory Management
 
 Hardware Abstraction Layer
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * [✓] CPU exception handlers (divide-by-zero, page fault, double fault)
- * [✓] APIC setup (Local APIC + I/O APIC)
- * [✓] Legacy PIC disable
- * [✓] LAPIC timer driver (~625 Hz)
- * [✓] Serial console (COM1, 115200 baud 8N1)
+
+- [✓] CPU exception handlers (divide-by-zero, page fault, double fault)
+- [✓] APIC setup (Local APIC + I/O APIC)
+- [✓] Legacy PIC disable
+- [✓] LAPIC timer driver (~625 Hz)
+- [✓] Serial console (COM1, 115200 baud 8N1)
 
 Phase 2: System Infrastructure (COMPLETED)
 -------------------------------------------
+
 Status: 100% complete
 
 Task Management
+
 ~~~~~~~~~~~~~~~
  * [✓] Task control block (TaskCB) structure
  * [✓] Async task creation using Rust futures
@@ -72,12 +78,14 @@ Task Management
 
 Capability System
 ~~~~~~~~~~~~~~~~~
- * [✓] Cryptographic capability handle generation
- * [✓] CapabilityStore with HashMap backend
- * [✓] Capability types (Memory, Process, IPC, Interrupt, FileDescriptor)
- * [✓] Grant/revoke operations
+
+- [✓] Cryptographic capability handle generation
+- [✓] CapabilityStore with HashMap backend
+- [✓] Capability types (Memory, Process, IPC, Interrupt, FileDescriptor)
+- [✓] Grant/revoke operations
 
 Syscall Interface
+
 ~~~~~~~~~~~~~~~~~
  * [✓] SYS_WRITE (1) - Write to file descriptor or framebuffer
  * [✓] SYS_READ (0) - Read from keyboard buffer
@@ -86,15 +94,18 @@ Syscall Interface
 
 Hardware Detection
 ~~~~~~~~~~~~~~~~~~
- * [✓] CPUID parsing for CPU information
- * [✓] CPU topology detection (cores, threads)
- * [✓] Hybrid core classification (P-core/E-core) infrastructure
+
+- [✓] CPUID parsing for CPU information
+- [✓] CPU topology detection (cores, threads)
+- [✓] Hybrid core classification (P-core/E-core) infrastructure
 
 Phase 3: Hardware Integration (IN PROGRESS)
 --------------------------------------------
+
 Status: ~40% complete
 
 VirtIO Block Driver (PARTIAL)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * [~] PCI device enumeration
  * [~] VirtIO device detection
@@ -121,17 +132,20 @@ IPC Core (PLANNED)
 
 Preemptive Scheduling (PLANNED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * [ ] Timer-triggered context switches
- * [ ] Task state save/restore (registers, stack)
- * [ ] Round-robin scheduler
- * [ ] Priority inheritance for capability operations
+
+- [ ] Timer-triggered context switches
+- [ ] Task state save/restore (registers, stack)
+- [ ] Round-robin scheduler
+- [ ] Priority inheritance for capability operations
 
 Phase 4: POSIX Compatibility (PLANNED)
 ---------------------------------------
+
 Status: 0% complete
 Target: Q2 2026
 
 Linux ABI Layer
+
 ~~~~~~~~~~~~~~~
  * [ ] Enhanced ELF loader with dynamic linking
  * [ ] Basic libc stubs (open, close, read, write, mmap)
@@ -140,12 +154,14 @@ Linux ABI Layer
 
 Threading Support
 ~~~~~~~~~~~~~~~~~
- * [ ] pthread_create implementation
- * [ ] Thread local storage (TLS)
- * [ ] pthread_join and detach
- * [ ] Mutex and condition variables
+
+- [ ] pthread_create implementation
+- [ ] Thread local storage (TLS)
+- [ ] pthread_join and detach
+- [ ] Mutex and condition variables
 
 Filesystem Operations
+
 ~~~~~~~~~~~~~~~~~~~~~
  * [ ] POSIX file API (open, close, read, write, seek)
  * [ ] File descriptor table per task
@@ -166,11 +182,13 @@ Target: Q3 2026
 
 Scheduler Optimization
 ~~~~~~~~~~~~~~~~~~~~~~
- * [ ] Weighted Fair Queueing (WFQ) implementation
- * [ ] CPU affinity and load balancing
- * [ ] Cache warmth tracking for migration decisions
+
+- [ ] Weighted Fair Queueing (WFQ) implementation
+- [ ] CPU affinity and load balancing
+- [ ] Cache warmth tracking for migration decisions
 
 IOMMU Protection
+
 ~~~~~~~~~~~~~~~~
  * [ ] IOMMU initialization (Intel VT-d)
  * [ ] DMA memory isolation
@@ -178,12 +196,14 @@ IOMMU Protection
 
 Debugging Infrastructure
 ~~~~~~~~~~~~~~~~~~~~~~~~~
- * [ ] GDB stub (serix-dbg)
- * [ ] Kernel panic backtraces with symbol resolution
- * [ ] Debug syscall for userspace debugging
- * [ ] Core dump generation
+
+- [ ] GDB stub (serix-dbg)
+- [ ] Kernel panic backtraces with symbol resolution
+- [ ] Debug syscall for userspace debugging
+- [ ] Core dump generation
 
 Performance Profiling
+
 ~~~~~~~~~~~~~~~~~~~~~~
  * [ ] Context switch latency measurement
  * [ ] Syscall overhead profiling

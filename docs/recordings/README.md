@@ -6,7 +6,9 @@ documentation (`GRAPHICS_API.md`).
 ## Required Recordings
 
 ### graphics-init.cast
+
 Asciinema recording showing:
+
 - Graphics subsystem initialization sequence
 - Blue screen background fill
 - Memory map visualization rendering
@@ -61,6 +63,7 @@ Create .cast file manually with timing information:
 ### Asciinema File Format
 
 .cast files use JSON Lines format:
+
 - Header: JSON object with metadata
 - Events: JSON arrays with [time, type, data]
 

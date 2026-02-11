@@ -47,16 +47,19 @@ pub unsafe fn outb(port: u16, value: u8)
 **Purpose**: Writes a byte to an I/O port.
 
 **Assembly Implementation**:
+
 ```rust
 core::arch::asm!("out dx, al", in("dx") port, in("al") value);
 ```
 
 **Instruction Breakdown**:
+
 - `out dx, al`: x86 OUT instruction
 - `dx` register: Port number (16-bit)
 - `al` register: Value to write (8-bit)
 
 **Usage Examples**:
+
 ```rust
 // Write to serial port data register
 unsafe { outb(0x3F8, b'A'); }
@@ -80,6 +83,7 @@ pub unsafe fn inb(port: u16) -> u8
 **Purpose**: Reads a byte from an I/O port.
 
 **Assembly Implementation**:
+
 ```rust
 let value: u8;
 core::arch::asm!("in al, dx", out("al") value, in("dx") port);
@@ -87,11 +91,13 @@ value
 ```
 
 **Instruction Breakdown**:
+
 - `in al, dx`: x86 IN instruction
 - `al` register: Receives read value (8-bit)
 - `dx` register: Port number (16-bit)
 
 **Usage Examples**:
+
 ```rust
 // Read from serial port line status register
 let status = unsafe { inb(0x3FD) };
@@ -132,6 +138,7 @@ let value = unsafe { inb(0x71) };
 ### Performance
 
 Port I/O operations are significantly slower than memory access:
+
 - Memory read/write: ~1-4 cycles
 - Port I/O: ~100-1000+ cycles (varies by device)
 
@@ -166,6 +173,7 @@ const LINE_STATUS_REG: u16 = 5; // Line status register
 ```
 
 **Absolute Addresses for COM1**:
+
 - Data: 0x3F8
 - Interrupt Enable: 0x3F9
 - FIFO Control: 0x3FA
@@ -219,24 +227,30 @@ unsafe fn init(&self) {
 #### Detailed Initialization Steps
 
 **Step 1: Disable Interrupts**
+
 ```rust
 outb(base + 1, 0x00);
 ```
+
 Prevents serial port from generating interrupts during configuration.
 
 **Step 2: Enable DLAB**
+
 ```rust
 outb(base + 3, 0x80);
 ```
+
 Line Control Register bit 7 enables access to divisor registers instead of data registers.
 
 **Step 3: Set Baud Rate Divisor**
+
 ```rust
 outb(base + 0, 0x01);  // Divisor low byte
 outb(base + 1, 0x00);  // Divisor high byte
 ```
 
 **Baud Rate Formula**:
+
 ```
 Baud Rate = 115200 / Divisor
 
@@ -249,11 +263,13 @@ Divisor 12 → 9600 baud
 ```
 
 **Step 4: Configure Line Parameters**
+
 ```rust
 outb(base + 3, 0x03);
 ```
 
 **Line Control Register (0x03 = 0b00000011)**:
+
 - Bits 0-1: 11 = 8 data bits
 - Bit 2: 0 = 1 stop bit
 - Bits 3-5: 000 = No parity
@@ -261,11 +277,13 @@ outb(base + 3, 0x03);
 - Bit 7: 0 = DLAB disabled
 
 **Step 5: Enable and Configure FIFO**
+
 ```rust
 outb(base + 2, 0xC7);
 ```
 
 **FIFO Control Register (0xC7 = 0b11000111)**:
+
 - Bit 0: 1 = Enable FIFO
 - Bit 1: 1 = Clear receive FIFO
 - Bit 2: 1 = Clear transmit FIFO
@@ -273,16 +291,19 @@ outb(base + 2, 0xC7);
 - Bits 6-7: 11 = 14-byte interrupt threshold
 
 **FIFO Benefits**:
+
 - Buffers up to 16 bytes
 - Reduces interrupt frequency
 - Improves throughput
 
 **Step 6: Configure Modem Control**
+
 ```rust
 outb(base + 4, 0x0B);
 ```
 
 **Modem Control Register (0x0B = 0b00001011)**:
+
 - Bit 0: 1 = Data Terminal Ready (DTR)
 - Bit 1: 1 = Request To Send (RTS)
 - Bit 2: 0 = Auxiliary output 1
@@ -298,6 +319,7 @@ pub fn write_byte(&self, byte: u8)
 **Purpose**: Writes a single byte to the serial port.
 
 **Implementation**:
+
 ```rust
 // Wait for transmit buffer to be empty
 while !self.is_transmit_empty() {
@@ -319,6 +341,7 @@ fn is_transmit_empty(&self) -> bool
 **Purpose**: Checks if the transmit buffer has space.
 
 **Implementation**:
+
 ```rust
 unsafe {
     inb(self.base + LINE_STATUS_REG) & 0x20 != 0
@@ -326,6 +349,7 @@ unsafe {
 ```
 
 **Line Status Register Bit 5 (0x20)**:
+
 - 0 = Transmit buffer full (busy)
 - 1 = Transmit buffer empty (ready)
 
@@ -341,6 +365,7 @@ pub fn write_str(&self, s: &str)
 **Purpose**: Writes a string to the serial port.
 
 **Implementation**:
+
 ```rust
 for byte in s.bytes() {
     self.write_byte(byte);
@@ -369,11 +394,13 @@ pub fn init_serial()
 **Purpose**: Initializes the global serial port instance.
 
 **Implementation**:
+
 ```rust
 SERIAL_PORT.call_once(|| Mutex::new(SerialPort::new()));
 ```
 
 **Thread Safety**: `Once::call_once` guarantees:
+
 - Initialization runs exactly once
 - Subsequent calls return immediately
 - Concurrent calls block until initialization completes
@@ -387,6 +414,7 @@ pub fn serial_print(s: &str)
 **Purpose**: Prints a string to the global serial port (thread-safe).
 
 **Implementation**:
+
 ```rust
 if let Some(serial) = SERIAL_PORT.get() {
     let port = serial.lock();
@@ -412,6 +440,7 @@ macro_rules! serial_print {
 **Purpose**: Formatted printing to serial port (no newline).
 
 **Usage**:
+
 ```rust
 serial_print!("Value: ");
 serial_print!("{:#x}", 0xDEADBEEF);
@@ -432,6 +461,7 @@ macro_rules! serial_println {
 **Purpose**: Formatted printing to serial port with newline.
 
 **Usage**:
+
 ```rust
 serial_println!("Kernel starting...");
 serial_println!("Memory: {} bytes", mem_size);
@@ -447,6 +477,7 @@ pub fn _serial_print(args: core::fmt::Arguments)
 **Purpose**: Internal function that handles `core::fmt::Arguments` formatting.
 
 **Implementation**:
+
 ```rust
 use core::fmt::Write;
 
@@ -476,6 +507,7 @@ pub fn halt()
 **Purpose**: Halts the CPU until the next interrupt.
 
 **Implementation**:
+
 ```rust
 use x86_64::instructions::hlt;
 hlt();
@@ -484,6 +516,7 @@ hlt();
 **Assembly**: Executes `HLT` instruction.
 
 **Behavior**:
+
 - CPU enters low-power state
 - Wakes on interrupt (timer, keyboard, etc.)
 - Returns to next instruction after interrupt handler completes
@@ -502,6 +535,7 @@ pub fn enable_interrupts()
 **Purpose**: Sets the interrupt flag (IF) in RFLAGS register.
 
 **Implementation**:
+
 ```rust
 use x86_64::instructions::interrupts;
 interrupts::enable();
@@ -523,6 +557,7 @@ pub fn disable_interrupts()
 **Purpose**: Clears the interrupt flag (IF) in RFLAGS register.
 
 **Implementation**:
+
 ```rust
 use x86_64::instructions::interrupts;
 interrupts::disable();
@@ -533,6 +568,7 @@ interrupts::disable();
 **Effect**: CPU ignores maskable hardware interrupts.
 
 **Use Cases**:
+
 - Critical sections requiring atomicity
 - Preventing interrupt handlers from running during sensitive operations
 - Synchronization primitives
@@ -598,6 +634,7 @@ loop {
 All HAL functions are marked `#[inline]` or `#[inline(always)]`:
 
 **Benefits**:
+
 - Zero function call overhead
 - Enables compiler optimizations
 - Critical for hot paths (interrupt handlers)
@@ -607,6 +644,7 @@ All HAL functions are marked `#[inline]` or `#[inline(always)]`:
 ### Serial Output Performance
 
 At 115200 baud:
+
 - Bit time: ~8.68 μs
 - Byte time (10 bits): ~86.8 μs
 - String (20 chars): ~1.74 ms
@@ -624,6 +662,7 @@ static SERIAL_PORT: Once<Mutex<SerialPort>>;
 ```
 
 **Thread Safety**:
+
 - ✅ Multiple threads can safely print
 - ⚠️ Deadlock possible if interrupt fires while holding lock
 
@@ -638,6 +677,7 @@ x86_64::instructions::interrupts::without_interrupts(|| {
 ### I/O Port Operations
 
 Port I/O operations are inherently atomic at the hardware level, but:
+
 - Not protected by locks
 - Caller must ensure correct sequencing
 - Multiple threads accessing same port must coordinate
@@ -649,11 +689,13 @@ Port I/O operations are inherently atomic at the hardware level, but:
 Most HAL functions are marked `unsafe`:
 
 **Rationale**:
+
 - Direct hardware access has no safety guarantees
 - Incorrect port access can cause undefined behavior
 - Some operations can damage hardware (rare, but possible)
 
 **Caller Responsibilities**:
+
 - Ensure port numbers are correct
 - Understand hardware side effects
 - Maintain proper initialization order
@@ -671,12 +713,14 @@ Most HAL functions are marked `unsafe`:
 ### Serial Output Not Working
 
 **Checks**:
+
 1. `init_serial()` called?
 2. QEMU/hardware has serial port connected?
 3. Baud rate correct on receiving end?
 4. Correct COM port configured?
 
 **QEMU Serial Redirection**:
+
 ```bash
 # To stdout
 qemu-system-x86_64 -serial stdio ...
@@ -691,6 +735,7 @@ qemu-system-x86_64 -serial tcp::4444,server,nowait ...
 ### Port I/O Issues
 
 **Debugging Technique**: Log port operations:
+
 ```rust
 unsafe fn debug_outb(port: u16, value: u8) {
     serial_println!("OUT 0x{:03X} <- 0x{:02X}", port, value);

@@ -8,6 +8,7 @@ preemptive scheduling.
 
 Status
 ------
+
 Current release: v0.0.5
 
 The kernel successfully boots to a graphical console, initializes core
@@ -22,24 +23,27 @@ Alt text: "Terminal recording showing QEMU boot of Serix kernel with serial cons
 
 Features
 --------
- * x86_64 long mode kernel with UEFI and BIOS support via Limine
- * Capability-based security with cryptographic capability handles
- * Physical memory management with boot-time frame allocator
- * Virtual memory with 4-level paging (PML4)
- * Heap allocator (linked_list_allocator, 1MB default)
- * APIC interrupt controller (Local APIC + I/O APIC, legacy PIC disabled)
- * Interrupt descriptor table with exception handlers
- * LAPIC timer at ~625 Hz
- * PS/2 keyboard driver with scancode translation
- * Framebuffer graphics with text console
- * VFS with ramdisk support
- * ELF loader for userspace binaries
- * Basic syscalls: write, read, exit, yield
- * Async task executor with cooperative scheduling
+
+- x86_64 long mode kernel with UEFI and BIOS support via Limine
+- Capability-based security with cryptographic capability handles
+- Physical memory management with boot-time frame allocator
+- Virtual memory with 4-level paging (PML4)
+- Heap allocator (linked_list_allocator, 1MB default)
+- APIC interrupt controller (Local APIC + I/O APIC, legacy PIC disabled)
+- Interrupt descriptor table with exception handlers
+- LAPIC timer at ~625 Hz
+- PS/2 keyboard driver with scancode translation
+- Framebuffer graphics with text console
+- VFS with ramdisk support
+- ELF loader for userspace binaries
+- Basic syscalls: write, read, exit, yield
+- Async task executor with cooperative scheduling
 
 Building
 --------
+
 Prerequisites:
+
 ```
   rustup default nightly
   rustup target add x86_64-unknown-none
@@ -47,6 +51,7 @@ Prerequisites:
 ```
 
 Quick start:
+
 ```
   git clone https://github.com/gitcomit8/serix.git
   cd serix
@@ -62,6 +67,7 @@ blue framebuffer with memory map visualization and serial console output.
 Alt text: "Terminal recording showing complete build process: cargo build output, make iso creating bootable image, and QEMU launch with kernel booting to blue screen, approximately 60 seconds"
 
 Build targets:
+
 ```
   make iso          # Build bootable ISO (serix.iso)
   make run          # Build and run in QEMU
@@ -72,6 +78,7 @@ Build targets:
 
 Testing
 -------
+
 No automated test suite exists yet. Validation is manual:
 
  1. Boot in QEMU (make run)
@@ -85,6 +92,7 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
 
 Repository Layout
 -----------------
+
 ```
 
   kernel/         Kernel entry point, syscalls, GDT
@@ -121,18 +129,19 @@ Documentation [docs/](docs/)
 
 Contributing
 ------------
+
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
- * Code style guidelines (tabs, Linux kernel comment style)
- * Build and test procedures
- * Commit message format
- * Pull request process
- * Areas needing work (see docs/ROADMAP.md Phase 3)
+- Code style guidelines (tabs, Linux kernel comment style)
+- Build and test procedures
+- Commit message format
+- Pull request process
+- Areas needing work (see docs/ROADMAP.md Phase 3)
 
 Bug reports and feature requests should use GitHub issue templates in
 .github/ISSUE_TEMPLATE/.
 
 License
 -------
-GNU General Public License v3.0. See [LICENSE](LICENSE) file.
 
+GNU General Public License v3.0. See [LICENSE](LICENSE) file.

@@ -29,13 +29,13 @@ Current Status (v0.0.5)
 
 Working features::
 
-  * APIC fully enabled (Local APIC + I/O APIC)
-  * Legacy PIC disabled and masked
-  * IDT loaded with 256 entries (exceptions + interrupts)
-  * Timer interrupts operational (vector 49, ~625 Hz)
-  * Keyboard interrupts operational (vector 33, PS/2)
-  * Exception handlers registered (divide-by-zero, page fault, double fault)
-  * EOI (End of Interrupt) correctly sent to LAPIC
+- APIC fully enabled (Local APIC + I/O APIC)
+- Legacy PIC disabled and masked
+- IDT loaded with 256 entries (exceptions + interrupts)
+- Timer interrupts operational (vector 49, ~625 Hz)
+- Keyboard interrupts operational (vector 33, PS/2)
+- Exception handlers registered (divide-by-zero, page fault, double fault)
+- EOI (End of Interrupt) correctly sent to LAPIC
 
 Key Components
 --------------
@@ -144,6 +144,7 @@ Interrupt Descriptor Table (IDT)
 **Location**: Kernel memory, address loaded into IDTR register
 
 Entry Format
+
 ~~~~~~~~~~~~
 
 16 bytes per entry::
@@ -223,8 +224,9 @@ IDTR Register
   └─────────────────────────────────────────────────────┴────────────────┘
 
 **Fields**:
-  * **Limit**: Size of IDT - 1 (typically 4095 for 256 entries)
-  * **Base**: Linear address of IDT
+
+- **Limit**: Size of IDT - 1 (typically 4095 for 256 entries)
+- **Base**: Linear address of IDT
 
 **Loading IDTR**::
 
@@ -238,6 +240,7 @@ Legacy PIC Disable
 ------------------
 
 Why Disable?
+
 ~~~~~~~~~~~~
 
   * APIC is superior (better multiprocessor support, more IRQs)
@@ -251,7 +254,7 @@ Implementation in apic/src/lib.rs::
 
   pub unsafe fn disable_pic() {
       use x86_64::instructions::port::Port;
-      
+
       let mut pic1_cmd: Port<u8> = Port::new(0x20);
       let mut pic1_data: Port<u8> = Port::new(0x21);
       let mut pic2_cmd: Port<u8> = Port::new(0xA0);
@@ -292,6 +295,7 @@ Local APIC Enable
 **MMIO Base**: 0xFEE00000 (4 KB region)
 
 APIC Registers
+
 ~~~~~~~~~~~~~~
 
 ======  ==========  ================================
@@ -360,6 +364,7 @@ IA32_APIC_BASE MSR (0x1B)
   36-63   Reserved
 
 SVR Register (0xF0)
+
 ~~~~~~~~~~~~~~~~~~~
 
 ::
@@ -404,6 +409,7 @@ Indirect Access Model
   }
 
 Redirection Table Registers
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each IRQ has a 64-bit redirection entry (two 32-bit registers)::
@@ -534,7 +540,7 @@ Timer Frequency Calculation
   Frequency = 1,000,000,000 / (16 × 100,000)
            = 1,000,000,000 / 1,600,000
            ≈ 625 Hz
-           
+
   Period = 1 / 625 ≈ 1.6 ms
 
 Interrupt Processing Flow
@@ -646,6 +652,7 @@ Stack Layout During Interrupt
 ------------------------------
 
 Same Privilege Level (ring 0 → ring 0)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ::
