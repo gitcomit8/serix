@@ -48,22 +48,26 @@ Before you begin, ensure you have the following installed:
 ### First Steps
 
 1. **Fork the Repository**
+
    ```bash
    # Visit https://github.com/gitcomit8/serix and click "Fork"
    ```
 
 2. **Clone Your Fork**
+
    ```bash
    git clone https://github.com/YOUR_USERNAME/serix.git
    cd serix
    ```
 
 3. **Add Upstream Remote**
+
    ```bash
    git remote add upstream https://github.com/gitcomit8/serix.git
    ```
 
 4. **Build and Test**
+
    ```bash
    make run
    ```
@@ -77,7 +81,7 @@ Before you begin, ensure you have the following installed:
 The Serix kernel is organized as a Cargo workspace with multiple crates:
 
 | Crate | Purpose |
-|-------|---------|
+| ------- | --------- |
 | `kernel/` | Kernel entry point and initialization |
 | `memory/` | Page tables, heap, frame allocation |
 | `hal/` | Hardware abstraction (serial, CPU topology) |
@@ -95,23 +99,29 @@ The Serix kernel is organized as a Cargo workspace with multiple crates:
 ### Build Commands
 
 ```bash
-# Build kernel only
+
+## Build kernel only
 cargo build --release --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
 
-# Build bootable ISO (includes kernel + init + Limine)
+
+## Build bootable ISO (includes kernel + init + Limine)
 make iso
 
-# Build and run in QEMU
+
+## Build and run in QEMU
 make run
 
-# Clean build artifacts
+
+## Clean build artifacts
 make clean
 cargo clean
 
-# Format code (uses tabs, not spaces)
+
+## Format code (uses tabs, not spaces)
 cargo fmt
 
-# Run Clippy linter
+
+## Run Clippy linter
 cargo clippy --target x86_64-unknown-none
 ```
 
@@ -130,7 +140,7 @@ cargo clippy --target x86_64-unknown-none
    - Load and execute init binary
    - Enter idle loop
 
-See [`docs/BOOT_PROCESS.md`](docs/BOOT_PROCESS.md) for more details.
+See [Boot Process Documentation](docs/BOOT_PROCESS.md) for more details.
 
 ## Code Style Guidelines
 
@@ -147,6 +157,7 @@ Serix follows specific coding conventions that differ from standard Rust in some
 #### Comment Style
 
 - **C-style block comments for functions**:
+
   ```rust
   /*
    * Initializes the kernel heap allocator.
@@ -158,6 +169,7 @@ Serix follows specific coding conventions that differ from standard Rust in some
   ```
 
 - **Line comments for inline explanations**:
+
   ```rust
   // Disable legacy PIC before enabling APIC
   unsafe { pic_disable(); }
@@ -196,9 +208,10 @@ Serix follows specific coding conventions that differ from standard Rust in some
 
 ### Debug Output
 
-- **Use `serial_println!` for debug output**: Primary debugging mechanism
-- **Use `fb_println!` for framebuffer output**: After graphics initialization
+- **Use `serial_println!` for debug output**: Primary debugging mechanism (see [HAL module](hal/README.md))
+- **Use `fb_println!` for framebuffer output**: After graphics initialization (see [Graphics module](graphics/README.md))
 - **Checkpoint pattern**: Use descriptive checkpoints during initialization
+
   ```rust
   serial_println!("[CHECKPOINT] Initializing APIC");
   ```
@@ -208,20 +221,24 @@ Serix follows specific coding conventions that differ from standard Rust in some
 ### Building the Project
 
 ```bash
-# Full build with ISO
+
+## Full build with ISO
 make iso
 
-# Build kernel only (faster for iteration)
+
+## Build kernel only (faster for iteration)
 cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
 ```
 
 ### Testing in QEMU
 
 ```bash
-# Standard run
+
+## Standard run
 make run
 
-# Run with debug output (interrupts, CPU resets)
+
+## Run with debug output (interrupts, CPU resets)
 qemu-system-x86_64 -cdrom serix.iso -serial stdio -m 4G \
     -d int,cpu_reset -no-reboot
 ```
@@ -239,6 +256,7 @@ qemu-system-x86_64 -cdrom serix.iso -serial stdio -m 4G \
 ### No Automated Tests Yet
 
 The kernel is currently validated by:
+
 - Booting in QEMU
 - Verifying serial console output shows initialization messages
 - Checking blue framebuffer appears
@@ -314,6 +332,7 @@ build instructions, and commit message format.
 ### Before Submitting
 
 1. **Create a feature branch**:
+
    ```bash
    git checkout -b feature/my-new-feature
    ```
@@ -321,12 +340,14 @@ build instructions, and commit message format.
 2. **Make your changes** following the code style guidelines
 
 3. **Format and lint**:
+
    ```bash
    cargo fmt
    cargo clippy --target x86_64-unknown-none
    ```
 
 4. **Test thoroughly**:
+
    ```bash
    make run
    # Verify boot succeeds and your changes work as expected
@@ -342,6 +363,7 @@ build instructions, and commit message format.
 ### Submitting the PR
 
 1. **Push to your fork**:
+
    ```bash
    git push origin feature/my-new-feature
    ```
@@ -372,12 +394,14 @@ build instructions, and commit message format.
 ### After Merging
 
 1. **Update your local repository**:
+
    ```bash
    git checkout main
    git pull upstream main
    ```
 
 2. **Delete your feature branch** (optional):
+
    ```bash
    git branch -d feature/my-new-feature
    ```
@@ -423,11 +447,12 @@ These areas require more groundwork before accepting contributions:
 
 - **GitHub Issues**: For bug reports and feature requests
 - **GitHub Discussions**: For questions and general discussion
-- **Documentation**: Check the [`docs/`](docs/) folder first
+- **Documentation**: Check the [docs/](docs/) folder first
 
 ### Asking Questions
 
 When asking for help:
+
 - Provide context about what you're trying to do
 - Include error messages and logs
 - Describe what you've already tried
@@ -446,11 +471,10 @@ See our [feature request template](.github/ISSUE_TEMPLATE/feature_request.md) to
 By contributing to Serix, you agree that your contributions will be licensed under the [GNU General Public License v3.0](LICENSE).
 
 All contributions must:
+
 - Be your original work or properly attributed
 - Not contain proprietary or copyrighted code without permission
 - Comply with the GPLv3 license terms
-
----
 
 ## Thank You!
 

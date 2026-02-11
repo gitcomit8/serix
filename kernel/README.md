@@ -79,13 +79,15 @@ unsafe {
 }
 ```
 
-**Purpose**: 
+**Purpose**:
+
 - Disables legacy 8259 PIC (Programmable Interrupt Controller)
 - Enables modern APIC (Advanced Programmable Interrupt Controller)
 - Routes hardware interrupts (keyboard, timer) through I/O APIC
 - Registers timer interrupt handler before IDT is loaded
 
 **Why APIC over PIC?**
+
 - Better multiprocessor support (future-ready)
 - More flexible interrupt routing
 - Higher performance
@@ -98,6 +100,7 @@ idt::init_idt(); // Setup CPU exception handlers and load IDT
 ```
 
 **Purpose**: Loads the Interrupt Descriptor Table with handlers for:
+
 - CPU exceptions (divide by zero, page faults, double faults)
 - Hardware interrupts (keyboard IRQ1, timer IRQ0)
 
@@ -122,6 +125,7 @@ unsafe {
 ```
 
 **Purpose**: Configures LAPIC timer to generate periodic interrupts for:
+
 - Task scheduling (preemption)
 - Time measurement
 - Timeout handling
@@ -135,6 +139,7 @@ let fb_response = FRAMEBUFFER_REQ
 ```
 
 **Purpose**: Retrieves framebuffer information from Limine bootloader:
+
 - Physical address of framebuffer
 - Width, height, pitch (bytes per line)
 - Bits per pixel (BPP)
@@ -150,6 +155,7 @@ let entries = mmap_response.entries();
 ```
 
 **Purpose**: Retrieves system memory map from bootloader, categorizing memory regions:
+
 - **Usable**: Available for kernel allocation
 - **Reserved**: BIOS, ACPI, MMIO regions
 - **Bootloader Reclaimable**: Bootloader code/data (can be reclaimed after boot)
@@ -163,11 +169,13 @@ let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 ```
 
 **Purpose**: Initializes virtual memory management with offset page table approach:
+
 - Maps all physical memory at a fixed virtual offset
 - Allows easy physical to virtual address translation
 - Required for heap allocation and memory safety
 
 **Memory Layout**:
+
 ```
 0xFFFF_8000_0000_0000: Physical memory mapping base
 0x4444_4444_0000:      Heap region start
@@ -192,6 +200,7 @@ let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
 ```
 
 **Purpose**: Creates a physical frame allocator from usable memory regions:
+
 - Identifies all usable 4KB pages
 - Stores them in static array (pre-heap allocation)
 - Provides frame allocation interface for page table mapping
@@ -205,12 +214,14 @@ init_heap(&mut mapper, &mut frame_alloc);
 ```
 
 **Purpose**: Maps and initializes kernel heap:
+
 1. Allocates page table entries for heap region
 2. Maps virtual pages to physical frames
 3. Initializes linked list allocator
 4. Enables Rust's `alloc` crate functionality (Vec, Box, String, etc.)
 
 **Heap Specifications**:
+
 - **Virtual Address**: `0x4444_4444_0000`
 - **Size**: 1 MB (configurable)
 - **Allocator**: `linked_list_allocator` crate
@@ -225,6 +236,7 @@ if let Some(fb) = fb_response.framebuffers().next() {
 ```
 
 **Purpose**: Visual boot confirmation and memory visualization:
+
 - Fills screen with blue (classic boot success indicator)
 - Draws memory map as colored bars at bottom:
   - **Green**: Usable memory
@@ -239,6 +251,7 @@ init_console(fb.addr(), fb.width() as usize, fb.height() as usize, fb.pitch() as
 ```
 
 **Purpose**: Initializes text console on framebuffer:
+
 - 8x16 pixel font rendering
 - Scrolling support
 - Global `fb_println!` macro support
@@ -250,6 +263,7 @@ Scheduler::init_global();
 ```
 
 **Purpose**: Initializes the global task scheduler (currently minimal):
+
 - Creates global scheduler instance
 - Prepares task management infrastructure
 - Future: will support preemptive multitasking
@@ -263,6 +277,7 @@ loop {
 ```
 
 **Purpose**: Kernel main loop:
+
 - Uses `hlt` instruction to halt CPU until next interrupt
 - Saves power compared to busy-waiting
 - Wakes on timer ticks, keyboard input, etc.
@@ -280,6 +295,7 @@ static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 ```
 
 **Purpose**: Communicate with Limine bootloader via request/response protocol
+
 - Requests are placed in specific ELF sections
 - Bootloader populates responses before jumping to kernel
 - Provides framebuffer, memory map, RSDP, modules, etc.
@@ -306,6 +322,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 ```
 
 **Purpose**: Custom panic handler for `no_std` environment:
+
 - Outputs panic information to serial console
 - Shows file and line number of panic
 - Enters infinite halt loop (alternative: triple fault reboot)
@@ -313,6 +330,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 ## Dependencies
 
 ### Internal Crates
+
 - **apic**: APIC/I/O APIC/timer management
 - **graphics**: Framebuffer rendering and console
 - **hal**: Hardware abstraction (serial, I/O ports, CPU control)
@@ -322,6 +340,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 - **task**: Task management and scheduling (proto)
 
 ### External Crates
+
 - **limine** (0.5.0): Bootloader protocol
 - **x86_64** (0.15.2): x86_64 architecture abstractions
 - **spin** (0.10.0): Spinlock synchronization primitives
@@ -345,12 +364,14 @@ panic = "abort"
 ```
 
 **Key Settings**:
+
 - `edition = "2024"`: Uses latest Rust edition
 - `panic = "abort"`: Panics immediately halt (no unwinding in kernel)
 
 ### Linker Script
 
 See `linker.ld` for memory layout and section definitions:
+
 - Loads at high virtual addresses
 - Defines `.text`, `.rodata`, `.data`, `.bss` sections
 - Limine protocol sections (`.limine_reqs`)
@@ -367,6 +388,7 @@ cargo build --target x86_64-unknown-none
 ### Target Specification
 
 Uses custom target: `x86_64-unknown-none`
+
 - No operating system
 - No standard library
 - Bare metal execution
@@ -423,20 +445,24 @@ Main Loop (HLT)
 All kernel messages are output to COM1 (0x3F8):
 
 ```bash
+
 # QEMU serial output to console
 qemu-system-x86_64 -serial stdio ...
 
-# QEMU serial output to file
+
+## QEMU serial output to file
 qemu-system-x86_64 -serial file:serial.log ...
 ```
 
 ### GDB Debugging
 
 ```bash
-# Start QEMU with GDB server
+
+## Start QEMU with GDB server
 qemu-system-x86_64 -s -S ...
 
-# In another terminal
+
+## In another terminal
 gdb target/x86_64-unknown-none/debug/kernel
 (gdb) target remote :1234
 (gdb) break _start
@@ -446,16 +472,19 @@ gdb target/x86_64-unknown-none/debug/kernel
 ### Common Issues
 
 #### Blue Screen Not Appearing
+
 - Check serial output for panic messages
 - Verify framebuffer request is satisfied
 - Check QEMU graphics backend
 
 #### Immediate Reboot
+
 - IDT not properly initialized
 - Page fault during early boot
 - Check serial output for last message
 
 #### Hang at Specific Point
+
 - Interrupt storm (IDT issue)
 - Infinite loop without `hlt`
 - Deadlock in spinlock
@@ -490,6 +519,7 @@ make run
 ```
 
 **Future**: Automated testing with:
+
 - Unit tests (where possible in no_std)
 - Integration tests
 - CI/CD pipeline

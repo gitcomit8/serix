@@ -1,18 +1,10 @@
 ====================================
-Serix Framebuffer and Console Driver
-====================================
 
-:Author: Serix Kernel Team
-:Version: 0.0.5
+# Serix Framebuffer and Console Driver
+
 :Last Updated: 2025-01-13
-:Architecture: x86_64
-:Module: graphics/
 
-.. contents:: Table of Contents
-   :depth: 3
-
-Introduction
-============
+## Introduction
 
 The Serix graphics subsystem provides framebuffer access and text console
 services for kernel-space visual output. It implements a two-tier architecture:
@@ -23,58 +15,30 @@ This document describes the graphics driver implementation, programming
 interfaces, and usage guidelines. It follows Linux kernel documentation
 conventions and is organized for kernel developers.
 
-Status (v0.0.5)
----------------
+## Status (v0.0.5)
 
 Working Features:
-  - Linear framebuffer initialization via Limine bootloader
-  - Blue screen background rendering
-  - Memory map visualization (colored bars)
-  - Text console with 8×16 bitmap font
-  - Console output macros (fb_print!, fb_println!)
-  - Automatic scrolling
-  - Drawing primitives (pixels, rectangles, lines)
+
+- Linear framebuffer initialization via Limine bootloader
+- Blue screen background rendering
+- Memory map visualization (colored bars)
+- Text console with 8×16 bitmap font
+- Console output macros (fb_print!, fb_println!)
+- Automatic scrolling
+- Drawing primitives (pixels, rectangles, lines)
 
 Known Limitations:
-  - No color attributes for text (white on black only)
-  - No Unicode support (ASCII 32-127 printable characters)
-  - No hardware acceleration
-  - Single-buffered rendering (no double buffering)
 
-Screenshots
------------
+- No color attributes for text (white on black only)
+- No Unicode support (ASCII 32-127 printable characters)
+- No hardware acceleration
+- Single-buffered rendering (no double buffering)
 
-.. figure:: images/framebuffer-screen.png
-   :alt: Blue framebuffer with memory map visualization
-   :width: 800px
+## Screenshots
 
-   Figure 1: Serix framebuffer showing blue background with colored memory map
-   bars representing physical memory regions (usable, reserved, ACPI, etc.)
+## Demo Recording
 
-.. figure:: images/console-output.png
-   :alt: Console text output on framebuffer
-   :width: 800px
-
-   Figure 2: Text console rendering with 8×16 bitmap font showing kernel
-   initialization messages and system information
-
-.. figure:: images/graphics-primitives.png
-   :alt: Graphics primitives demonstration
-   :width: 800px
-
-   Figure 3: Drawing primitives demonstration showing rectangles, lines,
-   and pixel plotting
-
-Demo Recording
---------------
-
-.. asciinema:: recordings/graphics-init.cast
-
-   Interactive recording showing graphics initialization sequence, memory map
-   visualization, console text output, and primitive drawing operations
-
-Design Philosophy
------------------
+## Design Philosophy
 
 Zero-Copy Architecture
   Direct framebuffer manipulation without intermediate buffers eliminates
@@ -96,187 +60,171 @@ Thread-Safe by Design
   Global console protected by spinlocks, safe for concurrent access from
   multiple kernel threads and interrupt handlers
 
-Architecture Overview
-=====================
+## Architecture Overview
 
-Module Structure
-----------------
+## Module Structure
 
-The graphics subsystem is organized as a Rust workspace crate::
+The graphics subsystem is organized as a Rust workspace crate
 
-    graphics/
-    ├── src/
-    │   ├── lib.rs              # Framebuffer primitives, pixel operations
-    │   └── console/
-    │       ├── mod.rs          # Text console implementation
-    │       └── font8x16.bin    # 8×16 bitmap font data (1536 bytes)
-    ├── Cargo.toml              # Crate manifest
-    └── README.md
+```
 
-Dependencies::
+graphics/
+├── src/
+│   ├── lib.rs              # Framebuffer primitives, pixel operations
+│   └── console/
+│       ├── mod.rs          # Text console implementation
+│       └── font8x16.bin    # 8×16 bitmap font data (1536 bytes)
+├── Cargo.toml              # Crate manifest
+└── README.md
 
-    [dependencies]
-    limine = "0.5.0"           # Limine boot protocol structures
-    spin = "0.10.0"            # Spinlock for thread safety (optional)
+```
 
-    [features]
-    global-console = ["spin"]   # Enable GLOBAL_CONSOLE singleton
+Dependencies
 
-System Context Diagram
-----------------------
+```
 
-The graphics subsystem sits between kernel code and GPU hardware::
+[dependencies]
+limine = "0.5.0"           # Limine boot protocol structures
+spin = "0.10.0"            # Spinlock for thread safety (optional)
 
-    ┌───────────────────────────────────────────────────────┐
-    │                    Kernel Code                        │
-    │   ┌──────────────┐         ┌──────────────────┐      │
-    │   │ Application  │         │    Interrupt     │      │
-    │   │    Logic     │         │     Handlers     │      │
-    │   └──────┬───────┘         └──────┬───────────┘      │
-    │          │                        │                   │
-    │          │ fb_println!()         │ serial_println!() │
-    │          ▼                        ▼                   │
-    │   ┌────────────────────────────────────────────┐     │
-    │   │      Graphics API (graphics crate)         │     │
-    │   │  ┌────────────┐    ┌──────────────────┐   │     │
-    │   │  │   Text     │    │   Framebuffer    │   │     │
-    │   │  │  Console   │    │      API         │   │     │
-    │   │  └────┬───────┘    └────┬─────────────┘   │     │
-    │   └───────┼─────────────────┼─────────────────┘     │
-    │           │                 │                        │
-    │           ▼                 ▼                        │
-    │   ┌────────────────────────────────────────────┐    │
-    │   │        Framebuffer Memory (VRAM)           │    │
-    │   │  Linear RGB/BGR buffer, WC memory type     │    │
-    │   │  Base: 0xE000_0000 (typical)              │    │
-    │   │  Size: width × height × 4 bytes            │    │
-    │   └────────────────────────────────────────────┘    │
-    └─────────────────────────┬───────────────────────────┘
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │   GPU Hardware   │
-                    │   Display Output │
-                    └──────────────────┘
+[features]
+global-console = ["spin"]   # Enable GLOBAL_CONSOLE singleton
 
-Text Output Data Flow
----------------------
+```
 
-Text rendering follows this path::
+## System Context Diagram
 
-    fb_println!("Hello")
-        ↓
-    format_args!() macro expansion
-        ↓
-    ConsoleGuard::write_fmt()
-        ↓
-    FramebufferConsole::write_string()
-        ↓
-    FramebufferConsole::put_char() [for each character]
-        ↓
-    FramebufferConsole::draw_char()
-        ↓
-    FONT_8X16 bitmap lookup
-        ↓
-    write_volatile() to framebuffer memory
-        ↓
-    GPU scans framebuffer → display
+The graphics subsystem sits between kernel code and GPU hardware
 
-Pixel Output Data Flow
-----------------------
+```
 
-Direct pixel rendering path::
+┌───────────────────────────────────────────────────────┐
+│                    Kernel Code                        │
+│   ┌──────────────┐         ┌──────────────────┐      │
+│   │ Application  │         │    Interrupt     │      │
+│   │    Logic     │         │     Handlers     │      │
+│   └──────┬───────┘         └──────┬───────────┘      │
+│          │                        │                   │
+│          │ fb_println!()         │ serial_println!() │
+│          ▼                        ▼                   │
+│   ┌────────────────────────────────────────────┐     │
+│   │      Graphics API (graphics crate)         │     │
+│   │  ┌────────────┐    ┌──────────────────┐   │     │
+│   │  │   Text     │    │   Framebuffer    │   │     │
+│   │  │  Console   │    │      API         │   │     │
+│   │  └────┬───────┘    └────┬─────────────┘   │     │
+│   └───────┼─────────────────┼─────────────────┘     │
+│           │                 │                        │
+│           ▼                 ▼                        │
+│   ┌────────────────────────────────────────────┐    │
+│   │        Framebuffer Memory (VRAM)           │    │
+│   │  Linear RGB/BGR buffer, WC memory type     │    │
+│   │  Base: 0xE000_0000 (typical)              │    │
+│   │  Size: width × height × 4 bytes            │    │
+│   └────────────────────────────────────────────┘    │
+└─────────────────────────┬───────────────────────────┘
 
-    write_pixel(ptr, offset, &color)
-        ↓
-    copy_nonoverlapping() to framebuffer
-        ↓
-    GPU scans framebuffer → display
+```
 
-Component Relationships
------------------------
+## Text Output Data Flow
 
-Global console singleton architecture::
+Text rendering follows this path
 
-    ┌──────────────────────────────────────────────┐
-    │           GLOBAL_CONSOLE                     │
-    │  static Mutex<Option<FramebufferConsole>>    │
-    │        (Thread-safe singleton)               │
-    └──────────────────┬───────────────────────────┘
-                       │
-                       │ init_console()
-                       ↓
-            ┌─────────────────────┐
-            │ FramebufferConsole  │
-            │  - framebuffer ptr  │
-            │  - width, height    │
-            │  - pitch, cursor    │
-            └────────┬────────────┘
-                     │
-                     │ Uses
-                     ↓
-            ┌─────────────────────┐
-            │   FONT_8X16         │
-            │   96 characters     │
-            │   8×16 pixels each  │
-            └─────────────────────┘
+```
 
-Boot Initialization Sequence
-----------------------------
+fb_println!("Hello")
+format_args!() macro expansion
+ConsoleGuard::write_fmt()
+FramebufferConsole::write_string()
+FramebufferConsole::put_char() [for each character]
+FramebufferConsole::draw_char()
+FONT_8X16 bitmap lookup
+write_volatile() to framebuffer memory
+GPU scans framebuffer → display
 
-Graphics initialization occurs after heap setup::
+```
 
-    1. Limine bootloader sets up framebuffer, provides Framebuffer structure
-    2. Kernel receives FRAMEBUFFER_REQ response
-    3. Fill screen blue (fill_screen_blue)
-    4. Draw memory map visualization (draw_memory_map)
-    5. Initialize console (init_console)
-    6. Text output enabled (fb_println! macros work)
+## Pixel Output Data Flow
 
-Framebuffer Low-Level API
-==========================
+Direct pixel rendering path
 
-Data Structures
----------------
+```
+
+write_pixel(ptr, offset, &color)
+copy_nonoverlapping() to framebuffer
+GPU scans framebuffer → display
+
+```
+
+## Component Relationships
+
+Global console singleton architecture
+
+```
+
+┌──────────────────────────────────────────────┐
+│           GLOBAL_CONSOLE                     │
+│  static Mutex<Option<FramebufferConsole>>    │
+│        (Thread-safe singleton)               │
+└──────────────────┬───────────────────────────┘
+
+```
+
+## Boot Initialization Sequence
+
+Graphics initialization occurs after heap setup
+
+```
+
+1. Limine bootloader sets up framebuffer, provides Framebuffer structure
+2. Kernel receives FRAMEBUFFER_REQ response
+3. Fill screen blue (fill_screen_blue)
+4. Draw memory map visualization (draw_memory_map)
+5. Initialize console (init_console)
+6. Text output enabled (fb_println! macros work)
+
+```
+
+## Framebuffer Low-Level API
+
+## Data Structures
 
 struct Framebuffer
-~~~~~~~~~~~~~~~~~~
 
-Provided by Limine bootloader protocol (limine crate)::
+```
 
-    pub struct Framebuffer {
-        addr: *mut u8,          // Framebuffer base address (virtual)
-        width: u64,             // Width in pixels
-        height: u64,            // Height in pixels
-        pitch: u64,             // Bytes per scanline (stride)
-        bpp: u16,               // Bits per pixel (typically 32)
-        memory_model: u8,       // RGB=1, BGR=2
-        red_mask_size: u8,      // Red channel bits
-        red_mask_shift: u8,     // Red channel offset
-        green_mask_size: u8,    // Green channel bits
-        green_mask_shift: u8,   // Green channel offset
-        blue_mask_size: u8,     // Blue channel bits
-        blue_mask_shift: u8,    // Blue channel offset
-    }
+Provided by Limine bootloader protocol (limine crate)
 
-Typical Configuration::
+```
 
-    Resolution: 1920×1080
-    BPP:        32 bits (4 bytes per pixel)
-    Format:     BGRA (Blue-Green-Red-Alpha)
-    Pitch:      7680 bytes (1920 × 4, may include padding)
-    Memory:     ~8.3 MB (1920 × 1080 × 4)
+pub struct Framebuffer {
+}
 
-Core Functions
---------------
+```
+Typical Configuration
+
+```
+
+Resolution: 1920×1080
+BPP:        32 bits (4 bytes per pixel)
+Format:     BGRA (Blue-Green-Red-Alpha)
+Pitch:      7680 bytes (1920 × 4, may include padding)
+Memory:     ~8.3 MB (1920 × 1080 × 4)
+
+```
+
+## Core Functions
 
 write_pixel()
-~~~~~~~~~~~~~
+```
 
-Write a single pixel to framebuffer::
+Write a single pixel to framebuffer
 
-    pub unsafe fn write_pixel(ptr: *mut u8, offset: usize, color: &[u8; 4])
+```
 
+pub unsafe fn write_pixel(ptr: *mut u8, offset: usize, color: &[u8; 4])
+
+```
 Parameters:
   ptr
     Base pointer to framebuffer memory (from fb.addr())
@@ -291,23 +239,24 @@ Safety Requirements:
   - ptr + offset must be 4-byte aligned
   - Framebuffer must remain mapped during write
 
-Color Format::
+Color Format
 
-    color[0] = Blue  (0x00 - 0xFF)
-    color[1] = Green (0x00 - 0xFF)
-    color[2] = Red   (0x00 - 0xFF)
-    color[3] = Alpha (0xFF = opaque, usually ignored)
+```
 
-Implementation::
+color[0] = Blue  (0x00 - 0xFF)
+color[1] = Green (0x00 - 0xFF)
+color[2] = Red   (0x00 - 0xFF)
+color[3] = Alpha (0xFF = opaque, usually ignored)
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            color.as_ptr(),
-            ptr.add(offset),
-            4
-        );
-    }
+```
+Implementation
 
+```
+
+unsafe {
+}
+
+```
 Performance:
   Time Complexity
     O(1) - single memory write
@@ -316,25 +265,31 @@ Performance:
   Throughput
     1-4 GB/s (PCIe bandwidth limited)
 
-Example::
+Example
 
-    let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
-    let ptr = fb.addr() as *mut u8;
-    let pitch = fb.pitch() as usize;
-    
-    // Draw red pixel at (100, 50)
-    let offset = 50 * pitch + 100 * 4;
-    let red = [0x00, 0x00, 0xFF, 0x00];  // BGRA
-    unsafe {
-        write_pixel(ptr, offset, &red);
-    }
+```
 
+let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
+let ptr = fb.addr() as *mut u8;
+let pitch = fb.pitch() as usize;
+
+// Draw red pixel at (100, 50)
+let offset = 50 *pitch + 100* 4;
+let red = [0x00, 0x00, 0xFF, 0x00];  // BGRA
+unsafe {
+}
+
+```
 fill_screen_blue()
-~~~~~~~~~~~~~~~~~~
+```
 
-Fill entire framebuffer with blue color::
+Fill entire framebuffer with blue color
 
-    pub fn fill_screen_blue(fb: &Framebuffer)
+```
+
+pub fn fill_screen_blue(fb: &Framebuffer)
+
+```
 
 Parameters:
   fb
@@ -344,36 +299,42 @@ Description:
   Safe wrapper around unsafe pixel operations. Fills all pixels with pure
   blue (BGRA: [0xFF, 0x00, 0x00, 0x00]). Used for initialization and testing.
 
-Performance::
+Performance
 
-    Resolution    Pixels      Memory      Duration (typical)
-    ──────────────────────────────────────────────────────────
-    1920×1080     2,073,600   8.3 MB      5-20 ms
-    2560×1440     3,686,400   14.7 MB     10-35 ms
-    3840×2160     8,294,400   33.2 MB     20-80 ms
+```
 
-Algorithm::
+Resolution    Pixels      Memory      Duration (typical)
+──────────────────────────────────────────────────────────
+1920×1080     2,073,600   8.3 MB      5-20 ms
+2560×1440     3,686,400   14.7 MB     10-35 ms
+3840×2160     8,294,400   33.2 MB     20-80 ms
 
-    let blue_pixel = [0xFF, 0x00, 0x00, 0x00];  // BGRA
-    for y in 0..height {
-        for x in 0..width {
-            let offset = y * pitch + x * 4;
-            unsafe {
-                write_pixel(ptr, offset, &blue_pixel);
-            }
-        }
-    }
+```
+
+Algorithm
+
+```
+
+let blue_pixel = [0xFF, 0x00, 0x00, 0x00];  // BGRA
+for y in 0..height {
+}
+
+```
 
 Optimization Note:
   Future implementations could use memset or SIMD for faster fills.
 
 draw_memory_map()
-~~~~~~~~~~~~~~~~~
 
-Visualize physical memory map as colored bars::
+```
 
-    pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
+Visualize physical memory map as colored bars
 
+```
+
+pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
+
+```
 Parameters:
   fb
     Reference to Framebuffer structure
@@ -385,26 +346,33 @@ Description:
   bar's color indicates memory type (usable, reserved, ACPI, etc.). Used
   for debugging and system visualization.
 
-Color Mapping::
+Color Mapping
 
-    Memory Type           Color (BGRA)
-    ─────────────────────────────────────────
-    Usable                Green  [0x00, 0xFF, 0x00, 0x00]
-    Reserved              Red    [0x00, 0x00, 0xFF, 0x00]
-    ACPI Reclaimable      Yellow [0x00, 0xFF, 0xFF, 0x00]
-    ACPI NVS              Orange [0x00, 0x80, 0xFF, 0x00]
-    Bad Memory            Gray   [0x80, 0x80, 0x80, 0x00]
-    Bootloader Reclaimable Cyan  [0xFF, 0xFF, 0x00, 0x00]
+```
 
-Coordinate Calculations
------------------------
+Memory Type           Color (BGRA)
+─────────────────────────────────────────
+Usable                Green  [0x00, 0xFF, 0x00, 0x00]
+Reserved              Red    [0x00, 0x00, 0xFF, 0x00]
+ACPI Reclaimable      Yellow [0x00, 0xFF, 0xFF, 0x00]
+ACPI NVS              Orange [0x00, 0x80, 0xFF, 0x00]
+Bad Memory            Gray   [0x80, 0x80, 0x80, 0x00]
+Bootloader Reclaimable Cyan  [0xFF, 0xFF, 0x00, 0x00]
+
+```
+
+## Coordinate Calculations
 
 Offset Calculation
-~~~~~~~~~~~~~~~~~~
+```
 
-Calculate byte offset for pixel at (x, y)::
+Calculate byte offset for pixel at (x, y)
 
-    offset = y * pitch + x * (bpp / 8)
+```
+
+offset = y *pitch + x* (bpp / 8)
+
+```
 
 Where:
   pitch
@@ -412,23 +380,32 @@ Where:
   bpp
     Bits per pixel (typically 32)
 
-Pitch vs Width::
+Pitch vs Width
 
-    Width:   Visible pixels per scanline
-    Pitch:   Total bytes per scanline (includes padding)
-    Padding: GPU alignment requirements (e.g., 64-byte boundaries)
+```
 
-Example with Padding::
+Width:   Visible pixels per scanline
+Pitch:   Total bytes per scanline (includes padding)
+Padding: GPU alignment requirements (e.g., 64-byte boundaries)
 
-    Resolution: 1920×1080, 32 bpp
-    Width:      1920 pixels
-    Ideal size: 1920 × 4 = 7680 bytes/line
-    
-    If GPU requires 64-byte alignment:
-    Pitch:      7744 bytes (next multiple of 64 ≥ 7680)
-    Padding:    64 bytes/line (16 pixels worth)
+```
+
+Example with Padding
+
+```
+
+Resolution: 1920×1080, 32 bpp
+Width:      1920 pixels
+Ideal size: 1920 × 4 = 7680 bytes/line
+
+If GPU requires 64-byte alignment:
+Pitch:      7744 bytes (next multiple of 64 ≥ 7680)
+Padding:    64 bytes/line (16 pixels worth)
+
+```
 
 **Example Usage**:
+
 ```rust
 let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 
@@ -437,12 +414,11 @@ graphics::fill_screen_blue(fb);
 ```
 
 **Alternatives**:
+
 - `fill_screen_color(fb, &[r, g, b, a])` - Fill with custom color (not yet implemented)
 - `clear_screen(fb)` - Fill with black (not yet implemented)
 
----
-
-#### draw_memory_map
+## ### draw_memory_map
 
 ```rust
 pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
@@ -451,10 +427,12 @@ pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
 **Purpose**: Visualizes system memory map as colored bars at bottom of screen (debugging tool).
 
 **Parameters**:
+
 - `fb`: Reference to framebuffer information structure
 - `entries`: Slice of memory map entries from bootloader
 
 **Visualization**:
+
 ```
 Screen Layout:
 ┌────────────────────────────────────────┐
@@ -471,6 +449,7 @@ Screen Layout:
 ```
 
 **Color Mapping**:
+
 ```rust
 match entry.entry_type {
     EntryType::USABLE                  => [0x00, 0xFF, 0x00, 0x00],  // Green
@@ -480,6 +459,7 @@ match entry.entry_type {
 ```
 
 **Bar Width Calculation**:
+
 ```rust
 let bar_width = screen_width / min(entry_count, screen_width);
 ```
@@ -487,6 +467,7 @@ let bar_width = screen_width / min(entry_count, screen_width);
 **Height**: 40 pixels from bottom of screen (`height - 40` to `height`).
 
 **Example Usage**:
+
 ```rust
 let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 let mmap = MMAP_REQ.get_response().unwrap();
@@ -496,13 +477,12 @@ graphics::draw_memory_map(fb, &entries);
 ```
 
 **Use Cases**:
+
 - Boot-time memory visualization
 - Debugging memory allocation issues
 - Demonstrating framebuffer capabilities
 
----
-
-### Coordinate System
+## ### Coordinate System
 
 ```
 Origin (0, 0) is top-left corner:
@@ -523,6 +503,7 @@ h-1│   │   │   │   │       │   │
 ```
 
 **Offset Calculation**:
+
 ```rust
 // For pixel at (x, y):
 let offset = y * pitch + x * (bpp / 8);
@@ -532,94 +513,81 @@ let offset = y * pitch + x * (bpp / 8);
     Pitch:      7744 bytes (next multiple of 64 ≥ 7680)
     Padding:    64 bytes/line (16 pixels worth)
 
-Text Console API
-================
 
-Overview
---------
+## Text Console API
+
+
+## Overview
 
 The text console provides character-based output on the framebuffer using
 software-rendered 8×16 bitmap fonts. It implements core::fmt::Write for
 integration with Rust's formatting macros.
 
-Architecture::
+Architecture
 
-    ┌──────────────────────────────────────────────┐
-    │       GLOBAL_CONSOLE (singleton)             │
-    │   static Mutex<Option<FramebufferConsole>>   │
-    └──────────────────┬───────────────────────────┘
-                       │ Lock for thread safety
-                       ↓
-            ┌─────────────────────┐
-            │ FramebufferConsole  │
-            │  - State tracking   │
-            │  - Character render │
-            └────────┬────────────┘
-                     │ Font lookup
-                     ↓
-            ┌─────────────────────┐
-            │  FONT_8X16          │
-            │  Bitmap font data   │
-            └────────┬────────────┘
-                     │ Pixel writes
-                     ↓
-            ┌─────────────────────┐
-            │  Framebuffer Memory │
-            └─────────────────────┘
+```
 
-Data Structures
----------------
+┌──────────────────────────────────────────────┐
+│       GLOBAL_CONSOLE (singleton)             │
+│   static Mutex<Option<FramebufferConsole>>   │
+└──────────────────┬───────────────────────────┘
+
+```
+
+## Data Structures
 
 struct FramebufferConsole
-~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
-Console state and rendering context::
+Console state and rendering context
 
-    pub struct FramebufferConsole {
-        framebuffer: *mut u8,    // Framebuffer base pointer
-        width: usize,            // Screen width (pixels)
-        height: usize,           // Screen height (pixels)
-        pitch: usize,            // Bytes per scanline
-        cursor_x: usize,         // Cursor column (chars)
-        cursor_y: usize,         // Cursor row (chars)
-    }
+```
 
-Thread Safety::
+pub struct FramebufferConsole {
+}
 
-    unsafe impl Send for FramebufferConsole {}
-    unsafe impl Sync for FramebufferConsole {}
+```
+Thread Safety
 
+```
+
+unsafe impl Send for FramebufferConsole {}
+unsafe impl Sync for FramebufferConsole {}
+
+```
 Rationale:
   Framebuffer pointer is inherently unsafe but can be shared across threads
   if protected by proper synchronization (Mutex in GLOBAL_CONSOLE).
 
-Character Grid Dimensions::
+Character Grid Dimensions
 
-    // For 1920×1080 screen with 8×16 font:
-    columns = width / 8    // 1920 / 8 = 240 columns
-    rows = height / 16     // 1080 / 16 = 67 rows (floor)
+```
 
+// For 1920×1080 screen with 8×16 font:
+columns = width / 8    // 1920 / 8 = 240 columns
+rows = height / 16     // 1080 / 16 = 67 rows (floor)
+
+```
 Cursor Position:
   - Stored in character coordinates (not pixels)
   - Range: cursor_x ∈ [0, columns), cursor_y ∈ [0, rows)
   - Automatically wraps to next line at right edge
   - Triggers scrolling when reaching bottom row
 
-Initialization Functions
-------------------------
+
+## Initialization Functions
 
 FramebufferConsole::new()
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
-Low-level constructor (prefer init_console for global instance)::
+Low-level constructor (prefer init_console for global instance)
 
-    pub unsafe fn new(
-        framebuffer: *mut u8,
-        width: usize,
-        height: usize,
-        pitch: usize
-    ) -> Self
+```
 
+pub unsafe fn new(
+) -> Self
+
+```
 Parameters:
   framebuffer
     Pointer to framebuffer memory base
@@ -640,18 +608,17 @@ Safety Requirements:
   - No concurrent writes to framebuffer allowed
 
 init_console()
-~~~~~~~~~~~~~~
+```
 
-Initialize global console singleton::
+Initialize global console singleton
 
-    #[cfg(feature = "global-console")]
-    pub fn init_console(
-        framebuffer: *mut u8,
-        width: usize,
-        height: usize,
-        pitch: usize
-    )
+```
 
+[cfg(feature = "global-console")]
+pub fn init_console(
+)
+
+```
 Feature:
   Requires "global-console" Cargo feature (pulls in spin crate)
 
@@ -661,97 +628,105 @@ Effect:
 Thread Safety:
   Protected by Mutex, safe to call from multiple threads (first call wins)
 
-Example::
+Example
 
-    // In kernel initialization (kernel/src/main.rs):
-    let fb = FRAMEBUFFER_REQ.get_response()
-        .expect("No framebuffer response")
-        .framebuffers()[0];
-    
-    graphics::console::init_console(
-        fb.addr() as *mut u8,
-        fb.width() as usize,
-        fb.height() as usize,
-        fb.pitch() as usize
-    );
-    
-    // Console now available globally
-    fb_println!("Console initialized!");
+```
 
-Character Output Functions
---------------------------
+// In kernel initialization (kernel/src/main.rs):
+let fb = FRAMEBUFFER_REQ.get_response()
+
+graphics::console::init_console(
+);
+
+// Console now available globally
+fb_println!("Console initialized!");
+
+```
+
+## Character Output Functions
 
 put_char()
-~~~~~~~~~~
+```
 
-Write single character at cursor position::
+Write single character at cursor position
 
-    fn put_char(&mut self, c: char)
+```
 
+fn put_char(&mut self, c: char)
+
+```
 Parameters:
   c
     Unicode character to render (ASCII printable and control chars)
 
 Behavior:
 
-Newline ('\\n')::
+Newline ('\\n')
 
-    if c == '\n' {
-        self.cursor_x = 0;
-        self.cursor_y += 1;
-        self.scroll_if_needed();
-        return;
-    }
+```
 
-Carriage Return ('\\r')::
+if c == '\n' {
+}
 
-    if c == '\r' {
-        self.cursor_x = 0;
-        return;
-    }
+```
+Carriage Return ('\\r')
 
-Printable Characters::
+```
 
-    // Draw character at current cursor
-    self.draw_char(c, self.cursor_x, self.cursor_y);
-    
-    // Advance cursor
-    self.cursor_x += 1;
-    
-    // Wrap to next line if needed
-    if self.cursor_x >= self.width / 8 {
-        self.cursor_x = 0;
-        self.cursor_y += 1;
-        self.scroll_if_needed();
-    }
+if c == '\r' {
+}
 
+```
+Printable Characters
+
+```
+
+// Draw character at current cursor
+self.draw_char(c, self.cursor_x, self.cursor_y);
+
+// Advance cursor
+self.cursor_x += 1;
+
+// Wrap to next line if needed
+if self.cursor_x >= self.width / 8 {
+}
+
+```
 Unsupported Characters:
   Non-ASCII characters (> 127) are rendered as '?'
 
 write_string()
-~~~~~~~~~~~~~~
+```
 
-Write string to console::
+Write string to console
 
-    fn write_string(&mut self, s: &str)
+```
 
+fn write_string(&mut self, s: &str)
+
+```
 Parameters:
   s
     UTF-8 string to output
 
-Implementation::
+Implementation
 
-    for c in s.chars() {
-        self.put_char(c);
-    }
+```
 
+for c in s.chars() {
+}
+
+```
 write_fmt()
-~~~~~~~~~~~
+```
 
-Formatted output (core::fmt::Write trait)::
+Formatted output (core::fmt::Write trait)
 
-    fn write_fmt(&mut self, args: fmt::Arguments) -> fmt::Result
+```
 
+fn write_fmt(&mut self, args: fmt::Arguments) -> fmt::Result
+
+```
 Parameters:
   args
     Formatted arguments from format_args!()
@@ -762,54 +737,67 @@ Returns:
 Usage:
   Enables fb_print! and fb_println! macros via core::fmt::Write trait
 
-Console Macros
---------------
+
+## Console Macros
 
 fb_print!
-~~~~~~~~~
+```
 
-Print without newline::
+Print without newline
 
-    fb_print!($($arg:tt)*)
+```
 
-Example::
+fb_print!($($arg:tt)*)
 
-    fb_print!("CPU cores: ");
-    fb_print!("{}", core_count);
+```
+Example
 
+```
+
+fb_print!("CPU cores: ");
+fb_print!("{}", core_count);
+
+```
 fb_println!
-~~~~~~~~~~~
+```
 
-Print with newline::
+Print with newline
 
-    fb_println!();
-    fb_println!($fmt:expr);
-    fb_println!($fmt:expr, $($arg:tt)*);
+```
 
-Examples::
+fb_println!();
+fb_println!($fmt:expr);
+fb_println!($fmt:expr, $($arg:tt)*);
 
-    fb_println!();                              // Blank line
-    fb_println!("Boot complete");               // Simple message
-    fb_println!("Memory: {} MB", mem_mb);       // Formatted output
-    fb_println!("Addr: {:#x}", addr);           // Hexadecimal
+```
+Examples
 
-Implementation::
+```
 
-    #[macro_export]
-    macro_rules! fb_println {
-        () => (fb_print!("\n"));
-        ($($arg:tt)*) => {{
-            fb_print!("{}\n", format_args!($($arg)*));
-        }};
+fb_println!();                              // Blank line
+fb_println!("Boot complete");               // Simple message
+fb_println!("Memory: {} MB", mem_mb);       // Formatted output
+fb_println!("Addr: {:#x}", addr);           // Hexadecimal
 
+```
+Implementation
 
-draw_char()
------------
+```
 
-Render single character using bitmap font::
+[macro_export]
+macro_rules! fb_println {
 
-    fn draw_char(&mut self, c: char, x_char: usize, y_char: usize)
+```
 
+## draw_char()
+
+Render single character using bitmap font
+
+```
+
+fn draw_char(&mut self, c: char, x_char: usize, y_char: usize)
+
+```
 Parameters:
   c
     Character to render (ASCII 32-126 supported)
@@ -818,170 +806,187 @@ Parameters:
   y_char
     Row position (character coordinates, 0-based)
 
-Character Lookup::
+Character Lookup
 
-    let c = c as u8;
-    let glyph = if c < 32 || c > 127 {
-        // Fallback to '?' for unsupported chars
-        &FONT_8X16[(b'?' - 32) as usize * 16..][..16]
-    } else {
-        &FONT_8X16[(c - 32) as usize * 16..][..16]
-    };
+```
 
+let c = c as u8;
+ let glyph = if c < 32 || c > 127 {
+} else {
+};
+
+```
 Font Data Structure:
   - 96 characters (ASCII 32-127)
   - Each character: 16 bytes (one byte per row)
   - Each byte: 8 bits (one bit per pixel column)
   - Total size: 96 × 16 = 1536 bytes
 
-Pixel Coordinates::
+Pixel Coordinates
 
-    let x_pixel = x_char * 8;    // Left edge of character
-    let y_pixel = y_char * 16;   // Top edge of character
+```
 
-Rendering Algorithm::
+let x_pixel = x_char *8;    // Left edge of character
+let y_pixel = y_char* 16;   // Top edge of character
 
-    for (row, &bits) in glyph.iter().enumerate() {
-        for bit in 0..8 {
-            // Test bit (MSB first)
-            let pixel_on = (bits & (1 << (7 - bit))) != 0;
-            
-            let pixel = if pixel_on {
-                [0xFF, 0xFF, 0xFF, 0x00]  // White (foreground)
-            } else {
-                [0x00, 0x00, 0x00, 0x00]  // Black (background)
-            };
-            
-            let offset = (y_pixel + row) * pitch + (x_pixel + bit) * 4;
-            
-            // Write 4 bytes (BGRA)
-            for p in 0..4 {
-                write_volatile(fb.add(offset + p), pixel[p]);
-            }
-        }
-    }
+```
+Rendering Algorithm
 
+```
+
+for (row, &bits) in glyph.iter().enumerate() {
+
+}
+
+```
 Bit Order:
   MSB (bit 7) represents leftmost pixel in character
 
-Example Font Data::
+Example Font Data
 
-    Character 'A' (ASCII 65, font index 33):
-    
-    Byte  Binary      Visual
-    ───────────────────────────
-    0:    00000000    ········
-    1:    00000000    ········
-    2:    00011000    ···##···
-    3:    00111100    ··####··
-    4:    01100110    ·##··##·
-    5:    01100110    ·##··##·
-    6:    01111110    ·######·
-    7:    01100110    ·##··##·
-    8:    01100110    ·##··##·
-    9:    01100110    ·##··##·
-    10:   00000000    ········
-    11:   00000000    ········
-    12:   00000000    ········
-    13:   00000000    ········
-    14:   00000000    ········
-    15:   00000000    ········
+```
 
-Performance::
+Character 'A' (ASCII 65, font index 33):
 
-    Pixels Written:     128 pixels/char (8 × 16)
-    Memory Written:     512 bytes/char (128 × 4)
-    CPU Cycles:         500-2000 cycles/char (cache-dependent)
-    Throughput:         500K-2M chars/sec (theoretical, single-threaded)
+Byte  Binary      Visual
+───────────────────────────
+0:    00000000    ········
+1:    00000000    ········
+2:    00011000    ···##···
+3:    00111100    ··####··
+4:    01100110    ·##··##·
+5:    01100110    ·##··##·
+6:    01111110    ·######·
+7:    01100110    ·##··##·
+8:    01100110    ·##··##·
+9:    01100110    ·##··##·
+10:   00000000    ········
+11:   00000000    ········
+12:   00000000    ········
+13:   00000000    ········
+14:   00000000    ········
+15:   00000000    ········
 
+```
+Performance
+
+```
+
+Pixels Written:     128 pixels/char (8 × 16)
+Memory Written:     512 bytes/char (128 × 4)
+CPU Cycles:         500-2000 cycles/char (cache-dependent)
+Throughput:         500K-2M chars/sec (theoretical, single-threaded)
+
+```
 Optimization Opportunities (Future):
   - SIMD for parallel pixel writes
   - Dirty region tracking (only redraw changed areas)
   - Character cell caching
   - Background thread rendering
 
-Scrolling
-=========
 
-scroll_if_needed()
-------------------
+## Scrolling
 
-Check cursor position and scroll if needed::
 
-    fn scroll_if_needed(&mut self)
+## scroll_if_needed()
 
-Trigger Condition::
+Check cursor position and scroll if needed
 
-    let max_lines = self.height / 16;
-    if self.cursor_y >= max_lines {
-        self.scroll_up();
-        self.cursor_y = max_lines - 1;
-    }
+```
 
-Example::
+fn scroll_if_needed(&mut self)
 
-    1920×1080 screen:
-    max_lines = 1080 / 16 = 67
-    If cursor_y reaches 67, scroll up and set cursor_y = 66
+```
+Trigger Condition
 
-scroll_up()
------------
+```
 
-Scroll console contents up by one character row::
+let max_lines = self.height / 16;
+if self.cursor_y >= max_lines {
+}
 
-    fn scroll_up(&mut self)
+```
+Example
 
+```
+
+1920×1080 screen:
+max_lines = 1080 / 16 = 67
+If cursor_y reaches 67, scroll up and set cursor_y = 66
+
+```
+
+## scroll_up()
+
+Scroll console contents up by one character row
+
+```
+
+fn scroll_up(&mut self)
+
+```
 Description:
   Moves all screen contents up by 16 pixel rows (one character line),
   discarding the top line and clearing the bottom line.
 
-Algorithm::
+Algorithm
 
-    let fb = self.framebuffer;
-    let pitch = self.pitch;
-    let height_bytes = self.height * pitch;
-    
-    // Step 1: Move all lines up by 16 pixel rows
-    let src = fb.add(16 * pitch);    // Source: row 16 onward
-    let dst = fb;                     // Dest: row 0 onward
-    let count = height_bytes - 16 * pitch;
-    core::ptr::copy(src, dst, count);
-    
-    // Step 2: Clear bottom 16 rows (new blank line)
-    let clear_start = fb.add(height_bytes - 16 * pitch);
-    for i in 0..(16 * pitch) {
-        write_volatile(clear_start.add(i), 0);
-    }
+```
 
-Memory Operations::
+let fb = self.framebuffer;
+let pitch = self.pitch;
+let height_bytes = self.height * pitch;
 
-    1920×1080 screen, 32 bpp:
-    pitch = 7680 bytes/line
-    height_bytes = 1080 × 7680 = 8,294,400 bytes (~8.3 MB)
-    
-    Move:  8,171,520 bytes (~8.2 MB)
-    Clear: 122,880 bytes (~123 KB, 16 rows)
+// Step 1: Move all lines up by 16 pixel rows
+let src = fb.add(16 *pitch);    // Source: row 16 onward
+let dst = fb;                     // Dest: row 0 onward
+let count = height_bytes - 16* pitch;
+core::ptr::copy(src, dst, count);
 
-Performance::
+// Step 2: Clear bottom 16 rows (new blank line)
+let clear_start = fb.add(height_bytes - 16 *pitch);
+for i in 0..(16* pitch) {
+}
 
-    Duration:   1-5 ms (modern hardware)
-    Method:     core::ptr::copy() (memmove, compiler-optimized)
+```
+Memory Operations
 
-Visual Effect::
+```
 
-    Before:
-    Line 0:  "First line"
-    Line 1:  "Second line"
-    ...
-    Line 66: "Last line"
-    
-    After scroll_up():
-    Line 0:  "Second line"     ← Was line 1
-    Line 1:  "Third line"      ← Was line 2
-    ...
-    Line 65: "Last line"       ← Was line 66
-    Line 66: ""                ← Cleared (blank)
+1920×1080 screen, 32 bpp:
+pitch = 7680 bytes/line
+height_bytes = 1080 × 7680 = 8,294,400 bytes (~8.3 MB)
 
+Move:  8,171,520 bytes (~8.2 MB)
+Clear: 122,880 bytes (~123 KB, 16 rows)
+
+```
+Performance
+
+```
+
+Duration:   1-5 ms (modern hardware)
+Method:     core::ptr::copy() (memmove, compiler-optimized)
+
+```
+Visual Effect
+
+```
+
+Before:
+Line 0:  "First line"
+Line 1:  "Second line"
+...
+Line 66: "Last line"
+
+After scroll_up():
+Line 0:  "Second line"     ← Was line 1
+Line 1:  "Third line"      ← Was line 2
+...
+Line 65: "Last line"       ← Was line 66
+Line 66: ""                ← Cleared (blank)
+
+```
 Alternative Approaches (Not Implemented):
   Circular Buffer
     Wrap viewport instead of copying (requires viewport management)
@@ -990,19 +995,22 @@ Alternative Approaches (Not Implemented):
   Virtual Console
     Larger off-screen buffer with viewport (requires more memory)
 
-Font System
-===========
 
-Font Format
------------
+## Font System
+
+
+## Font Format
 
 FONT_8X16 Bitmap Font
-~~~~~~~~~~~~~~~~~~~~~
+```
 
-Static bitmap font data::
+Static bitmap font data
 
-    const FONT_8X16: &[u8] = include_bytes!("console/font8x16.bin");
+```
 
+const FONT_8X16: &[u8] = include_bytes!("console/font8x16.bin");
+
+```
 Specifications:
   Character Set
     ASCII 32-127 (96 printable characters)
@@ -1017,220 +1025,263 @@ Specifications:
   Source
     Standard VGA text mode font
 
-Character Index Calculation::
+Character Index Calculation
 
-    char_index = (ascii_code - 32) * 16
+```
 
-Examples::
+char_index = (ascii_code - 32) * 16
 
-    ' ' (space, ASCII 32)  → index 0
-    'A' (ASCII 65)         → index 528 ((65-32)*16)
-    'Z' (ASCII 90)         → index 928 ((90-32)*16)
-    '~' (ASCII 126)        → index 1504 ((126-32)*16)
+```
+Examples
 
-Character Rendering Properties::
+```
 
-    Foreground Color:  White [0xFF, 0xFF, 0xFF, 0x00] (BGRA)
-    Background Color:  Black [0x00, 0x00, 0x00, 0x00] (BGRA)
-    
-    Note: Colors are hardcoded (no color attributes yet)
+' ' (space, ASCII 32)  → index 0
+'A' (ASCII 65)         → index 528 ((65-32)*16)
+'Z' (ASCII 90)         → index 928 ((90-32)*16)
+'~' (ASCII 126)        → index 1504 ((126-32)*16)
 
-Font Loading::
+```
+Character Rendering Properties
 
-    // Compile-time inclusion
-    const FONT_8X16: &[u8] = include_bytes!("console/font8x16.bin");
-    
-    // Runtime access
-    let glyph = &FONT_8X16[char_index..char_index + 16];
+```
 
-Color Model
-===========
+Foreground Color:  White [0xFF, 0xFF, 0xFF, 0x00] (BGRA)
+Background Color:  Black [0x00, 0x00, 0x00, 0x00] (BGRA)
 
-Pixel Format
-------------
+Note: Colors are hardcoded (no color attributes yet)
+
+```
+Font Loading
+
+```
+
+// Compile-time inclusion
+const FONT_8X16: &[u8] = include_bytes!("console/font8x16.bin");
+
+// Runtime access
+let glyph = &FONT_8X16[char_index..char_index + 16];
+
+```
+
+## Color Model
+
+
+## Pixel Format
 
 BGRA Format (Default)
-~~~~~~~~~~~~~~~~~~~~~
+```
 
-Most common framebuffer pixel format::
+Most common framebuffer pixel format
 
-    Byte Offset    Channel    Value Range
-    ────────────────────────────────────────
-    0              Blue       0x00 - 0xFF
-    1              Green      0x00 - 0xFF
-    2              Red        0x00 - 0xFF
-    3              Alpha      0x00 - 0xFF (often ignored)
+```
 
-Memory Layout::
+Byte Offset    Channel    Value Range
+────────────────────────────────────────
+0              Blue       0x00 - 0xFF
+1              Green      0x00 - 0xFF
+2              Red        0x00 - 0xFF
+3              Alpha      0x00 - 0xFF (often ignored)
 
-    [B, G, R, A] = [0x00, 0x00, 0xFF, 0x00]  → Red pixel
-    [B, G, R, A] = [0xFF, 0x00, 0x00, 0x00]  → Blue pixel
-    [B, G, R, A] = [0xFF, 0xFF, 0xFF, 0x00]  → White pixel
+```
+Memory Layout
 
+```
+
+[B, G, R, A] = [0x00, 0x00, 0xFF, 0x00]  → Red pixel
+[B, G, R, A] = [0xFF, 0x00, 0x00, 0x00]  → Blue pixel
+[B, G, R, A] = [0xFF, 0xFF, 0xFF, 0x00]  → White pixel
+
+```
 RGB Format (Alternative)
-~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
-Less common but supported by some framebuffers::
+Less common but supported by some framebuffers
 
-    Byte Offset    Channel    Value Range
-    ────────────────────────────────────────
-    0              Red        0x00 - 0xFF
-    1              Green      0x00 - 0xFF
-    2              Blue       0x00 - 0xFF
-    3              Alpha      0x00 - 0xFF (often ignored)
+```
 
-Format Detection::
+Byte Offset    Channel    Value Range
+────────────────────────────────────────
+0              Red        0x00 - 0xFF
+1              Green      0x00 - 0xFF
+2              Blue       0x00 - 0xFF
+3              Alpha      0x00 - 0xFF (often ignored)
 
-    // Limine provides format information
-    let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
-    
-    match fb.memory_model() {
-        1 => println!("RGB format"),
-        2 => println!("BGR format"),
-        _ => println!("Unknown format"),
-    }
+```
+Format Detection
 
-Color Constants
----------------
+```
 
-Common Colors (BGRA)::
+// Limine provides format information
+let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 
-    Black:    [0x00, 0x00, 0x00, 0x00]
-    White:    [0xFF, 0xFF, 0xFF, 0x00]
-    Red:      [0x00, 0x00, 0xFF, 0x00]
-    Green:    [0x00, 0xFF, 0x00, 0x00]
-    Blue:     [0xFF, 0x00, 0x00, 0x00]
-    Yellow:   [0x00, 0xFF, 0xFF, 0x00]
-    Cyan:     [0xFF, 0xFF, 0x00, 0x00]
-    Magenta:  [0xFF, 0x00, 0xFF, 0x00]
-    Gray:     [0x80, 0x80, 0x80, 0x00]
+match fb.memory_model() {
+}
 
+```
+
+## Color Constants
+
+Common Colors (BGRA)
+
+```
+
+Black:    [0x00, 0x00, 0x00, 0x00]
+White:    [0xFF, 0xFF, 0xFF, 0x00]
+Red:      [0x00, 0x00, 0xFF, 0x00]
+Green:    [0x00, 0xFF, 0x00, 0x00]
+Blue:     [0xFF, 0x00, 0x00, 0x00]
+Yellow:   [0x00, 0xFF, 0xFF, 0x00]
+Cyan:     [0xFF, 0xFF, 0x00, 0x00]
+Magenta:  [0xFF, 0x00, 0xFF, 0x00]
+Gray:     [0x80, 0x80, 0x80, 0x00]
+
+```
 Alpha Channel:
   Most framebuffers ignore alpha channel. Set to 0x00 for consistency.
 
-Memory Layout and Performance
-==============================
 
-Memory Type Configuration
--------------------------
+## Memory Layout and Performance
+
+
+## Memory Type Configuration
 
 Write-Combining (WC)
-~~~~~~~~~~~~~~~~~~~~
+```
 
-Framebuffers typically use WC memory type for optimal performance::
+Framebuffers typically use WC memory type for optimal performance
 
-    Memory Type        Characteristics
-    ───────────────────────────────────────────────────────────
-    Write-Combining    Batches writes, ~4× faster than uncached
-                       Sequential writes coalesced by CPU
-                       Out-of-order execution allowed
-    
-    Performance:       ~4 GB/s write bandwidth (typical)
-    Latency:           ~500 ns per write
-    Use Case:          Graphics framebuffers
+```
 
+Memory Type        Characteristics
+───────────────────────────────────────────────────────────
+Write-Combining    Batches writes, ~4× faster than uncached
+
+Performance:       ~4 GB/s write bandwidth (typical)
+Latency:           ~500 ns per write
+Use Case:          Graphics framebuffers
+
+```
 Uncached (UC)
-~~~~~~~~~~~~~
+```
 
-Alternative (slower) memory type::
+Alternative (slower) memory type
 
-    Memory Type        Characteristics
-    ───────────────────────────────────────────────────────────
-    Uncached           Every write is separate bus transaction
-                       Guaranteed write order
-                       No buffering
-    
-    Performance:       ~100 MB/s write bandwidth
-    Latency:           ~500 ns per write
-    Use Case:          Device registers, strict ordering required
+```
 
+Memory Type        Characteristics
+───────────────────────────────────────────────────────────
+Uncached           Every write is separate bus transaction
+
+Performance:       ~100 MB/s write bandwidth
+Latency:           ~500 ns per write
+Use Case:          Device registers, strict ordering required
+
+```
 Cached (WB)
-~~~~~~~~~~~
+```
 
-NOT used for framebuffers::
+NOT used for framebuffers
 
-    Memory Type        Characteristics
-    ───────────────────────────────────────────────────────────
-    Write-Back         Causes coherency issues with GPU
-                       Cache must be flushed manually
-                       Not suitable for framebuffers
-    
-    Performance:       ~50 GB/s (if it worked)
-    Use Case:          System RAM only
+```
 
-Performance Comparison::
+Memory Type        Characteristics
+───────────────────────────────────────────────────────────
+Write-Back         Causes coherency issues with GPU
 
-    Memory Type        Write Bandwidth   Latency
-    ─────────────────────────────────────────────
-    System RAM (WB)    ~50 GB/s          ~50 ns
-    Framebuffer (WC)   ~4 GB/s           ~500 ns
-    Framebuffer (UC)   ~100 MB/s         ~500 ns
+Performance:       ~50 GB/s (if it worked)
+Use Case:          System RAM only
 
-Optimization Techniques
------------------------
+```
+Performance Comparison
+
+```
+
+Memory Type        Write Bandwidth   Latency
+─────────────────────────────────────────────
+System RAM (WB)    ~50 GB/s          ~50 ns
+Framebuffer (WC)   ~4 GB/s           ~500 ns
+Framebuffer (UC)   ~100 MB/s         ~500 ns
+
+```
+
+## Optimization Techniques
 
 Write-Combining Efficiency
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
-Efficient (sequential, batched)::
+Efficient (sequential, batched)
 
-    for i in 0..1000 {
-        let offset = i * 4;
-        write_pixel(fb, offset, &color);  // Batched by CPU
-    }
+```
 
-Inefficient (random access)::
+for i in 0..1000 {
+}
 
-    for i in [0, 500, 100, 800, 50] {
-        let offset = i * 4;
-        write_pixel(fb, offset, &color);  // Individual transactions
-    }
+```
+Inefficient (random access)
 
+```
+
+for i in [0, 500, 100, 800, 50] {
+}
+
+```
 Memory Barriers
-~~~~~~~~~~~~~~~
+```
 
 Not Required on x86_64:
   - Strong memory ordering model
   - Writes visible to other cores in program order
   - GPU memory controllers handle coherency
 
-Required on ARM (Future)::
+Required on ARM (Future)
 
-    use core::sync::atomic::{fence, Ordering};
-    
-    write_pixel(fb, offset, &color);
-    fence(Ordering::Release);  // Ensure writes visible to GPU
+```
 
-Scalability
------------
+use core::sync::atomic::{fence, Ordering};
 
-Framebuffer Sizes::
+write_pixel(fb, offset, &color);
+fence(Ordering::Release);  // Ensure writes visible to GPU
 
-    Resolution    Bytes       Pixels/Frame    60 FPS Bandwidth
-    ────────────────────────────────────────────────────────────
-    1920×1080     8,294,400   2,073,600       ~475 MB/s
-    2560×1440     14,745,600  3,686,400       ~844 MB/s
-    3840×2160     33,177,600  8,294,400       ~1.9 GB/s
+```
 
-Console Character Capacity::
+## Scalability
 
-    Resolution    Columns × Rows   Total Chars
-    ─────────────────────────────────────────────
-    1920×1080     240 × 67         16,080
-    2560×1440     320 × 90         28,800
-    3840×2160     480 × 135        64,800
+Framebuffer Sizes
 
-Thread Safety and Synchronization
-==================================
+```
 
-Locking Strategy
-----------------
+Resolution    Bytes       Pixels/Frame    60 FPS Bandwidth
+────────────────────────────────────────────────────────────
+1920×1080     8,294,400   2,073,600       ~475 MB/s
+2560×1440     14,745,600  3,686,400       ~844 MB/s
+3840×2160     33,177,600  8,294,400       ~1.9 GB/s
 
-Global Console Protection::
+```
+Console Character Capacity
 
-    static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> 
-        = Mutex::new(None);
+```
 
+Resolution    Columns × Rows   Total Chars
+─────────────────────────────────────────────
+1920×1080     240 × 67         16,080
+2560×1440     320 × 90         28,800
+3840×2160     480 × 135        64,800
+
+```
+
+## Thread Safety and Synchronization
+
+
+## Locking Strategy
+
+Global Console Protection
+
+```
+
+static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>>
+
+```
 Mutex Type:
   spin::Mutex (spinlock, suitable for kernel)
 
@@ -1242,302 +1293,270 @@ Lock Characteristics:
   Deadlock
     Possible if lock held during interrupt
 
-Safe Usage Pattern::
+Safe Usage Pattern
 
-    use x86_64::instructions::interrupts;
-    
-    interrupts::without_interrupts(|| {
-        let mut console = GLOBAL_CONSOLE.lock();
-        write!(console, "Critical section").unwrap();
-        // Lock released here
-    });
+```
 
-Race Conditions
----------------
+use x86_64::instructions::interrupts;
+
+ interrupts::without_interrupts( || {
+});
+
+```
+
+## Race Conditions
 
 Potential Issue:
   Interrupt during console write
 
-Scenario::
+Scenario
 
-    Thread A: Acquires lock, starts writing "Hello"
-    Interrupt: Tries to acquire lock (already held)
-              → Spins forever (deadlock)
+```
 
+Thread A: Acquires lock, starts writing "Hello"
+Interrupt: Tries to acquire lock (already held)
+
+```
 Solution:
   Disable interrupts during console operations
 
-Automatic Protection (Via Macros)::
+Automatic Protection (Via Macros)
 
-    // Current implementation (no interrupt disable):
-    fb_println!("Text");  // UNSAFE if called from interrupt context
-    
-    // Future implementation:
-    #[macro_export]
-    macro_rules! fb_println {
-        ($($arg:tt)*) => {{
-            ::x86_64::instructions::interrupts::without_interrupts(|| {
-                // Lock acquisition here
-            });
-        }};
-    }
+```
 
+// Current implementation (no interrupt disable):
+fb_println!("Text");  // UNSAFE if called from interrupt context
+
+// Future implementation:
+[macro_export]
+macro_rules! fb_println {
+}
+
+```
 Current Limitation:
   User must manually disable interrupts if calling from ISR
 
-Usage Examples
-==============
 
-Basic Framebuffer Operations
------------------------------
+## Usage Examples
 
-Direct pixel manipulation::
 
-    use graphics::{write_pixel, fill_screen_blue};
-    
-    let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
-    let ptr = fb.addr() as *mut u8;
-    let pitch = fb.pitch() as usize;
-    let bpp = fb.bpp() as usize;
-    
-    // Fill screen with blue
-    fill_screen_blue(fb);
-    
-    // Draw diagonal line
-    for i in 0..100 {
-        let x = i;
-        let y = i;
-        let offset = y * pitch + x * (bpp / 8);
-        let white = [0xFF, 0xFF, 0xFF, 0x00];
-        unsafe {
-            write_pixel(ptr, offset, &white);
-        }
-    }
+## Basic Framebuffer Operations
 
-Console Initialization and Output
-----------------------------------
+Direct pixel manipulation
 
-Setting up text console::
+```
 
-    // In kernel initialization:
-    let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
-    
-    graphics::console::init_console(
-        fb.addr() as *mut u8,
-        fb.width() as usize,
-        fb.height() as usize,
-        fb.pitch() as usize
-    );
-    
-    // Simple text output:
-    fb_println!("Serix Kernel v0.0.5");
-    fb_println!("Memory: {} MB", total_memory / 1024 / 1024);
-    fb_println!();
-    
-    // Formatted output:
-    for i in 0..10 {
-        fb_println!("{}: {:#x}", i, i * 16);
-    }
+use graphics::{write_pixel, fill_screen_blue};
 
-Logging Integration
--------------------
+let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
+let ptr = fb.addr() as *mut u8;
+let pitch = fb.pitch() as usize;
+let bpp = fb.bpp() as usize;
 
-Dual output to serial and framebuffer::
+// Fill screen with blue
+fill_screen_blue(fb);
 
-    pub fn kernel_log(level: LogLevel, msg: &str) {
-        use x86_64::instructions::interrupts;
-        
-        interrupts::without_interrupts(|| {
-            let prefix = match level {
-                LogLevel::Debug => "[DEBUG]",
-                LogLevel::Info  => "[INFO ]",
-                LogLevel::Warn  => "[WARN ]",
-                LogLevel::Error => "[ERROR]",
-            };
-            
-            fb_println!("{} {}", prefix, msg);
-            serial_println!("{} {}", prefix, msg);
-        });
-    }
+// Draw diagonal line
+for i in 0..100 {
+}
 
-Drawing Primitives
-------------------
+```
 
-Rectangle::
+## Console Initialization and Output
 
-    pub fn draw_rect(
-        fb: &Framebuffer,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-        color: &[u8; 4]
-    ) {
-        let ptr = fb.addr() as *mut u8;
-        let pitch = fb.pitch() as usize;
-        let bpp = fb.bpp() as usize / 8;
-        
-        for dy in 0..h {
-            for dx in 0..w {
-                let offset = (y + dy) * pitch + (x + dx) * bpp;
-                unsafe {
-                    write_pixel(ptr, offset, color);
-                }
-            }
-        }
-    }
+Setting up text console
 
-Line (Bresenham's algorithm)::
+```
 
-    pub fn draw_line(
-        fb: &Framebuffer,
-        x0: usize,
-        y0: usize,
-        x1: usize,
-        y1: usize,
-        color: &[u8; 4]
-    ) {
-        // Implementation using Bresenham's line drawing algorithm
-        // ... (standard algorithm)
-    }
+// In kernel initialization:
+let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 
-Future Extensions
-=================
+graphics::console::init_console(
+);
 
-Planned Features
-----------------
+// Simple text output:
+fb_println!("Serix Kernel v0.0.5");
+fb_println!("Memory: {} MB", total_memory / 1024 / 1024);
+fb_println!();
+
+// Formatted output:
+for i in 0..10 {
+}
+
+```
+
+## Logging Integration
+
+Dual output to serial and framebuffer
+
+```
+
+pub fn kernel_log(level: LogLevel, msg: &str) {
+
+}
+
+```
+
+## Drawing Primitives
+
+Rectangle
+
+```
+
+pub fn draw_rect(
+) {
+
+}
+
+```
+Line (Bresenham's algorithm)
+
+```
+
+pub fn draw_line(
+) {
+}
+
+```
+
+## Future Extensions
+
+
+## Planned Features
 
 Color Support
-~~~~~~~~~~~~~
+```
 
-Text with color attributes::
+Text with color attributes
 
-    pub struct ColorAttr {
-        pub fg: u8,  // Foreground color (0-15)
-        pub bg: u8,  // Background color (0-15)
-        pub bold: bool,
-        pub underline: bool,
-    }
-    
-    impl FramebufferConsole {
-        pub fn set_color(&mut self, fg: u8, bg: u8);
-        pub fn reset_color(&mut self);
-    }
+```
 
+pub struct ColorAttr {
+}
+
+impl FramebufferConsole {
+}
+
+```
 Unicode Support
-~~~~~~~~~~~~~~~
+```
 
-Extended character set::
+Extended character set
 
-    // Extend to BMP (Basic Multilingual Plane)
-    const FONT_8X16_UNICODE: &[u8] = include_bytes!("unifont-8x16.bin");
-    
-    // Character index: U+0000 to U+FFFF (65536 characters)
-    // Size: 65536 * 16 = 1 MB
+```
 
+// Extend to BMP (Basic Multilingual Plane)
+const FONT_8X16_UNICODE: &[u8] = include_bytes!("unifont-8x16.bin");
+
+// Character index: U+0000 to U+FFFF (65536 characters)
+// Size: 65536 * 16 = 1 MB
+
+```
 Graphical Primitives
-~~~~~~~~~~~~~~~~~~~~
+```
 
-Drawing library::
+Drawing library
 
-    pub mod draw {
-        pub fn line(...);
-        pub fn rect(...);
-        pub fn fill_rect(...);
-        pub fn circle(...);
-    }
+```
 
+pub mod draw {
+}
+
+```
 Double Buffering
-~~~~~~~~~~~~~~~~
+```
 
-Eliminate tearing::
+Eliminate tearing
 
-    pub struct DoubleBuffer {
-        front: *mut u8,
-        back: Vec<u8>,
-        width: usize,
-        height: usize,
-        pitch: usize,
-    }
-    
-    impl DoubleBuffer {
-        pub fn swap(&mut self);  // Copy back buffer to front
-    }
+```
 
+pub struct DoubleBuffer {
+}
+
+impl DoubleBuffer {
+}
+
+```
 Hardware Acceleration
-~~~~~~~~~~~~~~~~~~~~~
+```
 
-GPU-accelerated operations::
+GPU-accelerated operations
 
-    pub trait GpuBlitter {
-        fn blit(&self, src: &[u8], dst: *mut u8, width: usize, height: usize);
-        fn fill(&self, dst: *mut u8, width: usize, height: usize, color: &[u8; 4]);
-    }
+```
 
-Appendix
-========
+pub trait GpuBlitter {
+}
 
-Complete API Reference
-----------------------
+```
 
-Framebuffer Functions::
+## Appendix
 
-    pub unsafe fn write_pixel(ptr: *mut u8, offset: usize, color: &[u8; 4]);
-    pub fn fill_screen_blue(fb: &Framebuffer);
-    pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry]);
 
-Console Types::
+## Complete API Reference
 
-    pub struct FramebufferConsole { /* ... */ }
-    unsafe impl Send for FramebufferConsole {}
-    unsafe impl Sync for FramebufferConsole {}
+Framebuffer Functions
 
-Console Functions::
+```
 
-    #[cfg(feature = "global-console")]
-    pub fn init_console(
-        framebuffer: *mut u8,
-        width: usize,
-        height: usize,
-        pitch: usize
-    );
-    
-    impl FramebufferConsole {
-        pub unsafe fn new(
-            framebuffer: *mut u8,
-            width: usize,
-            height: usize,
-            pitch: usize
-        ) -> Self;
-    }
+pub unsafe fn write_pixel(ptr: *mut u8, offset: usize, color: &[u8; 4]);
+pub fn fill_screen_blue(fb: &Framebuffer);
+pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry]);
 
-Macros::
+```
+Console Types
 
-    fb_print!($($arg:tt)*);
-    fb_println!();
-    fb_println!($fmt:expr);
-    fb_println!($fmt:expr, $($arg:tt)*);
+```
 
-Configuration Constants
------------------------
+pub struct FramebufferConsole { /*...*/ }
+unsafe impl Send for FramebufferConsole {}
+unsafe impl Sync for FramebufferConsole {}
 
-Font and Color Definitions::
+```
+Console Functions
 
-    // Font dimensions
-    const CHAR_WIDTH: usize = 8;
-    const CHAR_HEIGHT: usize = 16;
-    
-    // Color definitions
-    const FOREGROUND: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];  // White
-    const BACKGROUND: [u8; 4] = [0x00, 0x00, 0x00, 0x00];  // Black
-    
-    // Font data
-    const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
-    const FONT_CHAR_COUNT: usize = 96;
-    const FONT_CHAR_SIZE: usize = 16;
+```
 
-Performance Benchmarks
-----------------------
+[cfg(feature = "global-console")]
+pub fn init_console(
+);
+
+impl FramebufferConsole {
+}
+
+```
+Macros
+
+```
+
+fb_print!($($arg:tt)*);
+fb_println!();
+fb_println!($fmt:expr);
+fb_println!($fmt:expr, $($arg:tt)*);
+
+```
+
+## Configuration Constants
+
+Font and Color Definitions
+
+```
+
+// Font dimensions
+const CHAR_WIDTH: usize = 8;
+const CHAR_HEIGHT: usize = 16;
+
+// Color definitions
+const FOREGROUND: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];  // White
+const BACKGROUND: [u8; 4] = [0x00, 0x00, 0x00, 0x00];  // Black
+
+// Font data
+const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
+const FONT_CHAR_COUNT: usize = 96;
+const FONT_CHAR_SIZE: usize = 16;
+
+```
+
+## Performance Benchmarks
 
 Test System: Intel i5-10400, 16GB RAM, Intel UHD Graphics 630
 
@@ -1551,31 +1570,35 @@ fb_println!("Hello")                ~8 µs      ~125K lines/s
 scroll_up                           ~3 ms      ~333 scrolls/s
 ==================================  =========  =============
 
-Error Handling
---------------
+
+## Error Handling
 
 Current Implementation:
   No explicit error codes (uses panics and Option/Result)
 
-Future Error Handling::
+Future Error Handling
 
-    pub enum GraphicsError {
-        InvalidFramebuffer,
-        OutOfBounds,
-        NotInitialized,
-        UnsupportedFormat,
-    }
-    
-    pub type GraphicsResult<T> = Result<T, GraphicsError>;
+```
 
-References
-==========
+pub enum GraphicsError {
+}
+
+pub type GraphicsResult<T> = Result<T, GraphicsError>;
+
+```
+
+## References
 
 - Linux Kernel Documentation: Documentation/fb/
 - Limine Boot Protocol: https://github.com/limine-bootloader/limine
 - VGA Text Mode Fonts: https://wiki.osdev.org/VGA_Fonts
 - Framebuffer Howto: https://www.kernel.org/doc/Documentation/fb/
 
-===========
-End of File
-===========
+# ## End of File
+
+## See Also
+
+- **[Boot Process](BOOT_PROCESS.md)** - Framebuffer initialization during boot
+- **[Architecture Overview](ARCHITECTURE.md)** - Graphics subsystem in overall design
+- **[Graphics Module](../graphics/README.md)** - Detailed implementation documentation
+- **[HAL API](HAL_API.md)** - Serial console (alternative output method)

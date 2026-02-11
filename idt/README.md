@@ -19,6 +19,7 @@ The Interrupt Descriptor Table is a data structure used by x86_64 processors to 
 ### IDT Entry Format
 
 Each IDT entry (16 bytes on x86_64) contains:
+
 - **Offset**: 64-bit address of the handler function
 - **Segment Selector**: Code segment selector (typically kernel code segment)
 - **IST**: Interrupt Stack Table index (0 = don't use IST)
@@ -34,7 +35,7 @@ Each IDT entry (16 bytes on x86_64) contains:
 #### CPU Exception Vectors (0-31)
 
 | Vector | Exception | Description |
-|--------|-----------|-------------|
+| -------- | ----------- | ------------- |
 | 0 | #DE | Divide Error |
 | 1 | #DB | Debug Exception |
 | 2 | NMI | Non-Maskable Interrupt |
@@ -91,11 +92,13 @@ unsafe impl Sync for IdtWrapper {}
 **Purpose**: Wraps the IDT in a static-safe structure.
 
 **Why `UnsafeCell`?**
+
 - Allows interior mutability in static context
 - IDT must be modified after initialization (dynamic handler registration)
 - `Sync` impl declares thread-safety responsibility to programmer
 
 **Why Track `loaded`?**
+
 - Handlers registered after initialization must reload IDT
 - Prevents double-loading during init
 
@@ -125,6 +128,7 @@ lazy_static! {
 **`lazy_static!`**: Ensures IDT is initialized on first access, not at compile time.
 
 **Why Lazy?**
+
 - IDT entries reference handler functions (addresses only known at runtime)
 - Allows complex initialization logic
 - Defers initialization until actually needed
@@ -142,10 +146,12 @@ extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame)
 **Vector**: 0 (#DE)
 
 **Causes**:
+
 - Integer division by zero: `x / 0`
 - Division overflow: `i64::MIN / -1` (result doesn't fit in 64 bits)
 
 **Handler Behavior**:
+
 ```rust
 util::panic::oops("Divide by Zero exception");
 ```
@@ -153,6 +159,7 @@ util::panic::oops("Divide by Zero exception");
 Prints error message and halts the system.
 
 **Stack Frame**: Contains CPU state at time of exception:
+
 - Instruction pointer (RIP)
 - Code segment (CS)
 - CPU flags (RFLAGS)
@@ -173,12 +180,14 @@ extern "x86-interrupt" fn page_fault_handler(
 **Vector**: 14 (#PF)
 
 **Causes**:
+
 - Accessing unmapped memory
 - Writing to read-only page
 - Executing non-executable page
 - Ring-3 accessing kernel page (supervisor bit violation)
 
 **Error Code Bits**:
+
 - Bit 0 (P): 0 = Not present, 1 = Protection violation
 - Bit 1 (W/R): 0 = Read, 1 = Write
 - Bit 2 (U/S): 0 = Supervisor mode, 1 = User mode
@@ -186,6 +195,7 @@ extern "x86-interrupt" fn page_fault_handler(
 - Bit 4 (I/D): 1 = Instruction fetch
 
 **Handler Implementation**:
+
 ```rust
 serial_println!(
     "Page fault at instruction pointer: {:#x}",
@@ -206,6 +216,7 @@ util::panic::oops("Page fault exception");
 **CR2 Register**: Contains the linear address that caused the page fault.
 
 **Debug Information**:
+
 - **Instruction Pointer**: Where the fault occurred
 - **Fault Address (CR2)**: What address was accessed
 - **Error Code**: Nature of the fault (present, write, user, etc.)
@@ -224,6 +235,7 @@ extern "x86-interrupt" fn double_fault_handler(
 **Vector**: 8 (#DF)
 
 **Causes**:
+
 - Exception occurs while handling another exception
 - IDT entry not present for exception
 - Stack overflow during exception handling
@@ -233,6 +245,7 @@ extern "x86-interrupt" fn double_fault_handler(
 Double fault handler never returns. The system cannot recover from a double fault in most cases.
 
 **Handler Implementation**:
+
 ```rust
 serial_println!(
     "Double fault at instruction pointer: {:#x}",
@@ -256,6 +269,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 **Vector**: 33 (IRQ 1 remapped)
 
 **Implementation**:
+
 ```rust
 use x86_64::instructions::port::Port;
 
@@ -274,10 +288,12 @@ unsafe {
 ```
 
 **Port 0x60**: PS/2 keyboard controller data register
+
 - Read: Returns scancode of last key event
 - Scancode must be read or interrupt won't be deasserted
 
 **Scancode Types**:
+
 - **Make code** (bit 7 = 0): Key pressed
 - **Break code** (bit 7 = 1): Key released
 
@@ -295,6 +311,7 @@ pub fn init_idt()
 **Purpose**: Loads the IDT into the CPU.
 
 **Implementation**:
+
 ```rust
 unsafe {
     (*IDT.idt.get()).load();
@@ -303,11 +320,13 @@ unsafe {
 ```
 
 **LIDT Instruction**: The `load()` method executes the `LIDT` instruction, which:
+
 1. Takes the address and size of the IDT
 2. Stores them in the IDTR (IDT Register)
 3. Makes the IDT active
 
 **IDTR Format**:
+
 ```
 Bits 0-15:   Limit (size - 1)
 Bits 16-79:  Base address (64-bit linear address)
@@ -329,6 +348,7 @@ pub fn register_interrupt_handler(
 **Use Case**: Timer handler is registered before IDT is loaded, so this function doesn't reload. Used for dynamically loaded drivers.
 
 **Implementation**:
+
 ```rust
 unsafe {
     let idt = &mut *IDT.idt.get();
@@ -354,28 +374,30 @@ extern "x86-interrupt" fn handler(stack_frame: InterruptStackFrame)
 **Purpose**: Special calling convention for interrupt handlers.
 
 **What it Does**:
+
 1. Preserves all registers (CPU saves subset, handler saves rest)
 2. Aligns stack properly (CPU pushed error code may misalign)
 3. Uses `IRETQ` instruction to return (not `RET`)
 4. Restores RFLAGS from stack
 
 **Stack Layout on Entry**:
+
 ```
 (Higher addresses)
 +------------------+
-| SS               | <- Pushed by CPU if privilege change
+| SS | <- Pushed by CPU if privilege change 
 +------------------+
-| RSP              | <- Pushed by CPU if privilege change
+| RSP | <- Pushed by CPU if privilege change 
 +------------------+
-| RFLAGS           | <- Always pushed by CPU
+| RFLAGS | <- Always pushed by CPU 
 +------------------+
-| CS               | <- Always pushed by CPU
+| CS | <- Always pushed by CPU 
 +------------------+
-| RIP              | <- Always pushed by CPU
+| RIP | <- Always pushed by CPU 
 +------------------+
-| Error Code       | <- Pushed by CPU for some exceptions
+| Error Code | <- Pushed by CPU for some exceptions 
 +------------------+
-| (Handler stack)  |
+| (Handler stack) |
 (Lower addresses)
 ```
 
@@ -408,6 +430,7 @@ pub struct InterruptStackFrame {
 ```
 
 **Fields**:
+
 - **instruction_pointer**: Address of interrupted instruction (or next if fault)
 - **code_segment**: CS selector at time of interrupt
 - **cpu_flags**: RFLAGS register value
@@ -415,6 +438,7 @@ pub struct InterruptStackFrame {
 - **stack_segment**: SS selector at time of interrupt
 
 **Use Cases**:
+
 - Debugging (where did fault occur?)
 - Fault recovery (modify return address to skip faulty instruction)
 - Context switching (save/restore CPU state)
@@ -434,6 +458,7 @@ fn exception_handler(...) {
 ```
 
 **Rationale**:
+
 - Early-stage kernel, exceptions indicate bugs
 - No recovery mechanism implemented yet
 - Fail fast for easier debugging
@@ -443,12 +468,14 @@ fn exception_handler(...) {
 #### Recoverable Exceptions
 
 **Page Fault**: Can be handled for:
+
 - Demand paging (allocate page on access)
 - Copy-on-write (fork optimization)
 - Memory-mapped files
 - Swapping
 
 **General Protection Fault**: Can be handled for:
+
 - Invalid user-mode syscall parameters
 - User-mode segmentation violations
 - Kill offending process instead of kernel panic
@@ -469,7 +496,7 @@ fn exception_handler(...) {
 ```rust
 use x86_64::instructions::interrupts;
 
-interrupts::without_interrupts(|| {
+ interrupts::without_interrupts( || { 
     // Critical section - interrupts disabled
     let mut data = SHARED_DATA.lock();
     data.modify();
@@ -481,11 +508,13 @@ interrupts::without_interrupts(|| {
 **Problem**: Can an interrupt handler be interrupted by another interrupt?
 
 **Answer**: Yes, unless:
+
 1. Interrupts are disabled in handler (`CLI` instruction)
 2. Handler masks its interrupt source
 3. Interrupt priority prevents it
 
 **Implications**:
+
 - Handlers should be short and fast
 - Handlers should not hold locks for long
 - Use lock-free data structures where possible
@@ -567,12 +596,14 @@ pub fn dump_irq_counts() {
 ### Handler Overhead
 
 **Typical Interrupt Latency**: 100-1000 cycles
+
 - CPU state save: 50-100 cycles
 - Handler execution: 50-500 cycles (depends on handler)
 - CPU state restore: 50-100 cycles
 - IRETQ instruction: 50-200 cycles
 
 **Optimization Tips**:
+
 1. Keep handlers short (defer work to bottom half)
 2. Avoid memory allocation in handlers
 3. Minimize lock contention
@@ -581,10 +612,12 @@ pub fn dump_irq_counts() {
 ### Exception Overhead
 
 **Exception Cost**: Much higher than interrupt
+
 - Page fault: 1000-10000 cycles
 - Includes page table walk, TLB flush, etc.
 
 **Minimize Exceptions**:
+
 1. Pre-fault critical pages (touch them during init)
 2. Use large pages (2MB/1GB) to reduce TLB misses
 3. Avoid null pointer dereferences

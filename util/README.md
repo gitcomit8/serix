@@ -41,16 +41,19 @@ pub fn oops(msg: &str)
 **Etymology**: "Oops" is Unix/Linux terminology for a kernel error that's serious but doesn't necessarily require a full panic. The system prints an error message and halts.
 
 **Implementation**:
+
 ```rust
 serial_println!("[KERNEL OOPS] {}", msg);
 halt_loop();
 ```
 
 **Behavior**:
+
 1. Prints error message to serial console with `[KERNEL OOPS]` prefix
 2. Enters infinite halt loop
 
 **Usage Example**:
+
 ```rust
 if !is_valid_address(addr) {
     oops("Invalid memory address");
@@ -58,12 +61,14 @@ if !is_valid_address(addr) {
 ```
 
 **When to Use**:
+
 - CPU exceptions (divide by zero, page fault, etc.)
 - Hardware errors detected
 - Assertion failures
 - Unrecoverable errors that don't involve Rust panics
 
 **Difference from Panic**:
+
 - `panic!()`: Rust-level panic with unwinding (we use abort mode)
 - `oops()`: Kernel-level error reporting for hardware/CPU exceptions
 
@@ -76,6 +81,7 @@ pub fn halt_loop() -> !
 **Purpose**: Enters an infinite loop that halts the CPU, never returning.
 
 **Implementation**:
+
 ```rust
 loop {
     unsafe {
@@ -87,11 +93,13 @@ loop {
 **HLT Instruction**: Halts the CPU until the next interrupt arrives.
 
 **Why Loop?**
+
 - Interrupts can wake the CPU from HLT
 - Loop ensures system stays halted even if woken
 - Never returns (marked with `-> !`)
 
 **Power Efficiency**: Using `hlt` in a loop is more power-efficient than busy-waiting:
+
 ```rust
 // Bad: Busy-wait (100% CPU usage)
 loop {}
@@ -101,6 +109,7 @@ loop { hlt() }
 ```
 
 **CPU Behavior**:
+
 1. Execute `HLT` instruction → CPU enters low-power state
 2. Interrupt arrives → CPU wakes, handles interrupt
 3. Returns to next instruction after `HLT` → loop repeats
@@ -111,7 +120,7 @@ loop { hlt() }
 ### Panic vs Oops
 
 | Aspect | `panic!()` | `oops()` |
-|--------|-----------|----------|
+| -------- | ----------- | ---------- |
 | Origin | Rust runtime | Kernel-defined |
 | Use Case | Software bugs | Hardware/CPU exceptions |
 | Call Site | Explicit `panic!()` | Exception handlers |
@@ -119,6 +128,7 @@ loop { hlt() }
 | Recovery | None (abort) | None (halt) |
 
 **Example Panic Scenarios**:
+
 ```rust
 // Array bounds check
 let arr = [1, 2, 3];
@@ -149,15 +159,18 @@ unsafe impl GlobalAlloc for Dummy {
 ```
 
 **Why Needed?**
+
 - Rust requires a `#[global_allocator]` to compile `no_std` code
 - Memory module provides the real allocator
 - This is a placeholder that always fails
 
 **Behavior**:
+
 - `alloc()`: Always returns null pointer (allocation failure)
 - `dealloc()`: Does nothing (no-op)
 
 **When Active?**
+
 - Only before memory module's `#[global_allocator]` is linked
 - In practice, never used (memory module loaded first)
 
@@ -175,16 +188,19 @@ pub fn alloc_error_handler(_: core::alloc::Layout) -> !
 **Parameters**: `Layout` describes the failed allocation (size, alignment).
 
 **Implementation**:
+
 ```rust
 loop {}
 ```
 
 **Why Infinite Loop?**
+
 - No recovery possible (out of memory)
 - Could panic, but this is already a panic path
 - Simple and predictable behavior
 
 **Future Enhancement**:
+
 ```rust
 #[alloc_error_handler]
 pub fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
@@ -207,6 +223,7 @@ Halt System
 ```
 
 **Rationale**:
+
 - Early-stage kernel
 - Most errors are bugs, not runtime conditions
 - Fail fast for easier debugging
@@ -217,6 +234,7 @@ Halt System
 #### Recoverable Errors
 
 **User-Mode Faults**:
+
 ```rust
 if error_in_user_mode() {
     kill_process();  // Don't crash kernel
@@ -225,6 +243,7 @@ if error_in_user_mode() {
 ```
 
 **Transient Hardware Errors**:
+
 ```rust
 if transient_error() {
     retry_operation();
@@ -238,6 +257,7 @@ if transient_error() {
 #### Non-Recoverable Errors
 
 **Kernel Page Fault**:
+
 ```rust
 if page_fault_in_kernel() {
     oops("Kernel page fault");  // Must halt
@@ -245,12 +265,14 @@ if page_fault_in_kernel() {
 ```
 
 **Double Fault**:
+
 ```rust
 // System in inconsistent state
 panic!("Double fault");  // Must halt immediately
 ```
 
 **Hardware Failure**:
+
 ```rust
 if critical_hardware_failure() {
     oops("Hardware failure");  // Must halt
@@ -316,7 +338,7 @@ pub fn validate_pointer<T>(ptr: *const T) -> Result<(), &'static str> {
 }
 
 // Usage
-validate_pointer(ptr).unwrap_or_else(|e| {
+ validate_pointer(ptr).unwrap_or_else( | e | { 
     oops(e);
 });
 ```
@@ -366,6 +388,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 ```
 
 **PanicInfo Fields**:
+
 - `location()`: File and line number of panic
 - `message()`: Panic message string
 - `payload()`: Arbitrary panic payload (rarely used)
@@ -402,6 +425,7 @@ pub fn print_stack_trace() {
 ### Halt Loop
 
 `halt_loop()` is safe in any context:
+
 - Single-threaded: Only way to stop execution
 - Multi-threaded: Halts only current CPU
 - Interrupt context: Safe to call from handlers
@@ -411,6 +435,7 @@ pub fn print_stack_trace() {
 **Race Condition**: Multiple CPUs calling `oops()` simultaneously could interleave serial output.
 
 **Solution (Future)**:
+
 ```rust
 static OOPS_LOCK: Mutex<()> = Mutex::new(());
 
@@ -422,6 +447,7 @@ pub fn oops(msg: &str) {
 ```
 
 **Better Solution**: Disable interrupts and use atomic flag:
+
 ```rust
 static OOPS_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -443,7 +469,7 @@ pub fn oops(msg: &str) {
 ### Halt vs Busy-Wait
 
 | Operation | CPU Usage | Power | Thermal | Responsiveness |
-|-----------|-----------|-------|---------|----------------|
+| ----------- | ----------- | ------- | --------- | ---------------- |
 | Busy-wait (`loop {}`) | 100% | High | High | Immediate |
 | Halt loop (`loop { hlt() }`) | <1% | Low | Low | ~1µs (interrupt latency) |
 
@@ -454,6 +480,7 @@ pub fn oops(msg: &str) {
 **Problem**: Panic path might be optimized away or poorly optimized.
 
 **Solution**: Mark panic functions as cold:
+
 ```rust
 #[cold]
 #[inline(never)]
@@ -602,6 +629,7 @@ fn test_panic_handler() {
 ### Error Messages
 
 **Good**:
+
 ```rust
 oops("Page fault at address 0x12345678");
 oops("Invalid syscall number: 999");
@@ -609,6 +637,7 @@ oops("Hardware error: disk controller timeout");
 ```
 
 **Bad**:
+
 ```rust
 oops("Error");  // Too vague
 oops("Something went wrong");  // Not helpful
@@ -618,11 +647,13 @@ oops("");  // No information
 ### When to Panic vs Oops
 
 **Use `panic!()`**:
+
 - Software bugs (assertions, unwrap failures)
 - Impossible states (`unreachable!()`)
 - Contract violations
 
 **Use `oops()`**:
+
 - Hardware faults (page fault, divide by zero)
 - Unrecoverable system errors
 - From exception handlers
@@ -636,7 +667,7 @@ if let Err(_) = operation() {
 }
 
 // Do this (explicit handling):
-operation().unwrap_or_else(|e| {
+ operation().unwrap_or_else( | e | { 
     serial_println!("Operation failed: {:?}", e);
     oops("Unrecoverable error");
 });
