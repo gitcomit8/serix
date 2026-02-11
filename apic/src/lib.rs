@@ -1,5 +1,5 @@
 /*
- * Advanced Programmable Interrupt Controller (APIC) Driver
+ * apic/lib.rs - Advanced Programmable Interrupt Controller (APIC) Driver
  *
  * Provides Local APIC and I/O APIC support for interrupt handling.
  * Replaces the legacy 8259 PIC with modern APIC architecture.
@@ -14,7 +14,8 @@ use hal::serial_println;
 pub mod ioapic;
 pub mod timer;
 
-/* * APIC Base Addresses (Physical/Virtual)
+/*
+ * APIC Base Addresses (Physical/Virtual)
  * Default to physical addresses for early boot compatibility.
  * These should be updated to virtual higher-half addresses once paging is up.
  */
@@ -28,6 +29,12 @@ pub fn set_bases(lapic: u64) {
 	APIC_BASE.store(lapic, Ordering::Relaxed);
 }
 
+/*
+ * lapic_reg - Get pointer to Local APIC register
+ * @offset: Register offset from base address
+ *
+ * Return: Pointer to the specified Local APIC register
+ */
 fn lapic_reg(offset: u32) -> *mut u32 {
 	(APIC_BASE.load(Ordering::Relaxed) + offset as u64) as *mut u32
 }

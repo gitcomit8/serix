@@ -7,14 +7,18 @@
 use crate::pci::PciDevice;
 use core::ptr::{read_volatile, write_volatile};
 
-/* VirtIO Capability Constants */
+/*
+ * VirtIO Capability Constants
+ */
 const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
 const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
 const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
 const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5;
 
-/* Device Status Bits */
+/*
+ * Device Status Bits
+ */
 const STATUS_ACKNOWLEDGE: u8 = 1;
 const STATUS_DRIVER: u8 = 2;
 const STATUS_FAILED: u8 = 128;
@@ -23,7 +27,9 @@ const STATUS_DRIVER_OK: u8 = 4;
 
 /*
  * struct VirtioPciCap - Generic VirtIO Capability Structure
- * Found in PCI configuration space.
+ *
+ * Found in PCI configuration space. Describes location of VirtIO
+ * registers in a BAR.
  */
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
@@ -41,7 +47,9 @@ struct VirtioPciCap {
 
 /*
  * struct VirtioCommonCfg - Common Configuration Structure
- * Located in MMIO BAR.
+ *
+ * Located in MMIO BAR. Provides access to device features,
+ * queue configuration, and device status.
  */
 #[repr(C)]
 struct VirtioCommonCfg {
@@ -66,6 +74,10 @@ struct VirtioCommonCfg {
 	queue_used_hi: u32,         // 0x34
 }
 
+/*
+ * struct VirtioBlock - VirtIO block device driver instance
+ * @common_cfg: Pointer to common configuration registers
+ */
 pub struct VirtioBlock {
 	common_cfg: *mut VirtioCommonCfg,
 }
@@ -76,11 +88,17 @@ impl VirtioBlock {
 	 * @dev: The PCI device instance
 	 * @map_mmio: Callback to map physical address to virtual
 	 *
-	 * Returns an initialized driver instance if successful.
+	 * Initializes a VirtIO 1.0+ block device by:
+	 * 1. Verifying device ID
+	 * 2. Finding and mapping common configuration capability
+	 * 3. Negotiating features with the device
+	 * 4. Setting device status to DRIVER_OK
+	 *
+	 * Return: Option containing initialized device, or None on failure
 	 */
 	pub unsafe fn init<F>(dev: PciDevice, mut map_mmio: F) -> Option<Self>
 	where
-		F: FnMut(u64, u64) -> *mut u8, // Changed Fn -> FnMut
+		F: FnMut(u64, u64) -> *mut u8,
 	{
 		// 1. Verify Device ID (Legacy: 0x1001, Modern: 0x1042 for Block)
 		// We focus on Modern (1.0+) here.
@@ -90,10 +108,10 @@ impl VirtioBlock {
 
 		hal::serial_println!("VirtIO: Found potential device (ID: {:x})", dev.device_id);
 
-		// 2. Enable Bus Master
+		// 2. Enable Bus Master for DMA
 		dev.enable_bus_master();
 
-		// 3. Find Common Configuration Capability
+		// 3. Find and map Common Configuration Capability
 		let mut common_cfg_ptr: Option<*mut VirtioCommonCfg> = None;
 		let mut ptr = dev.find_capability(0x09); // Vendor Specific
 
@@ -133,8 +151,11 @@ impl VirtioBlock {
 		let status = read_volatile(&mut (*cfg).device_status);
 		write_volatile(&mut (*cfg).device_status, status | STATUS_DRIVER);
 
-		// 7. Negotiate Features (Simple: Accept what's offered, minus what we don't want)
-		// Read device features (Select 0 for first 32 bits)
+		/*
+		 * 7. Negotiate Features
+		 * Simple: Accept what's offered, minus what we don't want
+		 * Read device features (Select 0 for first 32 bits)
+		 */
 		write_volatile(&mut (*cfg).device_feature_select, 0);
 		let features = read_volatile(&mut (*cfg).device_feature);
 
@@ -146,7 +167,7 @@ impl VirtioBlock {
 		let status = read_volatile(&mut (*cfg).device_status);
 		write_volatile(&mut (*cfg).device_status, status | STATUS_FEATURES_OK);
 
-		// 9. Check if device accepted features
+		// 9. Verify that device accepted features
 		let new_status = read_volatile(&mut (*cfg).device_status);
 		if new_status & STATUS_FEATURES_OK == 0 {
 			hal::serial_println!("VirtIO: Feature negotiation failed");

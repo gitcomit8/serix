@@ -9,11 +9,21 @@
 pub mod console;
 pub use console::init_console;
 
+/*
+ * kprint! - Print formatted text to kernel console
+ *
+ * Usage: kprint!("format string {}", args...)
+ */
 #[macro_export]
 macro_rules! kprint {
     ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
 }
 
+/*
+ * kprintln! - Print formatted text with newline to kernel console
+ *
+ * Usage: kprintln!("format string {}", args...)
+ */
 #[macro_export]
 macro_rules! kprintln {
     () => ($crate::kprint!("\n"));

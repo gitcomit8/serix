@@ -6,12 +6,12 @@
  */
 
 use spin::{Mutex, Once};
-use x86_64::instructions::segmentation::{Segment, CS, DS, ES, FS, GS, SS};
+use x86_64::VirtAddr;
+use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::model_specific::KernelGsBase;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
-use x86_64::VirtAddr;
 
 /* Global GDT and TSS instances */
 static GDT: Once<(GlobalDescriptorTable, Selectors)> = Once::new();

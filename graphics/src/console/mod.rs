@@ -20,13 +20,26 @@ static FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 const FONT_WIDTH: usize = 8;
 const FONT_HEIGHT: usize = 16;
 
-/* Global console instance */
+/*
+ * Global console instance
+ */
 #[cfg(feature = "global-console")]
 static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
 
 /*
  * struct Tty - The terminal state
- * Owns framebuffer access and terminal cursor state
+ * @fb_base: Pointer to framebuffer memory
+ * @fb_width: Framebuffer width in pixels
+ * @fb_height: Framebuffer height in pixels
+ * @fb_pitch: Bytes per scanline
+ * @cols: Terminal width in characters
+ * @rows: Terminal height in characters
+ * @x: Current cursor column (in characters)
+ * @y: Current cursor row (in characters)
+ * @color_fg: Foreground color (0x00RRGGBB)
+ * @color_bg: Background color (0x00RRGGBB)
+ *
+ * Owns framebuffer access and terminal cursor state.
  */
 pub struct Tty {
 	fb_base: *mut u8,
@@ -34,15 +47,15 @@ pub struct Tty {
 	fb_height: usize,
 	fb_pitch: usize,
 
-	// Terminal dimensions
+	// Terminal dimensions in characters
 	cols: usize,
 	rows: usize,
 
-	// Cursor position
+	// Cursor position in characters
 	x: usize,
 	y: usize,
 
-	// Colors (0x00RRGGBB)
+	// Colors (0x00RRGGBB format)
 	color_fg: u32,
 	color_bg: u32,
 }
@@ -53,6 +66,11 @@ unsafe impl Sync for Tty {}
 pub static KERNEL_TTY: Mutex<Option<Tty>> = Mutex::new(None);
 
 impl Tty {
+	/*
+	 * clear - Clear the entire framebuffer
+	 *
+	 * Fills the framebuffer with zeros and resets cursor to (0, 0).
+	 */
 	pub fn clear(&mut self) {
 		let total_bytes = self.fb_pitch * self.fb_height;
 		unsafe {
@@ -62,6 +80,12 @@ impl Tty {
 		self.y = 0;
 	}
 
+	/*
+	 * scroll - Scroll the framebuffer up by one character line
+	 *
+	 * Moves all scanlines up by FONT_HEIGHT pixels and clears
+	 * the bottom line.
+	 */
 	fn scroll(&mut self) {
 		let line_size = self.fb_pitch * FONT_HEIGHT;
 		let total_size = line_size * self.rows;
@@ -78,6 +102,11 @@ impl Tty {
 		}
 	}
 
+	/*
+	 * new_line - Advance to next line
+	 *
+	 * Moves cursor to start of next line, scrolling if necessary.
+	 */
 	fn new_line(&mut self) {
 		self.x = 0;
 		self.y += 1;
@@ -87,6 +116,12 @@ impl Tty {
 		}
 	}
 
+	/*
+	 * write_char - Write a single character
+	 * @c: Character to write
+	 *
+	 * Handles newlines, backspace, and automatic line wrapping.
+	 */
 	pub fn write_char(&mut self, c: char) {
 		match c {
 			'\n' => self.new_line(),
@@ -106,6 +141,14 @@ impl Tty {
 		}
 	}
 
+	/*
+	 * draw_char - Draw a character at specified position
+	 * @cx: Character column
+	 * @cy: Character row
+	 * @c: Character to draw
+	 *
+	 * Renders the character using the 8x16 bitmap font.
+	 */
 	fn draw_char(&mut self, cx: usize, cy: usize, c: char) {
 		let glyph_index = match c {
 			' '..='~' => c as usize,
@@ -142,6 +185,12 @@ impl fmt::Write for Tty {
 	}
 }
 
+/*
+ * _print - Internal print function for macros
+ * @args: Format arguments
+ *
+ * Called by fb_print! and fb_println! macros.
+ */
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
 	use x86_64::instructions::interrupts;
@@ -285,6 +334,10 @@ impl FramebufferConsole {
 		}
 	}
 
+	/*
+	 * write_string - Write a string of characters
+	 * @s: String to write
+	 */
 	fn write_string(&mut self, s: &str) {
 		for c in s.chars() {
 			self.put_char(c);
@@ -326,6 +379,15 @@ pub fn console() -> impl Write + 'static {
 	}
 }
 
+/*
+ * init_console - Initialize the kernel TTY
+ * @base: Framebuffer base pointer
+ * @width: Width in pixels
+ * @height: Height in pixels
+ * @pitch: Bytes per scanline
+ *
+ * Creates and initializes the global kernel TTY.
+ */
 pub unsafe fn init_console(base: *mut u8, width: usize, height: usize, pitch: usize) {
 	let cols = width / FONT_WIDTH;
 	let rows = height / FONT_HEIGHT;
@@ -346,6 +408,11 @@ pub unsafe fn init_console(base: *mut u8, width: usize, height: usize, pitch: us
 	*KERNEL_TTY.lock() = Some(tty);
 }
 
+/*
+ * fb_print! - Print formatted text to framebuffer
+ *
+ * Usage: fb_print!("format string {}", args...)
+ */
 #[macro_export]
 macro_rules! fb_print {
 	($($arg:tt)*) => {{
@@ -354,6 +421,11 @@ macro_rules! fb_print {
 	}};
 }
 
+/*
+ * fb_println! - Print formatted text with newline to framebuffer
+ *
+ * Usage: fb_println!("format string {}", args...)
+ */
 #[macro_export]
 macro_rules! fb_println {
 	() => {

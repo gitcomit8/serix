@@ -19,13 +19,13 @@ use drivers::pci;
 use drivers::virtio::VirtioBlock;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
-use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use limine::BaseRevision;
+use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use loader::LoadableSegment;
-use memory::heap::{init_heap, StaticBootFrameAllocator};
+use memory::heap::{StaticBootFrameAllocator, init_heap};
 use spin::{Mutex, Once};
-use task::{init_executor, poll_executor};
 use task::{Scheduler, TaskCB};
+use task::{init_executor, poll_executor};
 use util::panic::halt_loop;
 use vfs::{INode, RamFile};
 use x86_64::instructions::hlt;
@@ -75,7 +75,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 	/* Read scancode from keyboard data port (0x60) */
 	let mut port = Port::new(0x60);
 	let scancode: u8 = unsafe { port.read() };
-	
+
 	/* Process the scancode via keyboard module */
 	keyboard::handle_scancode(scancode);
 
@@ -309,16 +309,16 @@ unsafe fn map_mmio_range(
  */
 unsafe fn init_ps2_keyboard() {
 	use x86_64::instructions::port::Port;
-	
-	let mut cmd_port = Port::new(0x64);  // PS/2 command port
+
+	let mut cmd_port = Port::new(0x64); // PS/2 command port
 	let mut data_port = Port::new(0x60); // PS/2 data port
-	
+
 	// Flush output buffer
-	let _  = data_port.read();
-	
+	let _ = data_port.read();
+
 	// Enable keyboard (command 0xAE)
 	cmd_port.write(0xAE_u8);
-	
+
 	// Read controller configuration
 	cmd_port.write(0x20_u8);
 	for _ in 0..1000 {
@@ -328,15 +328,15 @@ unsafe fn init_ps2_keyboard() {
 		}
 	}
 	let mut config: u8 = data_port.read();
-	
+
 	// Enable keyboard interrupt (bit 0), keep scancode translation enabled (bit 6)
-	config |= 0x01;  // Enable keyboard interrupt
-	config |= 0x40;  // Enable scancode translation (Set 2 → Set 1)
-	
+	config |= 0x01; // Enable keyboard interrupt
+	config |= 0x40; // Enable scancode translation (Set 2 → Set 1)
+
 	// Write configuration back
 	cmd_port.write(0x60_u8);
 	data_port.write(config);
-	
+
 	serial_println!("[PS/2] Keyboard controller initialized");
 }
 
@@ -442,10 +442,10 @@ pub extern "C" fn _start() -> ! {
 		// Tell APIC driver to use these new virtual addresses
 		apic::set_bases(lapic_virt.as_u64());
 		apic::ioapic::set_base(ioapic_virt.as_u64());
-		
+
 		// Now configure I/O APIC with virtual address
 		apic::ioapic::init_ioapic();
-		
+
 		// Initialize PS/2 keyboard controller
 		init_ps2_keyboard();
 	}

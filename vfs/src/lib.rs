@@ -1,7 +1,7 @@
 /*
- * Virtual File System
+ * lib.rs - Virtual File System
  *
- * Implements the VFS layer with support for Files, Directories, and Devices
+ * Implements the VFS layer with support for files, directories, and devices.
  * Uses Arc for shared ownership of filesystem nodes.
  */
 
@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
+
 /*
  * enum FileType - Type of VFS node
  */
@@ -25,29 +26,69 @@ pub enum FileType {
 /*
  * trait INode - Abstract filesystem node
  *
- * Now supports directory operations (lookup, insert) and metadata
+ * Provides common interface for files, directories, and devices.
  */
 pub trait INode: Send + Sync {
+	/*
+	 * read - Read data from the node
+	 * @offset: Offset to read from
+	 * @buf: Buffer to read into
+	 *
+	 * Return: Number of bytes read
+	 */
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize;
+
+	/*
+	 * write - Write data to the node
+	 * @offset: Offset to write to
+	 * @buf: Buffer containing data to write
+	 *
+	 * Return: Number of bytes written
+	 */
 	fn write(&self, offset: usize, buf: &[u8]) -> usize;
+
+	/*
+	 * metadata - Get node metadata
+	 *
+	 * Return: FileType of this node
+	 */
 	fn metadata(&self) -> FileType;
 
-	//Directory operations (default to failing for non-directories)
+	/*
+	 * lookup - Look up a child node by name (directories only)
+	 * @_name: Name to look up
+	 *
+	 * Return: Some(node) if found, None otherwise
+	 */
 	fn lookup(&self, _name: &str) -> Option<Arc<dyn INode>> {
 		None
 	}
 
+	/*
+	 * insert - Insert a child node (directories only)
+	 * @_name: Name of child
+	 * @_node: Node to insert
+	 *
+	 * Return: Ok(()) on success, Err on failure
+	 */
 	fn insert(&self, _name: &str, _node: Arc<dyn INode>) -> Result<(), &'static str> {
 		Err("Not a directory")
 	}
 
+	/*
+	 * size - Get node size in bytes
+	 *
+	 * Return: Size in bytes
+	 */
 	fn size(&self) -> usize {
-		00
+		0
 	}
 }
 
 /*
  * struct RamFile - In-memory file implementation
+ * @name: File name
+ * @data: File contents
  */
 pub struct RamFile {
 	name: String,
@@ -55,6 +96,12 @@ pub struct RamFile {
 }
 
 impl RamFile {
+	/*
+	 * new - Create a new RAM file
+	 * @name: File name
+	 *
+	 * Return: New RamFile instance
+	 */
 	pub fn new(name: &str) -> Self {
 		Self {
 			name: String::from(name),
@@ -94,6 +141,8 @@ impl INode for RamFile {
 
 /*
  * struct RamDir - In-memory directory implementation
+ * @name: Directory name
+ * @children: List of child nodes
  */
 pub struct RamDir {
 	name: String,
@@ -101,6 +150,12 @@ pub struct RamDir {
 }
 
 impl RamDir {
+	/*
+	 * new - Create a new RAM directory
+	 * @name: Directory name
+	 *
+	 * Return: New RamDir instance
+	 */
 	pub fn new(name: &str) -> Self {
 		Self {
 			name: String::from(name),
@@ -113,12 +168,15 @@ impl INode for RamDir {
 	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize {
 		0
 	}
+
 	fn write(&self, _offset: usize, _buf: &[u8]) -> usize {
 		0
 	}
+
 	fn metadata(&self) -> FileType {
 		FileType::Directory
 	}
+
 	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
 		let children = self.children.lock();
 		children

@@ -1,12 +1,25 @@
+/*
+ * lib.rs - ELF loader
+ *
+ * Parses and loads ELF executables into memory.
+ */
+
 #![no_std]
 extern crate alloc;
 
 pub mod elf;
 
 use alloc::vec::Vec;
-use elf::{Elf64Header, ProgramHeader, SegmentType, PF_R, PF_W, PF_X};
+use elf::{Elf64Header, PF_R, PF_W, PF_X, ProgramHeader, SegmentType};
 use x86_64::VirtAddr;
 
+/*
+ * struct LoadableSegment - Represents a loaded ELF segment
+ * @virtual_address: Virtual address where segment should be loaded
+ * @size: Size of segment in memory
+ * @flags: Permission flags (read/write/execute)
+ * @data: Segment data (file contents + zero padding for BSS)
+ */
 #[derive(Debug)]
 pub struct LoadableSegment {
 	pub virtual_address: VirtAddr,
@@ -15,6 +28,12 @@ pub struct LoadableSegment {
 	pub data: Vec<u8>,
 }
 
+/*
+ * struct SegmentFlags - Memory protection flags
+ * @readable: Segment is readable
+ * @writable: Segment is writable
+ * @executable: Segment is executable
+ */
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentFlags {
 	pub readable: bool,

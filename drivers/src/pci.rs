@@ -12,14 +12,23 @@ use hal::io::{inl, outl};
 const CONFIG_ADDRESS: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
 
-/* PCI Configuration Register Offsets */
+/*
+ * PCI Configuration Register Offsets
+ */
 const REG_VENDOR_ID: u8 = 0x00;
 const REG_COMMAND: u8 = 0x04;
 const REG_HEADER_TYPE: u8 = 0x0E;
 const REG_BAR0: u8 = 0x10;
 const REG_CAP_PTR: u8 = 0x34;
 
-/* Device Structure */
+/*
+ * struct PciDevice - Represents a PCI device
+ * @bus: Bus number
+ * @device: Device number
+ * @function: Function number
+ * @vendor_id: Vendor ID
+ * @device_id: Device ID
+ */
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
 	pub bus: u8,
@@ -32,6 +41,9 @@ pub struct PciDevice {
 impl PciDevice {
 	/*
 	 * read_u8 - Read 8-bit value from configuration space
+	 * @offset: Register offset to read from
+	 *
+	 * Return: 8-bit value at the specified offset
 	 */
 	pub unsafe fn read_u8(&self, offset: u8) -> u8 {
 		let address = 0x80000000
@@ -47,6 +59,9 @@ impl PciDevice {
 
 	/*
 	 * read_u16 - Read 16-bit value from configuration space
+	 * @offset: Register offset to read from
+	 *
+	 * Return: 16-bit value at the specified offset
 	 */
 	pub unsafe fn read_u16(&self, offset: u8) -> u16 {
 		let address = 0x80000000
@@ -62,6 +77,9 @@ impl PciDevice {
 
 	/*
 	 * read_u32 - Read 32-bit value from configuration space
+	 * @offset: Register offset to read from
+	 *
+	 * Return: 32-bit value at the specified offset
 	 */
 	pub unsafe fn read_u32(&self, offset: u8) -> u32 {
 		let address = 0x80000000
@@ -80,6 +98,8 @@ impl PciDevice {
 	 *
 	 * Returns the physical address and size (if possible) or None.
 	 * Handles 64-bit BARs automatically.
+	 *
+	 * Return: Option containing (physical_address, size) tuple
 	 */
 	pub unsafe fn get_bar(&self, index: u8) -> Option<(u64, u32)> {
 		if index > 5 {
@@ -109,6 +129,8 @@ impl PciDevice {
 
 	/*
 	 * enable_bus_master - Enable Bus Master bit in Command Register
+	 *
+	 * Enables DMA and memory space access for the device.
 	 */
 	pub unsafe fn enable_bus_master(&self) {
 		let cmd = self.read_u16(REG_COMMAND);
@@ -116,6 +138,13 @@ impl PciDevice {
 		self.write_u16(REG_COMMAND, cmd | 0x06);
 	}
 
+	/*
+	 * write_u16 - Write 16-bit value to configuration space
+	 * @offset: Register offset to write to
+	 * @value: Value to write
+	 *
+	 * Uses read-modify-write to preserve adjacent bytes.
+	 */
 	unsafe fn write_u16(&self, offset: u8, value: u16) {
 		let address = 0x80000000
 			| ((self.bus as u32) << 16)
@@ -124,10 +153,12 @@ impl PciDevice {
 			| ((offset as u32) & 0xFC);
 
 		outl(CONFIG_ADDRESS, address);
-		// Note: This naive write might overwrite adjacent bytes if not careful.
-		// Proper implementation requires reading, masking, and writing back 32-bit.
-		// For the Command register (aligned), simpler logic often works but verify.
-		// A safer way is read-modify-write on 32-bit:
+		/*
+		 * Note: This naive write might overwrite adjacent bytes if not careful.
+		 * Proper implementation requires reading, masking, and writing back 32-bit.
+		 * For the Command register (aligned), simpler logic often works but verify.
+		 * A safer way is read-modify-write on 32-bit:
+		 */
 		let current = inl(CONFIG_DATA);
 		let shift = (offset & 2) * 8;
 		let mask = 0xFFFF << shift;
@@ -139,7 +170,9 @@ impl PciDevice {
 	 * find_capability - Find a specific PCI capability
 	 * @cap_id: Capability ID to find (e.g., 0x09 for Vendor Specific)
 	 *
-	 * Returns the offset of the capability structure.
+	 * Walks the capability list looking for the specified capability ID.
+	 *
+	 * Return: Option containing capability offset, or None if not found
 	 */
 	pub unsafe fn find_capability(&self, cap_id: u8) -> Option<u8> {
 		let status = self.read_u16(0x06); // Status register
@@ -159,6 +192,14 @@ impl PciDevice {
 	}
 }
 
+/*
+ * enumerate_pci - Scan the PCI bus for all devices
+ *
+ * Enumerates all PCI devices by probing all possible bus/device/function
+ * combinations and checking vendor IDs.
+ *
+ * Return: Vector of all discovered PCI devices
+ */
 pub fn enumerate_pci() -> Vec<PciDevice> {
 	let mut devices = Vec::new();
 
@@ -177,7 +218,7 @@ pub fn enumerate_pci() -> Vec<PciDevice> {
 				continue;
 			}
 
-			// Check header type for multi-function
+			// Check header type for multi-function device
 			let header_type = unsafe { dummy.read_u8(REG_HEADER_TYPE) };
 			let func_count = if header_type & 0x80 != 0 { 8 } else { 1 };
 
