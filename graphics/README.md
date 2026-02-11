@@ -16,6 +16,7 @@ The graphics module provides framebuffer manipulation and text console capabilit
 ### Design Philosophy
 
 The graphics module operates at the lowest level of the display stack, providing:
+
 - **No Dependencies on OS Services**: Works immediately after boot
 - **Simple and Direct**: Raw framebuffer access without abstraction layers
 - **Performance**: Direct memory operations without buffering
@@ -47,6 +48,7 @@ Byte 3: Alpha (typically 0x00, unused)
 ```
 
 **Color Example**:
+
 ```rust
 let blue_pixel = [0xFF, 0x00, 0x00, 0x00];   // Pure blue
 let green_pixel = [0x00, 0xFF, 0x00, 0x00];  // Pure green
@@ -80,11 +82,13 @@ pub unsafe fn write_pixel(ptr: *mut u8, offset: usize, color: &[u8; 4])
 **Purpose**: Writes a single pixel to the framebuffer at the specified offset.
 
 **Parameters**:
+
 - `ptr`: Base pointer to framebuffer memory
 - `offset`: Byte offset from base (calculated as `y × pitch + x × 4`)
 - `color`: BGRA color array
 
 **Implementation**:
+
 ```rust
 unsafe {
     core::ptr::copy_nonoverlapping(color.as_ptr(), ptr.add(offset), 4);
@@ -92,11 +96,13 @@ unsafe {
 ```
 
 **Why `copy_nonoverlapping`?**
+
 - Efficiently copies 4 bytes in a single operation
 - Compiler can optimize to a single 32-bit write
 - Semantically correct for non-overlapping memory regions
 
 **Safety Considerations**:
+
 - Caller must ensure `offset + 4` is within framebuffer bounds
 - Framebuffer memory must be valid and writable
 - No bounds checking for performance
@@ -110,6 +116,7 @@ pub fn fill_screen_blue(fb: &Framebuffer)
 **Purpose**: Fills entire screen with a solid blue color (classic boot indicator).
 
 **Implementation**:
+
 ```rust
 let width = fb.width() as usize;
 let height = fb.height() as usize;
@@ -142,23 +149,26 @@ pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
 **Purpose**: Visualizes system memory map as colored bars at the bottom of the screen.
 
 **Color Coding**:
+
 - **Green** ([0x00, 0xFF, 0x00, 0x00]): Usable RAM
 - **Yellow** ([0xFF, 0xFF, 0x00, 0x00]): Bootloader reclaimable
 - **Gray** ([0x80, 0x80, 0x80, 0x00]): Reserved/other
 
 **Layout**:
+
 ```
 +-----------------------------------+
-|                                   |
-|     Screen content                |
-|                                   |
-|                                   |
+||
+| Screen content |
+||
+||
 +-----------------------------------+
-| [===Memory Map Bars (40px)===]  | ← Bottom 40 pixels
+| [===Memory Map Bars (40px)===] | ← Bottom 40 pixels 
 +-----------------------------------+
 ```
 
 **Implementation Details**:
+
 ```rust
 let count = entries.len();
 let max_count = width.min(count);
@@ -184,13 +194,14 @@ for (i, entry) in entries.iter().take(max_count).enumerate() {
 ```
 
 **Visual Example**:
+
 ```
 [Green][Green][Yellow][Gray][Green][Green][Gray]...
   ^       ^       ^      ^
-  |       |       |      |
-  |       |       |      +-- Reserved (ACPI, MMIO)
-  |       |       +--------- Bootloader code
-  |       +----------------- More usable RAM
+||||
+||| +-- Reserved (ACPI, MMIO) 
+|| +--------- Bootloader code 
+| +----------------- More usable RAM 
   +------------------------- Usable RAM
 ```
 
@@ -207,18 +218,21 @@ const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 ```
 
 **Font Layout**:
+
 - ASCII characters 32-127 (96 printable characters)
 - Each character: 16 bytes (16 rows × 8 pixels)
 - Each byte represents one row of 8 pixels
 - Bit 7 (MSB) = leftmost pixel, Bit 0 = rightmost pixel
 
 **Character Indexing**:
+
 ```rust
 let glyph_offset = (ascii_value - 32) * 16;
 let glyph = &FONT_8X16[glyph_offset..glyph_offset + 16];
 ```
 
 **Example - Letter 'A' (ASCII 65)**:
+
 ```
 Offset: (65 - 32) × 16 = 528
 
@@ -249,6 +263,7 @@ pub struct FramebufferConsole {
 ```
 
 **Character Grid**:
+
 - Columns: `width / 8` (each character is 8 pixels wide)
 - Rows: `height / 16` (each character is 16 pixels tall)
 - Example: 1920×1080 → 240 columns × 67 rows
@@ -274,11 +289,13 @@ fn put_char(&mut self, c: char)
 **Purpose**: Outputs a single character at the current cursor position.
 
 **Special Characters**:
+
 - `'\n'` (newline): Move cursor to start of next line, scroll if needed
 - `'\r'` (carriage return): Move cursor to start of current line
 - Other: Render as glyph and advance cursor
 
 **Cursor Advancement**:
+
 ```rust
 self.cursor_x += 1;
 if self.cursor_x * 8 >= self.width {
@@ -297,6 +314,7 @@ fn draw_char(&mut self, c: char, x_char: usize, y_char: usize)
 **Purpose**: Renders a single character glyph to the framebuffer.
 
 **Algorithm**:
+
 ```rust
 let glyph = &FONT_8X16[(c - 32) * 16..][..16];
 let x_pixel = x_char * 8;
@@ -346,6 +364,7 @@ fn scroll_up(&mut self)
 **Purpose**: Scrolls screen contents up by one character line (16 pixels).
 
 **Implementation**:
+
 ```rust
 let fb = self.framebuffer;
 let pitch = self.pitch;
@@ -393,6 +412,7 @@ pub fn init_console(framebuffer: *mut u8, width: usize, height: usize, pitch: us
 **Purpose**: Initializes the global console instance.
 
 **Usage in Kernel**:
+
 ```rust
 let fb = framebuffer_response.framebuffers().next().expect("No framebuffer");
 graphics::console::init_console(
@@ -413,6 +433,7 @@ pub fn console() -> impl Write + 'static
 **Purpose**: Returns a locked handle to the global console that implements `core::fmt::Write`.
 
 **Implementation**:
+
 ```rust
 struct ConsoleGuard<'a> {
     guard: MutexGuard<'a, Option<FramebufferConsole>>,
@@ -449,6 +470,7 @@ macro_rules! fb_print {
 **Purpose**: Prints formatted text to the framebuffer console (no newline).
 
 **Usage**:
+
 ```rust
 fb_print!("Hello, ");
 fb_print!("value = {}", 42);
@@ -474,6 +496,7 @@ macro_rules! fb_println {
 **Purpose**: Prints formatted text to the framebuffer console with a newline.
 
 **Usage**:
+
 ```rust
 fb_println!("Booting Serix...");
 fb_println!("Memory: {} MB", mem_size / 1024 / 1024);
@@ -535,7 +558,7 @@ console.put_char('\n');
 ### Pixel Write Performance
 
 | Operation | Pixels | Typical Time (3GHz CPU) |
-|-----------|--------|-------------------------|
+| ----------- | -------- | ------------------------- |
 | Single pixel | 1 | ~10 ns |
 | Character (8×16) | 128 | ~1 μs |
 | Line (240 chars) | 30,720 | ~100 μs |
@@ -561,6 +584,7 @@ static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
 ```
 
 **Thread Safety Guarantees**:
+
 - Only one thread can access console at a time
 - Interrupts should be disabled during console access (or use interrupt-safe mutex)
 - No deadlocks if interrupts are properly managed
@@ -570,7 +594,7 @@ static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
 **Solution**: Use interrupt-safe mutex or disable interrupts around console operations:
 
 ```rust
-x86_64::instructions::interrupts::without_interrupts(|| {
+ x86_64::instructions::interrupts::without_interrupts( || { 
     fb_println!("Critical message");
 });
 ```
@@ -580,11 +604,13 @@ x86_64::instructions::interrupts::without_interrupts(|| {
 ### Framebuffer Access
 
 The framebuffer pointer is inherently unsafe:
+
 - Points to memory-mapped hardware
 - No Rust lifetime tracking
 - Can be invalidated by hardware changes
 
 **Safety Invariants**:
+
 1. Framebuffer pointer must be valid for console lifetime
 2. Width, height, pitch must accurately describe framebuffer
 3. All pixel writes must be within bounds
@@ -607,6 +633,7 @@ const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 #### No Output on Screen
 
 **Checks**:
+
 1. Framebuffer address valid? (check bootloader response)
 2. Console initialized? (`init_console` called?)
 3. Cursor position valid?
@@ -615,6 +642,7 @@ const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 #### Corrupted Text
 
 **Causes**:
+
 - Incorrect pitch value (should be from bootloader, not calculated)
 - Wrong BPP assumption (should be 32-bit BGRA)
 - Framebuffer pointer invalidated
@@ -622,6 +650,7 @@ const FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 #### Scrolling Issues
 
 **Causes**:
+
 - Height not accounting for menu bars or reserved areas
 - Pitch vs. width mismatch
 - `memcpy` overlap (use `memmove` instead)
