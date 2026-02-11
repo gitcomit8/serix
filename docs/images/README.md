@@ -41,13 +41,16 @@ To capture: Run graphics primitives demo and take screenshot
 Using QEMU with Serix:
 
 ```bash
-# Run QEMU with monitor
+
+## Run QEMU with monitor
 make run
 
-# In QEMU monitor (Ctrl+Alt+2):
+
+## In QEMU monitor (Ctrl+Alt+2):
 screendump framebuffer-screen.png
 
-# Or use external tools:
+
+## Or use external tools:
 scrot -s framebuffer-screen.png  # Linux with scrot
 ```
 

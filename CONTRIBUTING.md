@@ -81,7 +81,7 @@ Before you begin, ensure you have the following installed:
 The Serix kernel is organized as a Cargo workspace with multiple crates:
 
 | Crate | Purpose |
-|-------|---------|
+| ------- | --------- |
 | `kernel/` | Kernel entry point and initialization |
 | `memory/` | Page tables, heap, frame allocation |
 | `hal/` | Hardware abstraction (serial, CPU topology) |
@@ -99,23 +99,29 @@ The Serix kernel is organized as a Cargo workspace with multiple crates:
 ### Build Commands
 
 ```bash
-# Build kernel only
+
+## Build kernel only
 cargo build --release --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
 
-# Build bootable ISO (includes kernel + init + Limine)
+
+## Build bootable ISO (includes kernel + init + Limine)
 make iso
 
-# Build and run in QEMU
+
+## Build and run in QEMU
 make run
 
-# Clean build artifacts
+
+## Clean build artifacts
 make clean
 cargo clean
 
-# Format code (uses tabs, not spaces)
+
+## Format code (uses tabs, not spaces)
 cargo fmt
 
-# Run Clippy linter
+
+## Run Clippy linter
 cargo clippy --target x86_64-unknown-none
 ```
 
@@ -215,20 +221,24 @@ Serix follows specific coding conventions that differ from standard Rust in some
 ### Building the Project
 
 ```bash
-# Full build with ISO
+
+## Full build with ISO
 make iso
 
-# Build kernel only (faster for iteration)
+
+## Build kernel only (faster for iteration)
 cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
 ```
 
 ### Testing in QEMU
 
 ```bash
-# Standard run
+
+## Standard run
 make run
 
-# Run with debug output (interrupts, CPU resets)
+
+## Run with debug output (interrupts, CPU resets)
 qemu-system-x86_64 -cdrom serix.iso -serial stdio -m 4G \
     -d int,cpu_reset -no-reboot
 ```
@@ -465,8 +475,6 @@ All contributions must:
 - Be your original work or properly attributed
 - Not contain proprietary or copyrighted code without permission
 - Comply with the GPLv3 license terms
-
----
 
 ## Thank You!
 

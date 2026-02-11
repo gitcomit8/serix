@@ -23,13 +23,16 @@ Asciinema recording showing:
 Install asciinema:
 
 ```bash
-# Ubuntu/Debian
+
+## Ubuntu/Debian
 sudo apt install asciinema
 
-# Arch Linux
+
+## Arch Linux
 sudo pacman -S asciinema
 
-# Fedora
+
+## Fedora
 sudo dnf install asciinema
 ```
 
@@ -38,15 +41,20 @@ sudo dnf install asciinema
 Since Serix runs in QEMU (not a terminal), we need to record the serial output:
 
 ```bash
-# Option 1: Record QEMU serial output directly
-make run 2>&1 | tee qemu-output.txt
 
-# Convert to asciinema format
-# (Custom script needed to convert raw output to .cast format)
+## Option 1: Record QEMU serial output directly
+ make run 2>&1 | tee qemu-output.txt 
 
-# Option 2: Use serial console via screen/minicom
+
+## Convert to asciinema format
+
+## (Custom script needed to convert raw output to .cast format)
+
+
+## Option 2: Use serial console via screen/minicom
 screen -L /dev/pts/X  # Where X is QEMU serial port
-# Then convert screen log to asciinema format
+
+## Then convert screen log to asciinema format
 ```
 
 ### Alternative: Manual Creation

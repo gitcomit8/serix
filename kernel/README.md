@@ -445,20 +445,24 @@ Main Loop (HLT)
 All kernel messages are output to COM1 (0x3F8):
 
 ```bash
+
 # QEMU serial output to console
 qemu-system-x86_64 -serial stdio ...
 
-# QEMU serial output to file
+
+## QEMU serial output to file
 qemu-system-x86_64 -serial file:serial.log ...
 ```
 
 ### GDB Debugging
 
 ```bash
-# Start QEMU with GDB server
+
+## Start QEMU with GDB server
 qemu-system-x86_64 -s -S ...
 
-# In another terminal
+
+## In another terminal
 gdb target/x86_64-unknown-none/debug/kernel
 (gdb) target remote :1234
 (gdb) break _start

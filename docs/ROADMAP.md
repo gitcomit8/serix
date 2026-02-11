@@ -1,7 +1,5 @@
-Serix Development Roadmap
-=========================
+# Serix Development Roadmap
 
-:Version: 2.0
 :Last Updated: 2026-02-11
 :Target Architecture: x86_64
 :Current Release: v0.0.5
@@ -10,8 +8,7 @@ This document tracks the development roadmap for the Serix microkernel.
 All dates are estimates and subject to change based on contributor
 availability and technical challenges.
 
-Current Status (v0.0.5)
------------------------
+## Current Status (v0.0.5)
 
 Released: 2026-02-11
 
@@ -34,28 +31,27 @@ completion. Current capabilities:
 - Capability system infrastructure (CapabilityStore)
 - Serial console debug output (COM1, 115200 baud)
 
-Phase 1: Core Foundation (COMPLETED)
--------------------------------------
+## Phase 1: Core Foundation (COMPLETED)
 
 Status: 100% complete
 
 Bootloader Integration
 
-~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~
  * [✓] Limine v10.x bootloader integration
  * [✓] Memory map parsing from Limine responses
  * [✓] Framebuffer initialization
  * [✓] HHDM (Higher Half Direct Map) offset handling
 
 Memory Management
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
  * [✓] Page table initialization using bootloader CR3
  * [✓] Physical frame allocator (StaticBootFrameAllocator)
  * [✓] Heap allocator integration (1 MB at 0xFFFF_8000_4444_0000)
  * [✓] OffsetPageTable wrapper for page manipulation
 
 Hardware Abstraction Layer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~
 
 - [✓] CPU exception handlers (divide-by-zero, page fault, double fault)
 - [✓] APIC setup (Local APIC + I/O APIC)
@@ -63,21 +59,21 @@ Hardware Abstraction Layer
 - [✓] LAPIC timer driver (~625 Hz)
 - [✓] Serial console (COM1, 115200 baud 8N1)
 
-Phase 2: System Infrastructure (COMPLETED)
--------------------------------------------
+
+## Phase 2: System Infrastructure (COMPLETED)
 
 Status: 100% complete
 
 Task Management
 
-~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~
  * [✓] Task control block (TaskCB) structure
  * [✓] Async task creation using Rust futures
  * [✓] Cooperative task executor
  * [✓] Scheduler skeleton (not preemptive yet)
 
 Capability System
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
 
 - [✓] Cryptographic capability handle generation
 - [✓] CapabilityStore with HashMap backend
@@ -86,27 +82,27 @@ Capability System
 
 Syscall Interface
 
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
  * [✓] SYS_WRITE (1) - Write to file descriptor or framebuffer
  * [✓] SYS_READ (0) - Read from keyboard buffer
  * [✓] SYS_EXIT (60) - Terminate task
  * [✓] SYS_YIELD (24) - Cooperative yield
 
 Hardware Detection
-~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~
 
 - [✓] CPUID parsing for CPU information
 - [✓] CPU topology detection (cores, threads)
 - [✓] Hybrid core classification (P-core/E-core) infrastructure
 
-Phase 3: Hardware Integration (IN PROGRESS)
---------------------------------------------
+
+## Phase 3: Hardware Integration (IN PROGRESS)
 
 Status: ~40% complete
 
 VirtIO Block Driver (PARTIAL)
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * [~] PCI device enumeration
  * [~] VirtIO device detection
  * [ ] VirtIO queue setup
@@ -114,7 +110,7 @@ VirtIO Block Driver (PARTIAL)
  * [ ] Disk read/write syscalls
 
 VFS Foundation (PARTIAL)
-~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~
  * [✓] INode trait abstraction
  * [✓] RamFile implementation for ramdisk
  * [✓] Basic VFS operations (read, write)
@@ -124,36 +120,36 @@ VFS Foundation (PARTIAL)
  * [ ] Path resolution
 
 IPC Core (PLANNED)
-~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~
  * [ ] Message passing between tasks
  * [ ] Shared memory regions with capability protection
  * [ ] IPC channel creation syscall
  * [ ] Send/receive syscalls
 
 Preemptive Scheduling (PLANNED)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - [ ] Timer-triggered context switches
 - [ ] Task state save/restore (registers, stack)
 - [ ] Round-robin scheduler
 - [ ] Priority inheritance for capability operations
 
-Phase 4: POSIX Compatibility (PLANNED)
----------------------------------------
+
+## Phase 4: POSIX Compatibility (PLANNED)
 
 Status: 0% complete
 Target: Q2 2026
 
 Linux ABI Layer
 
-~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~
  * [ ] Enhanced ELF loader with dynamic linking
  * [ ] Basic libc stubs (open, close, read, write, mmap)
  * [ ] Environment variable support
  * [ ] Command-line argument passing
 
 Threading Support
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
 
 - [ ] pthread_create implementation
 - [ ] Thread local storage (TLS)
@@ -162,26 +158,26 @@ Threading Support
 
 Filesystem Operations
 
-~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~
  * [ ] POSIX file API (open, close, read, write, seek)
  * [ ] File descriptor table per task
  * [ ] Capability-gated file access
  * [ ] Standard file descriptors (0=stdin, 1=stdout, 2=stderr)
 
 Signal Handling
-~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~
  * [ ] Signal delivery via IPC
  * [ ] Signal handler registration
  * [ ] Default signal handlers (SIGKILL, SIGTERM, SIGSEGV)
  * [ ] Signal masks
 
-Phase 5: Optimization & Tools (PLANNED)
-----------------------------------------
+
+## Phase 5: Optimization & Tools (PLANNED)
 Status: 0% complete
 Target: Q3 2026
 
 Scheduler Optimization
-~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~
 
 - [ ] Weighted Fair Queueing (WFQ) implementation
 - [ ] CPU affinity and load balancing
@@ -189,13 +185,13 @@ Scheduler Optimization
 
 IOMMU Protection
 
-~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~
  * [ ] IOMMU initialization (Intel VT-d)
  * [ ] DMA memory isolation
  * [ ] Safe zero-copy IPC with IOMMU remapping
 
 Debugging Infrastructure
-~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~
 
 - [ ] GDB stub (serix-dbg)
 - [ ] Kernel panic backtraces with symbol resolution
@@ -204,33 +200,33 @@ Debugging Infrastructure
 
 Performance Profiling
 
-~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~
  * [ ] Context switch latency measurement
  * [ ] Syscall overhead profiling
  * [ ] Memory allocator statistics
  * [ ] Interrupt handler timing
 
-Phase 6: Release Preparation (PLANNED)
----------------------------------------
+
+## Phase 6: Release Preparation (PLANNED)
 Status: 0% complete
 Target: Q4 2026
 
 Userspace Shell
-~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~
  * [ ] Minimal interactive shell (serix-sh)
  * [ ] Built-in commands: ls, cat, echo, ps, kill
  * [ ] Command execution via fork/exec
  * [ ] Pipeline support
 
 CI/CD Pipeline
-~~~~~~~~~~~~~~
+```~~~~~~~~~~~
  * [ ] GitHub Actions workflow
  * [ ] Automated QEMU boot tests
  * [ ] Miri undefined behavior checks
  * [ ] Kani formal verification for critical paths
 
 Documentation
-~~~~~~~~~~~~~
+```~~~~~~~~~~
  * [✓] Getting started guide (README.md)
  * [✓] Contributor handbook (CONTRIBUTING.md)
  * [✓] API documentation (docs/)
@@ -238,37 +234,23 @@ Documentation
  * [ ] Syscall reference card
 
 Release Engineering
-~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~
  * [ ] v0.1.0 release with bootable ISO
  * [ ] Demo applications (HTTP server, terminal emulator)
  * [ ] Release notes and changelog
  * [ ] Public announcement
 
-Key Milestones
---------------
 
-**Completed Milestones**::
+## Key Milestones
 
-  2025-07    Phase 1 Complete - Core foundation functional
-  2025-08    Phase 2 Complete - System infrastructure operational  
-  2026-02    v0.0.5 Release - Userspace init execution working
+**Completed Milestones**
+**Upcoming Milestones**
 
-**Upcoming Milestones**::
+```
 
-  2026-Q2    Phase 3 Complete - Hardware integration finished
-             v0.0.6 Release - VirtIO block driver operational
-             
-  2026-Q3    Phase 4 Complete - POSIX compatibility layer
-             Alpha Release - Boots to interactive shell
-             
-  2026-Q4    Phase 5 Complete - Optimizations and tooling
-             Beta Release - Runs busybox and coreutils
-             
-  2027-Q1    Phase 6 Complete - Production readiness
-             v1.0.0 Release - Stable API and documentation
+```
 
-Contributing
-------------
+## Contributing
 See CONTRIBUTING.md for how to contribute to these roadmap items.
 High-priority tasks for contributors:
 

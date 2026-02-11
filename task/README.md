@@ -398,7 +398,7 @@ static GLOBAL_SCHEDULER: spin::Once<spin::Mutex<Scheduler>> = spin::Once::new();
 
 ```rust
 pub fn init_global() {
-    GLOBAL_SCHEDULER.call_once(|| {
+ GLOBAL_SCHEDULER.call_once( || { 
         spin::Mutex::new(Scheduler::new())
     });
 }

@@ -172,7 +172,7 @@ pub fn new(memory_map: &[&Entry]) -> Self
 let mut frames = alloc::vec::Vec::new();
 
 for region in memory_map.iter()
-    .filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
+ .filter( | r | r.entry_type == limine::memory_map::EntryType::USABLE) 
 {
     let start = region.base;
     let end = region.base + region.length;
@@ -331,7 +331,7 @@ for page in page_range {
         .expect("No frames available");
     
     // Set page table flags
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+ let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE; 
     
     // Map the page to the frame
     unsafe {
@@ -432,7 +432,7 @@ unsafe impl FrameAllocator<Size4KiB> for StaticBootFrameAllocator {
 ```rust
 let mut frame_count = 0;
 for region in memory_map_entries.iter()
-    .filter(|r| r.entry_type == EntryType::USABLE)
+ .filter( | r | r.entry_type == EntryType::USABLE) 
 {
     let start_frame = PhysFrame::containing_address(PhysAddr::new(region.base));
     let end_frame = PhysFrame::containing_address(PhysAddr::new(region.base + region.length - 1));
@@ -539,7 +539,7 @@ use x86_64::{VirtAddr, PhysAddr};
 
 let page = Page::containing_address(VirtAddr::new(0x5000_0000));
 let frame = PhysFrame::containing_address(PhysAddr::new(0x1000_0000));
-let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+ let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE; 
 
 unsafe {
     mapper.map_to(page, frame, flags, &mut frame_allocator)
@@ -696,7 +696,7 @@ mapper.map_to(page, PhysFrame::null(), PageTableFlags::empty(), alloc)?;
 // In page fault handler
 if !page_is_present() {
     let frame = allocate_frame();
-    mapper.update_flags(page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE)?;
+ mapper.update_flags(page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE)?; 
 }
 ```
 
@@ -714,7 +714,7 @@ for page in process_pages {
 if is_copy_on_write(page) {
     let new_frame = allocate_frame();
     copy_frame(old_frame, new_frame);
-    mapper.map_to(page, new_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, alloc)?;
+ mapper.map_to(page, new_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, alloc)?; 
 }
 ```
 

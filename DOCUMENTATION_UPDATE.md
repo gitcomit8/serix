@@ -69,36 +69,37 @@ All documentation now uses consistent Linux kernel style:
 
 ### RST-like Structure
 
+## ```
+
+## Document Title
+
+.. contents
+
 ```
-===================================
-Document Title
-===================================
+:depth: 3
 
-:Author: Serix Kernel Team
-:Version: v0.0.5
-:Architecture: x86_64
+```
 
-.. contents::
-    :depth: 3
+## Section Header
 
-Section Header
-==============
-
-Subsection Header
------------------
+## Subsection Header
 
 Sub-subsection Header
-~~~~~~~~~~~~~~~~~~~~~
+
+```~~~~~~~~~~~~~~~~~~
 ```
 
 ### Code Blocks
 
 ```
-Code example::
+Code example
 
-    fn example() {
-        // Code here
-    }
+```
+
+fn example() {
+}
+
+```
 ```
 
 ### Tables
@@ -113,18 +114,21 @@ Value 1    Value 2    Value 3
 
 ### Media Placeholders
 
-Screenshots::
+Screenshots
 
-    .. image:: filename.png
-       :alt: Detailed description of what screenshot shows,
-             when to capture it, and what should be visible.
+```
 
-Asciinema recordings::
+.. image:: filename.png
 
-    .. asciinema:: filename.cast
-       :alt: Description of recording including duration,
-             what commands to run, what actions to perform,
-             and what output to expect.
+```
+
+Asciinema recordings
+
+```
+
+.. asciinema:: filename.cast
+
+```
 
 ## Content Updates
 

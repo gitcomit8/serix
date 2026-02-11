@@ -1,13 +1,11 @@
-Serix Kernel
-============
+# Serix Kernel
 
 Serix is a microkernel-style x86_64 operating system written in Rust with
 capability-based security. The kernel boots via the Limine bootloader and
 provides a minimal userspace execution environment with VFS, IPC, and
 preemptive scheduling.
 
-Status
-------
+## Status
 
 Current release: v0.0.5
 
@@ -21,8 +19,7 @@ Alt text: "Serix kernel boot screen showing blue framebuffer with colored memory
 [Asciinema recording placeholder: Complete boot sequence from QEMU start to init execution]
 Alt text: "Terminal recording showing QEMU boot of Serix kernel with serial console output displaying all initialization checkpoints from serial init through init binary execution, approximately 30 seconds"
 
-Features
---------
+## Features
 
 - x86_64 long mode kernel with UEFI and BIOS support via Limine
 - Capability-based security with cryptographic capability handles
@@ -39,8 +36,7 @@ Features
 - Basic syscalls: write, read, exit, yield
 - Async task executor with cooperative scheduling
 
-Building
---------
+## Building
 
 Prerequisites:
 
@@ -76,8 +72,7 @@ Build targets:
   cargo clippy      # Lint with Clippy
 ```
 
-Testing
--------
+## Testing
 
 No automated test suite exists yet. Validation is manual:
 
@@ -90,8 +85,7 @@ No automated test suite exists yet. Validation is manual:
 [Asciinema recording placeholder: Keyboard input test]
 Alt text: "Terminal recording showing keyboard input test - typing characters on QEMU window and seeing them appear on framebuffer console with scancode/ASCII output on serial console, approximately 20 seconds"
 
-Repository Layout
------------------
+## Repository Layout
 
 ```
 
@@ -113,8 +107,7 @@ Repository Layout
   limine/         Limine bootloader (git submodule)
 ```
 
-Documentation [docs/](docs/)
------------------
+## Documentation [docs/](docs/)
 
 ```
   docs/BOOT_PROCESS.md         Boot sequence and initialization
@@ -127,8 +120,7 @@ Documentation [docs/](docs/)
   CONTRIBUTING.md              Contributor guidelines and style
 ```
 
-Contributing
-------------
+## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
@@ -141,7 +133,6 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 Bug reports and feature requests should use GitHub issue templates in
 .github/ISSUE_TEMPLATE/.
 
-License
--------
+## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) file.
