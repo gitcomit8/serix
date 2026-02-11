@@ -39,18 +39,20 @@ Features
 
 Building
 --------
-Prerequisites::
-
+Prerequisites:
+```
   rustup default nightly
   rustup target add x86_64-unknown-none
   apt install make qemu-system-x86 xorriso git
+```
 
-Quick start::
-
+Quick start:
+```
   git clone https://github.com/gitcomit8/serix.git
   cd serix
   git submodule update --init --recursive
   make run
+```
 
 This builds the kernel, creates a bootable ISO with Limine, and launches
 QEMU with serial output redirected to stdio. Successful boot displays a
@@ -59,13 +61,14 @@ blue framebuffer with memory map visualization and serial console output.
 [Asciinema recording placeholder: Build process from clean state]
 Alt text: "Terminal recording showing complete build process: cargo build output, make iso creating bootable image, and QEMU launch with kernel booting to blue screen, approximately 60 seconds"
 
-Build targets::
-
+Build targets:
+```
   make iso          # Build bootable ISO (serix.iso)
   make run          # Build and run in QEMU
   make clean        # Remove build artifacts
   cargo fmt         # Format code (tabs, 100 char lines)
   cargo clippy      # Lint with Clippy
+```
 
 Testing
 -------
@@ -82,7 +85,7 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
 
 Repository Layout
 -----------------
-::
+```
 
   kernel/         Kernel entry point, syscalls, GDT
   memory/         Page tables, heap allocator, frame allocator  
@@ -100,13 +103,12 @@ Repository Layout
   util/           Utility functions (panic handler, etc.)
   docs/           Technical documentation
   limine/         Limine bootloader (git submodule)
+```
 
-See CONTRIBUTING.md for detailed subsystem descriptions.
+Documentation [docs/](docs/)
+-----------------
 
-Documentation
--------------
-::
-
+```
   docs/BOOT_PROCESS.md         Boot sequence and initialization
   docs/MEMORY_LAYOUT.md        Virtual memory layout and addressing
   docs/INTERRUPT_HANDLING.md   IDT, APIC, and interrupt flow
@@ -115,10 +117,11 @@ Documentation
   docs/HAL_API.md              Hardware abstraction layer
   docs/ROADMAP.md              Development roadmap and milestones
   CONTRIBUTING.md              Contributor guidelines and style
+```
 
 Contributing
 ------------
-Contributions are welcome. See CONTRIBUTING.md for:
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
  * Code style guidelines (tabs, Linux kernel comment style)
  * Build and test procedures
@@ -131,5 +134,5 @@ Bug reports and feature requests should use GitHub issue templates in
 
 License
 -------
-GNU General Public License v3.0. See LICENSE file.
+GNU General Public License v3.0. See [LICENSE](LICENSE) file.
 
