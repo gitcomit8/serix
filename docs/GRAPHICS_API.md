@@ -27,19 +27,21 @@ Status (v0.0.5)
 ---------------
 
 Working Features:
-  - Linear framebuffer initialization via Limine bootloader
-  - Blue screen background rendering
-  - Memory map visualization (colored bars)
-  - Text console with 8×16 bitmap font
-  - Console output macros (fb_print!, fb_println!)
-  - Automatic scrolling
-  - Drawing primitives (pixels, rectangles, lines)
+
+- Linear framebuffer initialization via Limine bootloader
+- Blue screen background rendering
+- Memory map visualization (colored bars)
+- Text console with 8×16 bitmap font
+- Console output macros (fb_print!, fb_println!)
+- Automatic scrolling
+- Drawing primitives (pixels, rectangles, lines)
 
 Known Limitations:
-  - No color attributes for text (white on black only)
-  - No Unicode support (ASCII 32-127 printable characters)
-  - No hardware acceleration
-  - Single-buffered rendering (no double buffering)
+
+- No color attributes for text (white on black only)
+- No Unicode support (ASCII 32-127 printable characters)
+- No hardware acceleration
+- Single-buffered rendering (no double buffering)
 
 Screenshots
 -----------
@@ -240,6 +242,7 @@ Data Structures
 ---------------
 
 struct Framebuffer
+
 ~~~~~~~~~~~~~~~~~~
 
 Provided by Limine bootloader protocol (limine crate)::
@@ -368,6 +371,7 @@ Optimization Note:
   Future implementations could use memset or SIMD for faster fills.
 
 draw_memory_map()
+
 ~~~~~~~~~~~~~~~~~
 
 Visualize physical memory map as colored bars::
@@ -429,6 +433,7 @@ Example with Padding::
     Padding:    64 bytes/line (16 pixels worth)
 
 **Example Usage**:
+
 ```rust
 let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 
@@ -437,6 +442,7 @@ graphics::fill_screen_blue(fb);
 ```
 
 **Alternatives**:
+
 - `fill_screen_color(fb, &[r, g, b, a])` - Fill with custom color (not yet implemented)
 - `clear_screen(fb)` - Fill with black (not yet implemented)
 
@@ -451,10 +457,12 @@ pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
 **Purpose**: Visualizes system memory map as colored bars at bottom of screen (debugging tool).
 
 **Parameters**:
+
 - `fb`: Reference to framebuffer information structure
 - `entries`: Slice of memory map entries from bootloader
 
 **Visualization**:
+
 ```
 Screen Layout:
 ┌────────────────────────────────────────┐
@@ -471,6 +479,7 @@ Screen Layout:
 ```
 
 **Color Mapping**:
+
 ```rust
 match entry.entry_type {
     EntryType::USABLE                  => [0x00, 0xFF, 0x00, 0x00],  // Green
@@ -480,6 +489,7 @@ match entry.entry_type {
 ```
 
 **Bar Width Calculation**:
+
 ```rust
 let bar_width = screen_width / min(entry_count, screen_width);
 ```
@@ -487,6 +497,7 @@ let bar_width = screen_width / min(entry_count, screen_width);
 **Height**: 40 pixels from bottom of screen (`height - 40` to `height`).
 
 **Example Usage**:
+
 ```rust
 let fb = FRAMEBUFFER_REQ.get_response().unwrap().framebuffers()[0];
 let mmap = MMAP_REQ.get_response().unwrap();
@@ -496,6 +507,7 @@ graphics::draw_memory_map(fb, &entries);
 ```
 
 **Use Cases**:
+
 - Boot-time memory visualization
 - Debugging memory allocation issues
 - Demonstrating framebuffer capabilities
@@ -523,6 +535,7 @@ h-1│   │   │   │   │       │   │
 ```
 
 **Offset Calculation**:
+
 ```rust
 // For pixel at (x, y):
 let offset = y * pitch + x * (bpp / 8);

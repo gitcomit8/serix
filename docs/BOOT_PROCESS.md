@@ -97,7 +97,6 @@ Kernel Init    10-50 ms            Serial, APIC, IDT, memory, heap, graphics
 Total Boot     1-4 seconds         Typical on modern hardware in QEMU
 ============== =================== ============================================
 
-
 Boot Stages
 ===========
 
@@ -105,6 +104,7 @@ Stage 0: Firmware (BIOS/UEFI)
 ------------------------------
 
 BIOS Boot
+
 ~~~~~~~~~
 
 The BIOS boot process follows these steps:
@@ -197,7 +197,6 @@ Operation::
     7. Create Limine boot info structures
     8. Jump to kernel entry point
 
-
 Limine Bootloader
 ==================
 
@@ -251,6 +250,7 @@ Boot Protocol Requests
 Serix defines several requests in kernel code.
 
 Base Revision Request
+
 ~~~~~~~~~~~~~~~~~~~~~
 
 ::
@@ -535,6 +535,7 @@ Phase 3: IDT Setup (2-3 ms)
 **Purpose**: Setup interrupt and exception handlers
 
 Load IDT
+
 ~~~~~~~~
 
 ::
@@ -667,6 +668,7 @@ Phase 7: Page Table Initialization (10-15 ms)
 **Purpose**: Setup virtual memory management
 
 Initialize Offset Page Table
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ::

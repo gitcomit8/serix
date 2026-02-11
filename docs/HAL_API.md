@@ -19,11 +19,10 @@ Serix Hardware Abstraction Layer (HAL) Documentation
    7. Debugging and Tracing
    8. Future Work
 
-
-1. Introduction
+   1. Introduction
 ================================================================================
 
-The Serix HAL provides low-level interfaces to x86_64 hardware, isolating 
+The Serix HAL provides low-level interfaces to x86_64 hardware, isolating
 platform-specific code from kernel subsystems. This layer exposes safe Rust
 abstractions over CPU instructions, legacy I/O ports, and serial communication
 devices while maintaining zero-cost performance characteristics.
@@ -31,36 +30,36 @@ devices while maintaining zero-cost performance characteristics.
 1.1 Design Principles
 -----------------------------------------------------------
 
-* Zero-Cost Abstractions - Inline assembly with no runtime overhead
-* Type-Safe Hardware Access - Rust's type system prevents hardware bugs  
-* Minimal Unsafe Surface - Unsafe operations clearly marked and isolated
-* Direct Hardware Control - No buffering or indirection layers
+- Zero-Cost Abstractions - Inline assembly with no runtime overhead
+- Type-Safe Hardware Access - Rust's type system prevents hardware bugs  
+- Minimal Unsafe Surface - Unsafe operations clearly marked and isolated
+- Direct Hardware Control - No buffering or indirection layers
 
 1.2 Current Features (v0.0.5)
 -----------------------------------------------------------
 
 Serial Console (WORKING)::
 
-  - COM1 UART 16550 driver fully operational
-  - Debug output via serial_println! macro
-  - 115200 baud, 8N1 configuration
-  - Thread-safe global singleton with spinlock protection
+- COM1 UART 16550 driver fully operational
+- Debug output via serial_println! macro
+- 115200 baud, 8N1 configuration
+- Thread-safe global singleton with spinlock protection
 
 CPU Control (WORKING)::
 
-  - Interrupt enable/disable (CLI/STI instructions)
-  - Halt instruction (HLT) for idle loops
-  - Basic CPU feature detection via CPUID
+- Interrupt enable/disable (CLI/STI instructions)
+- Halt instruction (HLT) for idle loops
+- Basic CPU feature detection via CPUID
 
 I/O Port Access (WORKING)::
 
-  - Low-level inb/outb primitives for legacy devices
-  - 16-bit port address space (0x0000-0xFFFF)
+- Low-level inb/outb primitives for legacy devices
+- 16-bit port address space (0x0000-0xFFFF)
 
 CPU Topology (BASIC)::
 
-  - Single-CPU detection
-  - Placeholder for multi-core enumeration
+- Single-CPU detection
+- Placeholder for multi-core enumeration
 
 1.3 Module Organization
 -----------------------------------------------------------
@@ -83,9 +82,7 @@ Dependencies::
   x86_64 = "0.15"      # Architecture primitives
   spin = "0.10"        # Spinlock for serial port
 
-
-
-2. Hardware Initialization
+1. Hardware Initialization
 ================================================================================
 
 2.1 Boot Sequence
@@ -108,7 +105,7 @@ Example initialization code::
       // Step 1: Serial console (CRITICAL - enables debug output)
       hal::init_serial();
       serial_println!("[HAL] Serial console initialized at COM1 (0x3F8)");
-      
+
       // Step 2: Disable PIC, enable APIC
       apic::disable_pic();
       apic::enable();
@@ -132,10 +129,10 @@ Example initialization code::
 
 During early boot (before heap initialization), the following restrictions apply:
 
-* No dynamic allocations (Vec, Box, String, format!)
-* No serial_println! before init_serial()
-* Interrupts disabled until IDT loaded
-* Stack is limited (typically 64 KB from bootloader)
+- No dynamic allocations (Vec, Box, String, format!)
+- No serial_println! before init_serial()
+- Interrupts disabled until IDT loaded
+- Stack is limited (typically 64 KB from bootloader)
 
 The serial console is the ONLY output mechanism available during early boot.
 Framebuffer initialization happens much later, after memory management is ready.
@@ -151,17 +148,20 @@ Framebuffer initialization happens much later, after memory management is ready.
     → outb(COM1 + DATA_REG, byte)
     → I/O port write to 0x3F8
     → UART transmits byte over serial line
+
 ```
 
 #### Interrupt Control Path
 
 ```
+
 disable_interrupts()
     → cpu::disable_interrupts()
     → x86_64::instructions::interrupts::disable()
     → asm!("cli")
     → CPU clears IF flag in RFLAGS
     → Interrupts masked
+
 ```
 
 ---

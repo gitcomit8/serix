@@ -75,7 +75,6 @@ Memory Management
 Interrupts
     IDT loaded, APIC enabled, timer and keyboard interrupts functional
 
-
 Memory Management
 =================
 
@@ -90,6 +89,7 @@ Page Table Management
 ---------------------
 
 init_offset_page_table()
+
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Initialize offset page table mapper with active page table::
@@ -208,6 +208,7 @@ Heap Management
 ---------------
 
 init_heap()
+
 ~~~~~~~~~~~
 
 Map and initialize kernel heap for dynamic memory allocation::
@@ -508,6 +509,7 @@ Example::
     Scheduler::init_global();
 
 global()
+
 ~~~~~~~~
 
 Access global scheduler::
@@ -534,6 +536,7 @@ Context Switching
 -----------------
 
 context_switch()
+
 ~~~~~~~~~~~~~~~~
 
 Low-level context switch between tasks::
@@ -797,6 +800,7 @@ Exception Handlers
 Pre-registered CPU exception handlers:
 
 Divide by Zero (Vector 0)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ::

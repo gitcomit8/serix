@@ -52,14 +52,14 @@ All documentation files in `docs/` have been rewritten to follow Linux kernel do
 
 ### ❌ Marked for Deletion
 
-8. **ADD.md** (5 KB)
+1. **ADD.md** (5 KB)
    - Deprecated (contained future aspirational content)
    - Replaced by ARCHITECTURE.md
    - Contains note directing to new files
 
 ### ⏭️ Not Updated (Per Request)
 
-9. **ROADMAP.md** (3 KB)
+1. **ROADMAP.md** (3 KB)
    - Left as-is per user instruction
    - To be updated separately
 
@@ -68,6 +68,7 @@ All documentation files in `docs/` have been rewritten to follow Linux kernel do
 All documentation now uses consistent Linux kernel style:
 
 ### RST-like Structure
+
 ```
 ===================================
 Document Title
@@ -91,6 +92,7 @@ Sub-subsection Header
 ```
 
 ### Code Blocks
+
 ```
 Code example::
 
@@ -100,6 +102,7 @@ Code example::
 ```
 
 ### Tables
+
 ```
 ========== ========== ====================
 Column 1   Column 2   Column 3
@@ -188,6 +191,7 @@ All documentation now reflects actual implementation:
 12. Additional placeholders with detailed alt text
 
 All placeholders include:
+
 - Exact duration to record
 - Specific commands to run
 - Actions to perform

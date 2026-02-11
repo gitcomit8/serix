@@ -35,7 +35,6 @@ Serix follows these memory design principles:
 
 5. **Write Protection**: Read-only data is enforced via page table flags
 
-
 Virtual Address Space Layout
 =============================
 
@@ -128,6 +127,7 @@ Kernel Memory Layout
 --------------------
 
 Higher Half Direct Map (HHDM)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Physical memory is mapped at fixed offset::
@@ -377,6 +377,7 @@ Used during early boot before heap is initialized::
 **Limitation**: No deallocation. Frames cannot be freed.
 
 Heap Frame Allocator (Post-Heap)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Used after heap initialization (planned for v0.1.0)::
@@ -421,6 +422,7 @@ Current Allocator: linked_list_allocator
 - Fragmentation: Mitigated by coalescing adjacent free blocks
 
 Planned Allocator: SLAB (v0.1.0)
+
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ::

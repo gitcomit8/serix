@@ -60,6 +60,7 @@ Total addressable: 256 TiB (with 4-level paging)
 ```
 
 **Page Table Entry (PTE) Format (64-bit)**:
+
 ```
 Bit 0:     Present (P)
 Bit 1:     Writable (R/W)
@@ -85,6 +86,7 @@ unsafe fn active_level_table(offset: VirtAddr) -> &'static mut PageTable
 **Purpose**: Returns a mutable reference to the currently active level-4 (PML4) page table.
 
 **Implementation**:
+
 ```rust
 let (frame, _) = Cr3::read();  // Read CR3 register (page table base)
 let phys = frame.start_address().as_u64();
@@ -107,6 +109,7 @@ Virtual:  0xFFFF_8000_0010_0000
 ```
 
 **Why Offset Mapping?**
+
 - Simple physical-to-virtual conversion (addition)
 - Allows kernel to access any physical address
 - No need for temporary mappings
@@ -121,12 +124,14 @@ pub unsafe fn init_offset_page_table(offset: VirtAddr) -> OffsetPageTable<'stati
 **Purpose**: Initializes an `OffsetPageTable` with the active page table and physical memory offset.
 
 **Usage**:
+
 ```rust
 let phys_mem_offset = VirtAddr::new(0xFFFF_8000_0000_0000);
 let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 ```
 
 **OffsetPageTable Benefits**:
+
 - Implements `Mapper` trait for page mapping operations
 - Automatically translates physical addresses
 - Provides safe interface for page table manipulation
@@ -143,6 +148,7 @@ pub struct BootFrameAllocator {
 **Purpose**: Allocates physical memory frames (4KB pages) from usable memory regions.
 
 **Why Two Frame Allocators?**
+
 1. **StaticBootFrameAllocator** (heap.rs): Used during boot before heap is initialized
 2. **BootFrameAllocator** (lib.rs): Used after heap is initialized (can use Vec)
 
@@ -153,6 +159,7 @@ pub fn new(memory_map: &[&Entry]) -> Self
 ```
 
 **Process**:
+
 1. Iterate through memory map entries
 2. Filter for USABLE regions
 3. Split regions into 4KB frames
@@ -160,6 +167,7 @@ pub fn new(memory_map: &[&Entry]) -> Self
 5. Leak Vec to get `&'static [PhysFrame]`
 
 **Implementation**:
+
 ```rust
 let mut frames = alloc::vec::Vec::new();
 
@@ -194,6 +202,7 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 ```
 
 **Algorithm**: Simple bump allocator
+
 ```rust
 if self.next < self.frames.len() {
     let frame = self.frames[self.next];
@@ -205,6 +214,7 @@ if self.next < self.frames.len() {
 ```
 
 **Limitations**:
+
 - No deallocation (frames can't be freed)
 - Simple bump allocation (no best-fit, first-fit, etc.)
 - Suitable only for boot-time allocation
@@ -221,6 +231,7 @@ const HEAP_SIZE: usize = 1024 * 1024;        // 1 MB
 ```
 
 **Virtual Address Space Layout**:
+
 ```
 0x0000_0000_0000_0000: Null page (unmapped)
 ...
@@ -233,6 +244,7 @@ const HEAP_SIZE: usize = 1024 * 1024;        // 1 MB
 ```
 
 **Why 0x4444_4444_0000?**
+
 - Arbitrary non-zero address
 - Not conflicting with typical user/kernel boundaries
 - Easy to recognize in debugging (repeating pattern)
@@ -247,6 +259,7 @@ pub static mut BOOT_FRAMES: [Option<PhysFrame>; MAX_BOOT_FRAMES] = [None; MAX_BO
 **Purpose**: Pre-heap storage for physical frames.
 
 **Bootstrap Problem**:
+
 1. Need heap to allocate memory
 2. Need to allocate frames to map heap
 3. Can't allocate without heap (circular dependency)
@@ -265,6 +278,7 @@ pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
 **Purpose**: Global allocator instance used by Rust's `alloc` crate.
 
 **`#[global_allocator]`**: Tells Rust to use this allocator for:
+
 - `Box<T>`
 - `Vec<T>`
 - `String`
@@ -274,6 +288,7 @@ pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
 **LockedHeap**: Thread-safe heap allocator from `linked_list_allocator` crate.
 
 **Linked List Allocator**:
+
 - Maintains a linked list of free memory blocks
 - Allocation: First-fit algorithm
 - Deallocation: Merges adjacent free blocks
@@ -329,10 +344,12 @@ for page in page_range {
 ```
 
 **Page Table Flags**:
+
 - **PRESENT**: Page is present in memory (not swapped out)
 - **WRITABLE**: Page is writable (read-write access)
 
 **Additional Possible Flags**:
+
 - `USER_ACCESSIBLE`: User mode can access (not set for kernel heap)
 - `WRITE_THROUGH`: Write-through caching
 - `NO_CACHE`: Disable caching
@@ -350,6 +367,7 @@ unsafe {
 ```
 
 **Effect**: Tells the linked list allocator:
+
 - Where the heap starts (virtual address)
 - How large it is
 - Creates initial free block spanning entire heap
@@ -366,6 +384,7 @@ pub struct StaticBootFrameAllocator {
 **Purpose**: Pre-heap frame allocator that uses static `BOOT_FRAMES` array.
 
 **Why Separate from BootFrameAllocator?**
+
 - Can't use Vec before heap is initialized
 - Static array available immediately after boot
 - Simple, predictable behavior
@@ -398,6 +417,7 @@ unsafe impl FrameAllocator<Size4KiB> for StaticBootFrameAllocator {
 ```
 
 **Algorithm**:
+
 1. Iterate through `BOOT_FRAMES` starting at `next`
 2. Take the first `Some(frame)` (removes it from array)
 3. Return the frame
@@ -566,6 +586,7 @@ unsafe {
 ```
 
 **Why Unsafe?**
+
 - Relies on correctness of bootloader-provided information
 - Incorrect mappings cause memory corruption, undefined behavior
 - No way to verify correctness at compile-time
@@ -577,11 +598,13 @@ unsafe {
 **Symptoms**: Allocation returns null pointer, panic in allocator.
 
 **Causes**:
+
 1. Heap not initialized
 2. Heap exhausted (out of memory)
 3. Heap corrupted (double free, buffer overflow)
 
 **Debug Strategy**:
+
 ```rust
 // Check if heap is initialized
 serial_println!("Allocating...");
@@ -592,12 +615,14 @@ serial_println!("Allocation successful");
 ### Page Fault Debugging
 
 **Page Fault Causes**:
+
 1. Accessing unmapped memory
 2. Writing to read-only page
 3. Executing non-executable page
 4. User accessing kernel page
 
 **Debug Information**:
+
 ```rust
 // In page fault handler
 serial_println!("Page Fault at {:#x}", cr2_value);
@@ -640,10 +665,12 @@ mapper.flush_all();  // Single batch flush
 ### Heap Allocation Performance
 
 **Linked List Allocator**:
+
 - Allocation: O(n) in worst case (first-fit)
 - Deallocation: O(1) if adjacent blocks merged
 
 **Alternative Allocators** (future):
+
 - **Buddy Allocator**: O(log n), less fragmentation
 - **Slab Allocator**: O(1), optimized for fixed-size objects
 - **SLUB**: Linux-style slab allocator
@@ -746,11 +773,13 @@ limine = "0.5.0"
 ### Compile-Time Configuration
 
 Heap size can be adjusted:
+
 ```rust
 const HEAP_SIZE: usize = 1024 * 1024;  // Change to 2MB, 4MB, etc.
 ```
 
 Maximum boot frames:
+
 ```rust
 pub const MAX_BOOT_FRAMES: usize = 65536;  // ~256 MB
 ```

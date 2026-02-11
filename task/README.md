@@ -53,6 +53,7 @@ impl TaskId {
 **Generation**: Atomically incremented counter starting at 1 (0 reserved for "no task").
 
 **Properties**:
+
 - Never reused (64-bit space: 18 quintillion IDs)
 - Thread-safe generation
 - Cheap to copy (`Copy` trait)
@@ -69,6 +70,7 @@ pub enum TaskState {
 ```
 
 **State Transitions**:
+
 ```
        New
         ↓
@@ -82,6 +84,7 @@ Blocked Terminated
 ```
 
 **Rules**:
+
 - Only `Ready` tasks can transition to `Running`
 - `Running` tasks can transition to `Ready` (preemption), `Blocked` (I/O wait), or `Terminated` (exit)
 - `Blocked` tasks transition to `Ready` when event occurs
@@ -104,24 +107,28 @@ impl Default for SchedClass {
 ```
 
 **Realtime (0-99)**:
+
 - Highest priority
 - FIFO or round-robin scheduling
 - Preempts all lower-priority tasks
 - Use cases: Interrupt handlers, device drivers, real-time control
 
 **Fair (100-139)**:
+
 - Normal user tasks
 - Time-sliced, proportional CPU sharing
 - Priority affects time slice duration
 - Use cases: General applications, shells, servers
 
 **Batch (140)**:
+
 - Lowest priority
 - Runs only when no other tasks ready
 - Large time slices for throughput
 - Use cases: Background jobs, maintenance tasks
 
 **Iso (Isochronous)**:
+
 - Special class for multimedia
 - Guaranteed minimum CPU time
 - Low latency, predictable scheduling
@@ -168,22 +175,27 @@ pub struct CPUContext {
 **Why These Registers?**
 
 **Callee-Saved (must be preserved)**:
+
 - RSP, RBP: Stack management
 - RBX, R12-R15: General-purpose registers preserved across function calls
 
 **Execution State**:
+
 - RIP: Next instruction to execute
 - RFLAGS: CPU flags (interrupt enable, direction, carry, zero, etc.)
 
 **Segments**:
+
 - CS, SS: Required for ring transitions (kernel ↔ user)
 - DS, ES, FS, GS: Data segments
 - FS_BASE, GS_BASE: Thread-local storage, per-CPU data
 
 **Memory Management**:
+
 - CR3: Page table base (each task can have its own address space)
 
 **Caller-Saved Registers (not stored)**:
+
 - RAX, RCX, RDX, RSI, RDI, R8-R11: Function arguments and return values
 - Saved on stack by calling convention
 
@@ -202,6 +214,7 @@ pub struct TaskCB {
 ```
 
 **Fields**:
+
 - **id**: Unique task identifier
 - **state**: Current execution state
 - **sched_class**: Scheduling policy and priority
@@ -251,6 +264,7 @@ impl TaskBuilder {
 ```
 
 **Usage Example**:
+
 ```rust
 let task = TaskBuilder::new("idle_task")
     .sched_class(SchedClass::Fair(120))
@@ -403,6 +417,7 @@ pub unsafe fn start() -> !
 **Purpose**: Begins executing tasks (never returns).
 
 **Process**:
+
 1. Lock scheduler
 2. Get first task
 3. Mark it `Running`
@@ -410,6 +425,7 @@ pub unsafe fn start() -> !
 5. Context switch to task
 
 **Why Drop Lock?**
+
 - Context switch transfers control to task
 - Task may call `task_yield()` which locks scheduler
 - Would deadlock if lock still held
@@ -423,6 +439,7 @@ pub fn task_yield()
 **Purpose**: Voluntarily give up CPU to another task (cooperative multitasking).
 
 **Process**:
+
 1. Lock scheduler
 2. Find next ready task
 3. Update states: current → Ready, next → Running
@@ -447,6 +464,7 @@ pub unsafe extern "C" fn context_switch(
 **Purpose**: Saves current CPU state to `old`, loads CPU state from `new`.
 
 **Calling Convention**: Uses C calling convention for register passing:
+
 - `rdi` = `old` (pointer to current task's context)
 - `rsi` = `new` (pointer to next task's context)
 
@@ -558,6 +576,7 @@ ret
 ### Context Switch Cost
 
 **Approximate Cycle Counts**:
+
 - Register save/restore: ~50 cycles
 - MSR read/write (FS_BASE, GS_BASE): ~200 cycles
 - CR3 switch (TLB flush): ~1000 cycles
@@ -608,6 +627,7 @@ impl AsyncTask for AsyncTaskExample {
 ```
 
 **Usage**:
+
 ```rust
 let task = AsyncTaskExample::new(1000);
 task_manager.spawn_async(task);
@@ -626,6 +646,7 @@ drop(scheduler);
 ```
 
 **Deadlock Prevention**:
+
 - Never hold lock during context switch
 - Drop lock before calling external functions
 - Never acquire multiple locks in different orders
@@ -690,6 +711,7 @@ pub unsafe fn context_switch_trace(old: *mut CPUContext, new: *const CPUContext)
 ### Context Switch Optimization
 
 **Minimize CR3 Switches**:
+
 ```rust
 if old.context.cr3 == new.context.cr3 {
     context_switch_same_address_space(old, new);  // Skip CR3 load
@@ -699,6 +721,7 @@ if old.context.cr3 == new.context.cr3 {
 ```
 
 **Lazy FPU State**:
+
 ```rust
 // Don't save/restore FPU registers unless task uses them
 if task.uses_fpu {
@@ -709,6 +732,7 @@ if task.uses_fpu {
 ### Scheduler Efficiency
 
 **O(1) Scheduler** (Future):
+
 ```rust
 struct O1Scheduler {
     active: [PriorityQueue; 140],   // Active task queues
@@ -717,6 +741,7 @@ struct O1Scheduler {
 ```
 
 **Algorithm**:
+
 1. Pick highest-priority non-empty active queue
 2. Run task from that queue
 3. When time slice expires, move to expired queue
