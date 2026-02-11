@@ -1,15 +1,12 @@
-Serix Kernel Architecture
-===========================
+# Serix Kernel Architecture
 
-Overview
-========
+## Overview
 
 Serix is a capability-based microkernel-inspired operating system written in
 Rust for the x86_64 architecture. This document describes the architectural
 design, subsystem organization, and implementation philosophy of the kernel.
 
-Current Status (v0.0.5)
------------------------
+## Current Status (v0.0.5)
 
 Serix v0.0.5 is a kernel with these working features:
 

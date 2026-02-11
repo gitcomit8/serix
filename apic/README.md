@@ -17,7 +17,7 @@ The APIC module provides a modern interrupt handling infrastructure for x86_64 s
 The 8259 PIC has several limitations that make it unsuitable for modern operating systems:
 
 | Feature | Legacy 8259 PIC | Modern APIC |
-|---------|----------------|-------------|
+| --------- | ---------------- | ------------- |
 | CPU Support | Single CPU only | Multiple CPUs (SMP ready) |
 | Interrupt Lines | 15 IRQs (cascaded) | 24+ IRQs via I/O APIC |
 | Priority Levels | Fixed priority | Dynamic priority |
@@ -62,7 +62,7 @@ fn lapic_reg(offset: u32) -> *mut u32 {
 ### Key LAPIC Registers
 
 | Offset | Register | Purpose |
-|--------|----------|---------|
+| -------- | ---------- | --------- |
 | 0xF0 | SVR (Spurious Interrupt Vector Register) | Enable/disable LAPIC |
 | 0xB0 | EOI (End of Interrupt) | Signal interrupt completion |
 | 0x320 | LVT Timer Register | Configure timer interrupt |
@@ -118,7 +118,7 @@ core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_base, ...);
 
 // Set bit 11 (APIC Global Enable)
 if (apic_base & (1 << 11)) == 0 {
-    apic_base |= 1 << 11;
+ apic_base | = 1 << 11; 
     // Write back to MSR
     core::arch::asm!("wrmsr", in("ecx") 0x1Bu32, ...);
 }
@@ -135,7 +135,7 @@ if (apic_base & (1 << 11)) == 0 {
 
 ```rust
 let svr = lapic_reg(0xF0);
-let val = svr.read_volatile() | 0x100; // Set bit 8
+ let val = svr.read_volatile() | 0x100; // Set bit 8 
 svr.write_volatile(val);
 ```
 
@@ -177,7 +177,9 @@ pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
 2. **LVT Timer Register (0x320)**:
 
    ```rust
-   lapic_reg(0x320).write_volatile((vector as u32) | 0x20000);
+
+ lapic_reg(0x320).write_volatile((vector as u32) | 0x20000);
+
    ```
 
    - Bits 0-7: Vector number
@@ -190,8 +192,8 @@ pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32)
    lapic_reg(0x380).write_volatile(initial_count);
    ```
 
-   - Timer countdown value
-   - Counts down to zero, then reloads (in periodic mode)
+- Timer countdown value
+- Counts down to zero, then reloads (in periodic mode)
 
 **Timer Frequency Calculation**:
 
@@ -392,7 +394,7 @@ pub unsafe fn init_hardware()
 lapic_reg(0x3E0).write_volatile(TIMER_DIVIDE_CONFIG);
 
 // LVT Timer Register - periodic mode (bit 17)
-lapic_reg(0x320).write_volatile((TIMER_VECTOR as u32) | 0x20000);
+ lapic_reg(0x320).write_volatile((TIMER_VECTOR as u32) | 0x20000); 
 
 // Initial Count Register
 lapic_reg(0x380).write_volatile(TIMER_INITIAL_COUNT);
@@ -553,7 +555,7 @@ pub unsafe fn send_ipi(dest_cpu: u8, vector: u8) {
     lapic_reg(0x310).write_volatile((dest_cpu as u32) << 24);
     
     // Send IPI
-    let icr_low = vector as u32 | (0 << 8) | (0 << 11) | (1 << 14);
+ let icr_low = vector as u32 | (0 << 8) | (0 << 11) | (1 << 14); 
     lapic_reg(0x300).write_volatile(icr_low);
 }
 ```

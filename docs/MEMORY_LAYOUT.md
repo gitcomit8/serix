@@ -1,24 +1,23 @@
 ===================================
-Serix Kernel Memory Layout
-===================================
 
-:Author: Serix Kernel Team
-:Version: v0.0.5
-:Architecture: x86_64
+# Serix Kernel Memory Layout
+
 :Page Size: 4 KiB
 
-.. contents::
-    :depth: 3
+.. contents
 
-Overview
-========
+```
+:depth: 3
+
+```
+
+## Overview
 
 This document specifies the complete virtual and physical memory layout of the
 Serix kernel. Serix uses a higher-half kernel design with offset page tables and
 a direct physical memory mapping (HHDM - Higher Half Direct Map).
 
-Memory Layout Philosophy
-------------------------
+## Memory Layout Philosophy
 
 Serix follows these memory design principles:
 
@@ -35,11 +34,9 @@ Serix follows these memory design principles:
 
 5. **Write Protection**: Read-only data is enforced via page table flags
 
-Virtual Address Space Layout
-=============================
+## Virtual Address Space Layout
 
-x86_64 Canonical Addresses
----------------------------
+## x86_64 Canonical Addresses
 
 x86_64 uses 48-bit virtual addresses with canonical address form:
 
@@ -52,109 +49,106 @@ x86_64 uses 48-bit virtual addresses with canonical address form:
 - **Higher canonical addresses**: ``0xFFFF_8000_0000_0000`` to ``0xFFFF_FFFF_FFFF_FFFF``
   (kernel space)
 
-Complete Virtual Memory Map
-----------------------------
+## Complete Virtual Memory Map
 
-::
+```
 
-    Virtual Address Range                    Size        Purpose
-    ================================================================================
-    
-    USERSPACE (Lower Half)
-    --------------------------------------------------------------------------------
-    0x0000_0000_0000_0000 - 0x0000_0000_0FFF_FFFF   16 MB      Null guard (unmapped)
-    0x0000_0000_1000_0000 - 0x0000_0000_3FFF_FFFF  752 MB      User code (.text)
-    0x0000_0000_4000_0000 - 0x0000_0000_7FFF_FFFF    1 GB      User data (.data, .bss)
-    0x0000_0000_8000_0000 - 0x0000_7FFF_BFFF_FFFF  ~128 TB     User heap (grows up)
-    0x0000_7FFF_C000_0000 - 0x0000_7FFF_FFFF_FFFF    1 GB      User stack (grows down)
-    
-    NON-CANONICAL GAP
-    --------------------------------------------------------------------------------
-    0x0000_8000_0000_0000 - 0xFFFF_7FFF_FFFF_FFFF  ~128 TB     Invalid (causes #GP)
-    
-    KERNEL SPACE (Higher Half)
-    --------------------------------------------------------------------------------
-    0xFFFF_8000_0000_0000 - 0xFFFF_8000_FFFF_FFFF    4 GB      HHDM (Physical mem)
-    0xFFFF_8001_0000_0000 - 0xFFFF_8001_FFFF_FFFF    4 GB      Reserved
-    0xFFFF_8002_0000_0000 - 0xFFFF_8003_FFFF_FFFF    8 GB      Reserved for MMIO
-    0xFFFF_8000_4444_0000 - 0xFFFF_8000_4454_0000    1 MB      Kernel heap
-    0xFFFF_8000_4454_0000 - 0xFFFF_BFFF_FFFF_FFFF  ~64 TB      Reserved
-    0xFFFF_C000_0000_0000 - 0xFFFF_CFFF_FFFF_FFFF   16 TB      Page tables
-    0xFFFF_D000_0000_0000 - 0xFFFF_DFFF_FFFF_FFFF   16 TB      Reserved
-    0xFFFF_E000_0000_0000 - 0xFFFF_EFFF_FFFF_FFFF   16 TB      VFS caches
-    0xFFFF_F000_0000_0000 - 0xFFFF_FEFF_FFFF_FFFF   15 TB      Reserved
-    0xFFFF_FF00_0000_0000 - 0xFFFF_FF7F_FFFF_FFFF  512 GB      Per-CPU data
-    0xFFFF_FF80_0000_0000 - 0xFFFF_FFFF_7FFF_FFFF  512 GB      Kernel modules
-    0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF    2 GB      Kernel image
+Virtual Address Range                    Size        Purpose
+================================================================================
 
-.. image:: virtual-memory-layout.png
-   :alt: Diagram showing virtual memory layout with userspace in lower half
-         (0x0000...), non-canonical gap in middle, and kernel space in higher
-         half (0xFFFF...). Shows HHDM, kernel heap, and kernel image sections
-         with their relative sizes and addresses.
+USERSPACE (Lower Half)
+--------------------------------------------------------------------------------
+0x0000_0000_0000_0000 - 0x0000_0000_0FFF_FFFF   16 MB      Null guard (unmapped)
+0x0000_0000_1000_0000 - 0x0000_0000_3FFF_FFFF  752 MB      User code (.text)
+0x0000_0000_4000_0000 - 0x0000_0000_7FFF_FFFF    1 GB      User data (.data, .bss)
+0x0000_0000_8000_0000 - 0x0000_7FFF_BFFF_FFFF  ~128 TB     User heap (grows up)
+0x0000_7FFF_C000_0000 - 0x0000_7FFF_FFFF_FFFF    1 GB      User stack (grows down)
 
-Userspace Memory Layout
------------------------
+NON-CANONICAL GAP
+--------------------------------------------------------------------------------
+0x0000_8000_0000_0000 - 0xFFFF_7FFF_FFFF_FFFF  ~128 TB     Invalid (causes #GP)
 
-Each userspace process has this address space layout::
+KERNEL SPACE (Higher Half)
+--------------------------------------------------------------------------------
+0xFFFF_8000_0000_0000 - 0xFFFF_8000_FFFF_FFFF    4 GB      HHDM (Physical mem)
+0xFFFF_8001_0000_0000 - 0xFFFF_8001_FFFF_FFFF    4 GB      Reserved
+0xFFFF_8002_0000_0000 - 0xFFFF_8003_FFFF_FFFF    8 GB      Reserved for MMIO
+0xFFFF_8000_4444_0000 - 0xFFFF_8000_4454_0000    1 MB      Kernel heap
+0xFFFF_8000_4454_0000 - 0xFFFF_BFFF_FFFF_FFFF  ~64 TB      Reserved
+0xFFFF_C000_0000_0000 - 0xFFFF_CFFF_FFFF_FFFF   16 TB      Page tables
+0xFFFF_D000_0000_0000 - 0xFFFF_DFFF_FFFF_FFFF   16 TB      Reserved
+0xFFFF_E000_0000_0000 - 0xFFFF_EFFF_FFFF_FFFF   16 TB      VFS caches
+0xFFFF_F000_0000_0000 - 0xFFFF_FEFF_FFFF_FFFF   15 TB      Reserved
+0xFFFF_FF00_0000_0000 - 0xFFFF_FF7F_FFFF_FFFF  512 GB      Per-CPU data
+0xFFFF_FF80_0000_0000 - 0xFFFF_FFFF_7FFF_FFFF  512 GB      Kernel modules
+0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF    2 GB      Kernel image
 
-    0x0000_0000_0000_0000    Null guard page (16 MB, unmapped)
-                             Catches null pointer dereferences
-    
-    0x0000_0000_1000_0000    Program code (.text segment)
-                             Executable, read-only
-                             Loaded from ELF file
-    
-    0x0000_0000_4000_0000    Program data (.data, .bss, .rodata)
-                             Writable data, read-only data
-    
-    0x0000_0000_8000_0000    Heap (grows upward ->)
-                             Managed by userspace allocator
-                             Expanded via brk() syscall
-    
-    0x0000_7FFF_C000_0000    Stack (grows downward <-)
-                             Thread stack (8 MB default)
-                             Guard page below stack
+```
 
-**Stack Layout** (grows downward)::
+## Userspace Memory Layout
 
-    0x0000_7FFF_FFFF_FFF8    Top of stack (initial RSP)
-    ...                      Local variables, function calls
-    0x0000_7FFF_C000_0000    Bottom of stack
-    0x0000_7FFF_BFFF_F000    Stack guard page (unmapped)
+Each userspace process has this address space layout
 
-Kernel Memory Layout
---------------------
+```
+
+0x0000_0000_0000_0000    Null guard page (16 MB, unmapped)
+
+0x0000_0000_1000_0000    Program code (.text segment)
+
+0x0000_0000_4000_0000    Program data (.data, .bss, .rodata)
+
+0x0000_0000_8000_0000    Heap (grows upward ->)
+
+0x0000_7FFF_C000_0000    Stack (grows downward <-)
+
+```
+
+**Stack Layout** (grows downward)
+
+```
+
+0x0000_7FFF_FFFF_FFF8    Top of stack (initial RSP)
+...                      Local variables, function calls
+0x0000_7FFF_C000_0000    Bottom of stack
+0x0000_7FFF_BFFF_F000    Stack guard page (unmapped)
+
+```
+
+## Kernel Memory Layout
 
 Higher Half Direct Map (HHDM)
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Physical memory is mapped at fixed offset::
+Physical memory is mapped at fixed offset
 
-    Virtual: 0xFFFF_8000_0000_0000
-    Size:    Entire physical RAM (typically 4 GB in QEMU)
-    Flags:   Present, Writable, NX (No-Execute)
-    
-    Translation:
-        virt_addr = phys_addr + 0xFFFF_8000_0000_0000
-        phys_addr = virt_addr - 0xFFFF_8000_0000_0000
+```
 
+Virtual: 0xFFFF_8000_0000_0000
+Size:    Entire physical RAM (typically 4 GB in QEMU)
+Flags:   Present, Writable, NX (No-Execute)
+
+Translation:
+
+```
 **Purpose**: Direct access to any physical address without TLB misses
 
 **Usage**: Frame allocator, DMA buffers, device MMIO
 
 Kernel Heap
-~~~~~~~~~~~
+```~~~~~~~~
 
-Dynamic kernel memory allocation::
+Dynamic kernel memory allocation
 
-    Virtual: 0xFFFF_8000_4444_0000
-    Size:    1 MB (1,048,576 bytes)
-    Flags:   Present, Writable, NX
-    
-    Allocator: linked_list_allocator (buddy allocator planned)
+```
 
+Virtual: 0xFFFF_8000_4444_0000
+Size:    1 MB (1,048,576 bytes)
+Flags:   Present, Writable, NX
+
+Allocator: linked_list_allocator (buddy allocator planned)
+
+```
 **Current Status (v0.0.5)**: 1 MB heap is sufficient for current kernel needs.
 Future expansion planned for:
 
@@ -163,14 +157,17 @@ Future expansion planned for:
 - Network buffers
 
 Kernel Image
-~~~~~~~~~~~~
+```~~~~~~~~~
 
-Kernel ELF sections loaded by bootloader::
+Kernel ELF sections loaded by bootloader
 
-    Virtual: 0xFFFF_FFFF_8000_0000 (higher half)
-    Size:    ~4 MB (kernel binary + modules)
-    Flags:   .text (R-X), .rodata (R--), .data (RW-), .bss (RW-)
+```
 
+Virtual: 0xFFFF_FFFF_8000_0000 (higher half)
+Size:    ~4 MB (kernel binary + modules)
+Flags:   .text (R-X), .rodata (R--), .data (RW-), .bss (RW-)
+
+```
 **Sections**:
 
 .text
@@ -189,29 +186,33 @@ Kernel ELF sections loaded by bootloader::
     Limine protocol requests (read-only)
 
 
-Physical Memory Layout
-======================
 
-Physical Address Map
---------------------
+## Physical Memory Layout
 
-Physical memory as seen by the MMU::
 
-    Physical Address Range       Size        Purpose
-    ================================================================================
-    0x0000_0000 - 0x0009_FFFF    640 KB      Low memory (legacy)
-    0x000A_0000 - 0x000F_FFFF    384 KB      VGA/BIOS (reserved)
-    0x0010_0000 - [varies]       [varies]    Usable RAM (main memory)
-    0xFEC0_0000 - 0xFEC0_0FFF      4 KB      I/O APIC MMIO
-    0xFEE0_0000 - 0xFEE0_0FFF      4 KB      Local APIC MMIO
-    0xFED0_0000 - 0xFED0_3FFF     16 KB      HPET (High Precision Timer)
-    0xFFFC_0000 - 0xFFFF_FFFF    256 KB      BIOS ROM
+## Physical Address Map
 
+Physical memory as seen by the MMU
+
+```
+
+Physical Address Range       Size        Purpose
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+
+0x0000_0000 - 0x0009_FFFF    640 KB      Low memory (legacy)
+0x000A_0000 - 0x000F_FFFF    384 KB      VGA/BIOS (reserved)
+0x0010_0000 - [varies]       [varies]    Usable RAM (main memory)
+0xFEC0_0000 - 0xFEC0_0FFF      4 KB      I/O APIC MMIO
+0xFEE0_0000 - 0xFEE0_0FFF      4 KB      Local APIC MMIO
+0xFED0_0000 - 0xFED0_3FFF     16 KB      HPET (High Precision Timer)
+0xFFFC_0000 - 0xFFFF_FFFF    256 KB      BIOS ROM
+
+```
 **Note**: Actual layout varies by system. Memory map is discovered via Limine
 memory map request during boot.
 
-Memory Types
-------------
+
+## Memory Types
 
 Memory regions are classified by type:
 
@@ -239,90 +240,94 @@ KERNEL_AND_MODULES
 FRAMEBUFFER
     Graphics framebuffer memory
 
-.. image:: physical-memory-map.png
-   :alt: Bar chart showing physical memory regions by type. Green bars for
-         USABLE memory (largest portion), red for RESERVED, yellow for
-         BOOTLOADER_RECLAIMABLE, blue for KERNEL_AND_MODULES, purple for
-         FRAMEBUFFER. Shows typical 4GB QEMU memory layout.
 
-Bootloader Memory Regions
---------------------------
+## Bootloader Memory Regions
 
-Limine provides detailed memory map during boot. Example from 4GB QEMU VM::
+Limine provides detailed memory map during boot. Example from 4GB QEMU VM
 
-    Region 0: 0x0000_0000 - 0x0009_FC00  (640 KB)     USABLE
-    Region 1: 0x0009_FC00 - 0x000A_0000  (1 KB)       RESERVED
-    Region 2: 0x000F_0000 - 0x0010_0000  (64 KB)      RESERVED (BIOS)
-    Region 3: 0x0010_0000 - 0x7FEF_0000  (~2 GB)      USABLE
-    Region 4: 0x7FEF_0000 - 0x8000_0000  (1.1 MB)     BOOTLOADER_RECLAIMABLE
-    Region 5: 0x8000_0000 - 0xC000_0000  (1 GB)       RESERVED (PCI hole)
-    Region 6: 0x0010_0000 - 0x0050_0000  (4 MB)       KERNEL_AND_MODULES
-    Region 7: 0xFD00_0000 - 0xFE00_0000  (16 MB)      FRAMEBUFFER
+```
+
+Region 0: 0x0000_0000 - 0x0009_FC00  (640 KB)     USABLE
+Region 1: 0x0009_FC00 - 0x000A_0000  (1 KB)       RESERVED
+Region 2: 0x000F_0000 - 0x0010_0000  (64 KB)      RESERVED (BIOS)
+Region 3: 0x0010_0000 - 0x7FEF_0000  (~2 GB)      USABLE
+Region 4: 0x7FEF_0000 - 0x8000_0000  (1.1 MB)     BOOTLOADER_RECLAIMABLE
+Region 5: 0x8000_0000 - 0xC000_0000  (1 GB)       RESERVED (PCI hole)
+Region 6: 0x0010_0000 - 0x0050_0000  (4 MB)       KERNEL_AND_MODULES
+Region 7: 0xFD00_0000 - 0xFE00_0000  (16 MB)      FRAMEBUFFER
+
+```
+
+## Page Table Structure
 
 
-Page Table Structure
-====================
+## x86_64 4-Level Paging
 
-x86_64 4-Level Paging
----------------------
+Serix uses 4-level paging (PML4)
 
-Serix uses 4-level paging (PML4)::
+```
 
-    Virtual Address (48-bit):
-    ┌────────┬────────┬────────┬────────┬────────┬────────────┐
-    │  Sign  │  PML4  │  PDPT  │   PD   │   PT   │   Offset   │
-    │ Extend │  Index │  Index │  Index │  Index │            │
-    ├────────┼────────┼────────┼────────┼────────┼────────────┤
-    │ 63-48  │ 47-39  │ 38-30  │ 29-21  │ 20-12  │   11-0     │
-    │ 16 bit │  9 bit │  9 bit │  9 bit │  9 bit │   12 bit   │
-    └────────┴────────┴────────┴────────┴────────┴────────────┘
-    
-    Translation Process:
-    
-    1. CR3 register points to PML4 table (base physical address)
-    2. Bits 47-39 index into PML4 table -> get PDPT address
-    3. Bits 38-30 index into PDPT table -> get PD address
-    4. Bits 29-21 index into PD table   -> get PT address
-    5. Bits 20-12 index into PT table   -> get physical page frame
-    6. Bits 11-0 are offset within page (4 KB = 12 bits)
+Virtual Address (48-bit):
+┌────────┬────────┬────────┬────────┬────────┬────────────┐
+│  Sign  │  PML4  │  PDPT  │   PD   │   PT   │   Offset   │
+│ Extend │  Index │  Index │  Index │  Index │            │
+├────────┼────────┼────────┼────────┼────────┼────────────┤
+│ 63-48  │ 47-39  │ 38-30  │ 29-21  │ 20-12  │   11-0     │
+│ 16 bit │  9 bit │  9 bit │  9 bit │  9 bit │   12 bit   │
+└────────┴────────┴────────┴────────┴────────┴────────────┘
 
-Page Table Entry Format
-------------------------
+Translation Process:
 
-Each page table entry is 64 bits::
+1. CR3 register points to PML4 table (base physical address)
+2. Bits 47-39 index into PML4 table -> get PDPT address
+3. Bits 38-30 index into PDPT table -> get PD address
+4. Bits 29-21 index into PD table   -> get PT address
+5. Bits 20-12 index into PT table   -> get physical page frame
+6. Bits 11-0 are offset within page (4 KB = 12 bits)
 
-    Bit   Name            Description
-    ===== =============== ====================================================
-    0     Present (P)     Page is present in memory
-    1     Writable (W)    Page is writable (otherwise read-only)
-    2     User (U)        Accessible from userspace (otherwise kernel-only)
-    3     PWT             Page-level write-through
-    4     PCD             Page-level cache disable
-    5     Accessed (A)    Page has been accessed
-    6     Dirty (D)       Page has been written to (PT entries only)
-    7     PAT/PS          Page Attribute Table / Page Size (1 GB or 2 MB page)
-    8     Global (G)      TLB entry is global (not flushed on CR3 reload)
-    9-11  Available       Available for OS use
-    12-51 Address         Physical address bits [51:12] (40-bit address)
-    52-62 Available       Available for OS use
-    63    NX              No-Execute (page is not executable)
+```
 
-Page Table Flags Used by Serix
--------------------------------
+## Page Table Entry Format
 
-::
+Each page table entry is 64 bits
 
-    Flag Combination         Virtual Address Range              Purpose
-    ======================== ================================== ===================
-    P                        Unmapped regions                   Not present
-    P | W | NX               Kernel data, heap                  Kernel RW data
-    P | NX                   Kernel rodata                      Kernel RO data
-    P | W | NX               HHDM region                        Physical memory
-    P | W | U | NX           Userspace data, stack, heap        User RW data
-    P | U | NX               Userspace rodata                   User RO data
-    P | U                    Userspace code (.text)             User executable
-    P                        Kernel code (.text)                Kernel executable
+```
 
+Bit   Name            Description
+===== =============== ====================================================
+0     Present (P)     Page is present in memory
+1     Writable (W)    Page is writable (otherwise read-only)
+2     User (U)        Accessible from userspace (otherwise kernel-only)
+3     PWT             Page-level write-through
+4     PCD             Page-level cache disable
+5     Accessed (A)    Page has been accessed
+6     Dirty (D)       Page has been written to (PT entries only)
+7     PAT/PS          Page Attribute Table / Page Size (1 GB or 2 MB page)
+8     Global (G)      TLB entry is global (not flushed on CR3 reload)
+9-11  Available       Available for OS use
+12-51 Address         Physical address bits [51:12] (40-bit address)
+52-62 Available       Available for OS use
+63    NX              No-Execute (page is not executable)
+
+```
+
+## Page Table Flags Used by Serix
+
+
+```
+
+Flag Combination         Virtual Address Range              Purpose
+======================== ================================== ===================
+P                        Unmapped regions                   Not present
+ P | W | NX               Kernel data, heap                  Kernel RW data
+ P | NX                   Kernel rodata                      Kernel RO data
+ P | W | NX               HHDM region                        Physical memory
+ P | W | U | NX           Userspace data, stack, heap        User RW data
+ P | U | NX               Userspace rodata                   User RO data
+ P | U                    Userspace code (.text)             User executable
+P                        Kernel code (.text)                Kernel executable
+
+```
 **Legend**:
 
 - P = Present
@@ -330,8 +335,8 @@ Page Table Flags Used by Serix
 - U = User (accessible from ring 3)
 - NX = No-Execute
 
-TLB Management
---------------
+
+## TLB Management
 
 The Translation Lookaside Buffer (TLB) caches page translations. Serix manages
 the TLB as follows:
@@ -353,67 +358,63 @@ Global TLB flush
 **TLB Shootdown** (SMP): Not yet implemented. Planned for multi-core support.
 
 
-Memory Management
-=================
 
-Frame Allocation
-----------------
+## Memory Management
+
+
+## Frame Allocation
 
 Physical memory is managed in 4 KiB frames. Two allocators are used:
 
 Boot Frame Allocator (Pre-Heap)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Used during early boot before heap is initialized::
+Used during early boot before heap is initialized
 
-    Storage:    Static array BOOT_FRAMES[65536]
-    Capacity:   65,536 frames (256 MB)
-    Algorithm:  Simple bump allocator (no deallocation)
-    
-    Usage:
-        let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
-        let frame = frame_alloc.allocate_frame().expect("OOM");
+```
+
+Storage:    Static array BOOT_FRAMES[65536]
+Capacity:   65,536 frames (256 MB)
+Algorithm:  Simple bump allocator (no deallocation)
+
+Usage:
+
+```
 
 **Limitation**: No deallocation. Frames cannot be freed.
 
 Heap Frame Allocator (Post-Heap)
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Used after heap initialization (planned for v0.1.0)::
+Used after heap initialization (planned for v0.1.0)
 
-    Storage:    Heap-allocated bitmap or buddy allocator
-    Capacity:   All physical RAM
-    Algorithm:  Bitmap or buddy system
-    
-    Features:
-        - Frame allocation
-        - Frame deallocation
-        - Fragmentation tracking
-        - NUMA-aware allocation (future)
+```
 
-Heap Allocation
----------------
+Storage:    Heap-allocated bitmap or buddy allocator
+Capacity:   All physical RAM
+Algorithm:  Bitmap or buddy system
+
+Features:
+
+```
+
+## Heap Allocation
 
 Kernel heap provides dynamic memory allocation:
 
 Current Allocator: linked_list_allocator
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-::
+```
 
-    Algorithm:  First-fit with coalescing
-    Size:       1 MB (256 pages)
-    Location:   0xFFFF_8000_4444_0000
-    
-    Usage:
-        use alloc::vec::Vec;
-        use alloc::boxed::Box;
-        use alloc::string::String;
-        
-        let v = Vec::new();  // Heap allocation
-        let b = Box::new(42);
-        let s = String::from("Hello");
+Algorithm:  First-fit with coalescing
+Size:       1 MB (256 pages)
+Location:   0xFFFF_8000_4444_0000
+
+Usage:
+
+```
 
 **Performance**:
 
@@ -423,87 +424,85 @@ Current Allocator: linked_list_allocator
 
 Planned Allocator: SLAB (v0.1.0)
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-::
 
-    Algorithm:  Object caching with per-CPU freelists
-    Size:       4 MB (1024 pages)
-    Caches:     TaskCB (512 B), INode (256 B), Buffer (4 KB)
-    
-    Benefits:
-        - O(1) allocation for common sizes
-        - Reduced fragmentation
-        - Cache-line aligned objects
-        - Per-CPU caching for SMP
+```
 
-Memory Allocation APIs
-----------------------
+Algorithm:  Object caching with per-CPU freelists
+Size:       4 MB (1024 pages)
+Caches:     TaskCB (512 B), INode (256 B), Buffer (4 KB)
 
-Kernel APIs for memory management::
+Benefits:
 
-    // Frame allocation
-    fn allocate_frame() -> Option<PhysFrame<Size4KiB>>
-    fn deallocate_frame(frame: PhysFrame<Size4KiB>)
-    
-    // Page mapping
-    fn map_page(page: Page, frame: PhysFrame, flags: PageTableFlags)
-    fn unmap_page(page: Page) -> Option<PhysFrame>
-    fn translate_page(page: Page) -> Option<PhysFrame>
-    
-    // Heap allocation (via Rust alloc crate)
-    Vec::new()
-    Box::new(value)
-    String::from(str)
-    
-    // Address translation
-    fn phys_to_virt(phys: PhysAddr) -> VirtAddr
-    fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr>
+```
 
-Stack Allocation
-----------------
+## Memory Allocation APIs
+
+Kernel APIs for memory management
+
+```
+
+// Frame allocation
+fn allocate_frame() -> Option<PhysFrame<Size4KiB>>
+fn deallocate_frame(frame: PhysFrame<Size4KiB>)
+
+// Page mapping
+fn map_page(page: Page, frame: PhysFrame, flags: PageTableFlags)
+fn unmap_page(page: Page) -> Option<PhysFrame>
+fn translate_page(page: Page) -> Option<PhysFrame>
+
+// Heap allocation (via Rust alloc crate)
+Vec::new()
+Box::new(value)
+String::from(str)
+
+// Address translation
+fn phys_to_virt(phys: PhysAddr) -> VirtAddr
+fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr>
+
+```
+
+## Stack Allocation
 
 Kernel Stack
-~~~~~~~~~~~~
+```~~~~~~~~~
 
-Each kernel task has its own kernel stack::
+Each kernel task has its own kernel stack
 
-    Size:       16 KiB (4 pages)
-    Location:   Allocated from heap
-    Guard:      Unmapped guard page below stack
-    Flags:      Present, Writable, NX
-    
-    Layout (grows downward):
-        Top of stack (RSP)
-        ...
-        Local variables
-        ...
-        Return addresses
-        ...
-        Guard page (unmapped)
+```
 
+Size:       16 KiB (4 pages)
+Location:   Allocated from heap
+Guard:      Unmapped guard page below stack
+Flags:      Present, Writable, NX
+
+Layout (grows downward):
+
+```
 **Stack Overflow Detection**: Accessing guard page triggers page fault, kernel
 detects stack overflow and terminates task.
 
 Userspace Stack
-~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~
 
-Each userspace thread has its own stack::
+Each userspace thread has its own stack
 
-    Size:       8 MiB (2048 pages)
-    Location:   0x0000_7FFF_C000_0000 - 0x0000_7FFF_FFFF_FFFF
-    Guard:      Unmapped guard page below stack
-    Flags:      Present, Writable, User, NX
-    
-    Growth:     Stack grows downward, page faults trigger expansion
-                (up to limit)
+```
+
+Size:       8 MiB (2048 pages)
+Location:   0x0000_7FFF_C000_0000 - 0x0000_7FFF_FFFF_FFFF
+Guard:      Unmapped guard page below stack
+Flags:      Present, Writable, User, NX
+
+Growth:     Stack grows downward, page faults trigger expansion
+
+```
+
+## Memory Protection
 
 
-Memory Protection
-=================
-
-No-Execute (NX) Protection
----------------------------
+## No-Execute (NX) Protection
 
 All data pages are marked non-executable (NX bit set). This prevents code
 execution from data regions:
@@ -516,20 +515,23 @@ execution from data regions:
 
 Only code sections (.text) are executable.
 
-Write Protection
-----------------
 
-Read-only sections are enforced::
+## Write Protection
 
-    .rodata     Kernel read-only data        P, NX       (not W)
-    .text       Kernel code                  P           (not W, not NX)
-    User .text  Userspace code               P, U        (not W)
+Read-only sections are enforced
 
+```
+
+.rodata     Kernel read-only data        P, NX       (not W)
+.text       Kernel code                  P           (not W, not NX)
+User .text  Userspace code               P, U        (not W)
+
+```
 **Violation**: Writing to read-only page triggers page fault (#PF with W=1 in
 error code).
 
-User/Supervisor Protection
----------------------------
+
+## User/Supervisor Protection
 
 Kernel pages are marked supervisor-only (User bit clear). Userspace cannot
 access kernel memory:
@@ -542,8 +544,8 @@ access kernel memory:
 **Violation**: Userspace access to kernel page triggers page fault (#PF with
 U=1 in error code).
 
-SMAP/SMEP (Future)
-------------------
+
+## SMAP/SMEP (Future)
 
 Planned for v0.1.0:
 
@@ -557,48 +559,53 @@ SMEP (Supervisor Mode Execution Prevention)
 **Benefit**: Mitigates privilege escalation exploits.
 
 
-Memory Statistics (v0.0.5)
-===========================
 
-Kernel Memory Usage
--------------------
-
-Current kernel memory footprint::
-
-    Component           Size        Location
-    =================== =========== ======================================
-    Kernel image        ~2 MB       0xFFFF_FFFF_8000_0000
-    Kernel heap         1 MB        0xFFFF_8000_4444_0000
-    Boot frame array    256 KB      .bss section (65536 * 4 bytes)
-    IDT                 4 KB        .data section
-    GDT                 64 bytes    .data section
-    Page tables         ~16 KB      Managed by bootloader
-    Total               ~3.3 MB
-    
-    At runtime (with init):
-    Heap usage          ~10 KB      (VFS caches, task structs)
-    Stack usage         16 KB       (kernel main stack)
-
-Physical Memory Usage (4 GB QEMU)
-----------------------------------
-
-Typical memory allocation on 4 GB VM::
-
-    Region              Size        Percentage
-    =================== =========== ===========
-    Usable RAM          ~3.8 GB     95%
-    Reserved            ~128 MB     3%
-    Bootloader          ~1 MB       <1%
-    Kernel + modules    ~4 MB       <1%
-    Framebuffer         ~16 MB      <1%
-    MMIO regions        ~64 MB      1.5%
+## Memory Statistics (v0.0.5)
 
 
-Future Improvements
-===================
+## Kernel Memory Usage
 
-Planned for v0.1.0
-------------------
+Current kernel memory footprint
+
+```
+
+Component           Size        Location
+=================== =========== ======================================
+Kernel image        ~2 MB       0xFFFF_FFFF_8000_0000
+Kernel heap         1 MB        0xFFFF_8000_4444_0000
+Boot frame array    256 KB      .bss section (65536 * 4 bytes)
+IDT                 4 KB        .data section
+GDT                 64 bytes    .data section
+Page tables         ~16 KB      Managed by bootloader
+Total               ~3.3 MB
+
+At runtime (with init):
+Heap usage          ~10 KB      (VFS caches, task structs)
+Stack usage         16 KB       (kernel main stack)
+
+```
+
+## Physical Memory Usage (4 GB QEMU)
+
+Typical memory allocation on 4 GB VM
+
+```
+
+Region              Size        Percentage
+=================== =========== ===========
+Usable RAM          ~3.8 GB     95%
+Reserved            ~128 MB     3%
+Bootloader          ~1 MB       <1%
+Kernel + modules    ~4 MB       <1%
+Framebuffer         ~16 MB      <1%
+MMIO regions        ~64 MB      1.5%
+
+```
+
+## Future Improvements
+
+
+## Planned for v0.1.0
 
 **Memory Management**:
 
@@ -620,8 +627,8 @@ Planned for v0.1.0
 - KPTI (Kernel Page Table Isolation) for Meltdown mitigation
 - Address space layout randomization (ASLR)
 
-Planned for v0.2.0
-------------------
+
+## Planned for v0.2.0
 
 **Huge Pages**:
 
@@ -640,183 +647,129 @@ Planned for v0.2.0
 - Transparent huge pages (THP)
 
 
-Debugging Memory Issues
-========================
 
-Page Fault Debugging
---------------------
-
-When a page fault occurs, the CPU provides::
-
-    CR2 register:   Faulting virtual address
-    Error code:     Reason for fault
-    
-    Error Code Bits:
-        Bit 0 (P):  0 = Not present, 1 = Protection violation
-        Bit 1 (W):  0 = Read access, 1 = Write access
-        Bit 2 (U):  0 = Supervisor mode, 1 = User mode
-        Bit 3 (R):  1 = Reserved bit violation
-        Bit 4 (I):  1 = Instruction fetch
-
-Example page fault handler::
-
-    extern "x86-interrupt" fn page_fault_handler(
-        frame: InterruptStackFrame,
-        error_code: PageFaultErrorCode
-    ) {
-        let fault_addr = x86_64::registers::control::Cr2::read();
-        
-        serial_println!("Page Fault:");
-        serial_println!("  Address: {:#x}", fault_addr);
-        serial_println!("  Error Code: {:?}", error_code);
-        serial_println!("  RIP: {:#x}", frame.instruction_pointer);
-        
-        panic!("Page fault");
-    }
-
-.. asciinema:: page-fault-debug.cast
-   :alt: Recording showing page fault debugging. Kernel triggers intentional
-         page fault by accessing unmapped memory. Serial output shows page fault
-         handler displaying faulting address, error code bits, and instruction
-         pointer. Duration: ~10 seconds. Commands: Build kernel with debug page
-         fault trigger, make run, observe fault information.
-
-Memory Leak Detection
----------------------
-
-Heap usage tracking (planned)::
-
-    fn heap_stats() -> HeapStats {
-        HeapStats {
-            total_bytes: HEAP_SIZE,
-            used_bytes: allocator.used(),
-            free_bytes: allocator.free(),
-            allocations: allocator.count(),
-        }
-    }
-    
-    // Periodic logging
-    serial_println!("Heap: {} / {} bytes ({} allocations)",
-        stats.used_bytes, stats.total_bytes, stats.allocations);
-
-Virtual Memory Dump
--------------------
-
-Dump page table entries for debugging::
-
-    fn dump_page_tables(addr: VirtAddr) {
-        let cr3 = x86_64::registers::control::Cr3::read();
-        
-        // Walk page tables
-        let pml4_table = /* ... */;
-        let pml4_index = (addr.as_u64() >> 39) & 0x1FF;
-        let pml4_entry = pml4_table[pml4_index];
-        
-        serial_println!("PML4[{}]: {:?}", pml4_index, pml4_entry);
-        
-        // Continue with PDPT, PD, PT...
-    }
+## Debugging Memory Issues
 
 
-Appendix
-========
+## Page Fault Debugging
 
-Memory Constants
-----------------
+When a page fault occurs, the CPU provides
 
-All memory-related constants used in Serix::
+```
 
-    // Virtual addresses
-    const KERNEL_HEAP_START:  u64 = 0xFFFF_8000_4444_0000;
-    const KERNEL_HEAP_SIZE:   u64 = 1024 * 1024;  // 1 MB
-    const HHDM_OFFSET:        u64 = 0xFFFF_8000_0000_0000;
-    const KERNEL_BASE:        u64 = 0xFFFF_FFFF_8000_0000;
-    const USER_STACK_TOP:     u64 = 0x0000_7FFF_FFFF_FFFF;
-    const USER_STACK_SIZE:    u64 = 8 * 1024 * 1024;  // 8 MB
-    
-    // Page sizes
-    const PAGE_SIZE:          u64 = 4096;         // 4 KiB
-    const HUGE_PAGE_SIZE:     u64 = 2 * 1024 * 1024;  // 2 MiB (future)
-    const GIANT_PAGE_SIZE:    u64 = 1024 * 1024 * 1024;  // 1 GiB (future)
-    
-    // Frame allocation
-    const MAX_BOOT_FRAMES:    usize = 65536;      // 256 MB
-    const KERNEL_STACK_SIZE:  usize = 16 * 1024;  // 16 KiB
+CR2 register:   Faulting virtual address
+Error code:     Reason for fault
 
-Useful GDB Commands
--------------------
+Error Code Bits:
 
-Debugging memory with GDB::
+```
+Example page fault handler
 
-    # Examine page table registers
-    (gdb) info registers cr3 cr4
-    
-    # Dump memory
-    (gdb) x/16gx 0xFFFF_8000_0000_0000  # HHDM start
-    (gdb) x/16gx 0xFFFF_8000_4444_0000  # Kernel heap
-    
-    # Examine page table entry
-    (gdb) p/x *(uint64_t*)0x... # PML4 entry address
-    
-    # Set watchpoint on memory
-    (gdb) watch *(uint64_t*)0xFFFF_8000_4444_0000
-    
-    # View virtual to physical translation
-    (gdb) monitor gva2gpa 0xFFFF_8000_4444_0000
+```
 
-Memory Layout Diagram (ASCII)
-------------------------------
+extern "x86-interrupt" fn page_fault_handler(
+) {
 
-Complete memory map::
+}
 
-    User Space (0x0000...)              Kernel Space (0xFFFF...)
-    
-    0x0000_7FFF_FFFF_FFFF  ┐            0xFFFF_FFFF_FFFF_FFFF  ┐
-                           │                                   │
-        User Stack         │  1 GB       Kernel Image          │  2 GB
-                           │                                   │
-    0x0000_7FFF_C000_0000  ┘            0xFFFF_FFFF_8000_0000  ┘
-                           │                                   │
-        User Heap          │            Kernel Modules         │ 512 GB
-                           │ ~128 TB                           │
-    0x0000_0000_8000_0000  │            0xFFFF_FF80_0000_0000  │
-                           │                                   │
-        User Data          │  1 GB      Per-CPU Data           │ 512 GB
-                           │                                   │
-    0x0000_0000_4000_0000  │            0xFFFF_FF00_0000_0000  │
-                           │                                   │
-        User Code          │ 752 MB     Reserved               │  15 TB
-                           │                                   │
-    0x0000_0000_1000_0000  │            0xFFFF_F000_0000_0000  │
-                           │                                   │
-        Null Guard         │  16 MB     VFS Caches             │  16 TB
-                           │                                   │
-    0x0000_0000_0000_0000  ┘            0xFFFF_E000_0000_0000  │
-                                                               │
-                                        Reserved               │  16 TB
-                                                               │
-                                        0xFFFF_D000_0000_0000  │
-                                                               │
-                                        Page Tables            │  16 TB
-                                                               │
-                                        0xFFFF_C000_0000_0000  │
-                                                               │
-                                        Reserved               │ ~64 TB
-                                                               │
-                                        0xFFFF_8000_4454_0000  │
-                                                               │
-                                        Kernel Heap            │   1 MB
-                                                               │
-                                        0xFFFF_8000_4444_0000  │
-                                                               │
-                                        MMIO Reserved          │   8 GB
-                                                               │
-                                        0xFFFF_8002_0000_0000  │
-                                                               │
-                                        Reserved               │   4 GB
-                                                               │
-                                        0xFFFF_8001_0000_0000  │
-                                                               │
-                                        HHDM (Phys Mem)        │   4 GB
-                                                               │
-                                        0xFFFF_8000_0000_0000  ┘
+```
+
+## Memory Leak Detection
+
+Heap usage tracking (planned)
+
+```
+
+fn heap_stats() -> HeapStats {
+}
+
+// Periodic logging
+serial_println!("Heap: {} / {} bytes ({} allocations)",
+
+```
+
+## Virtual Memory Dump
+
+Dump page table entries for debugging
+
+```
+
+fn dump_page_tables(addr: VirtAddr) {
+
+}
+
+```
+
+## Appendix
+
+
+## Memory Constants
+
+All memory-related constants used in Serix
+
+```rust
+
+// Virtual addresses
+const KERNEL_HEAP_START:  u64 = 0xFFFF_8000_4444_0000;
+const KERNEL_HEAP_SIZE:   u64 = 1024 * 1024;  // 1 MB
+const HHDM_OFFSET:        u64 = 0xFFFF_8000_0000_0000;
+const KERNEL_BASE:        u64 = 0xFFFF_FFFF_8000_0000;
+const USER_STACK_TOP:     u64 = 0x0000_7FFF_FFFF_FFFF;
+const USER_STACK_SIZE:    u64 = 8* 1024 * 1024;  // 8 MB
+
+// Page sizes
+const PAGE_SIZE:          u64 = 4096;         // 4 KiB
+const HUGE_PAGE_SIZE:     u64 = 2 *1024* 1024;  // 2 MiB (future)
+const GIANT_PAGE_SIZE:    u64 = 1024 *1024* 1024;  // 1 GiB (future)
+
+// Frame allocation
+const MAX_BOOT_FRAMES:    usize = 65536;      // 256 MB
+const KERNEL_STACK_SIZE:  usize = 16 * 1024;  // 16 KiB
+
+```
+
+## Useful GDB Commands
+
+Debugging memory with GDB
+
+```
+
+## Examine page table registers
+
+(gdb) info registers cr3 cr4
+
+## Dump memory
+
+(gdb) x/16gx 0xFFFF_8000_0000_0000  # HHDM start
+(gdb) x/16gx 0xFFFF_8000_4444_0000  # Kernel heap
+
+## Examine page table entry
+
+(gdb) p/x *(uint64_t*)0x... # PML4 entry address
+
+## Set watchpoint on memory
+
+(gdb) watch *(uint64_t*)0xFFFF_8000_4444_0000
+
+## View virtual to physical translation
+
+(gdb) monitor gva2gpa 0xFFFF_8000_4444_0000
+
+```
+
+## Memory Layout Diagram (ASCII)
+
+Complete memory map
+
+```
+
+User Space (0x0000...)              Kernel Space (0xFFFF...)
+
+0x0000_7FFF_FFFF_FFFF  ┐            0xFFFF_FFFF_FFFF_FFFF  ┐
+0x0000_7FFF_C000_0000  ┘            0xFFFF_FFFF_8000_0000  ┘
+0x0000_0000_8000_0000  │            0xFFFF_FF80_0000_0000  │
+0x0000_0000_4000_0000  │            0xFFFF_FF00_0000_0000  │
+0x0000_0000_1000_0000  │            0xFFFF_F000_0000_0000  │
+0x0000_0000_0000_0000  ┘            0xFFFF_E000_0000_0000  │
+
+```

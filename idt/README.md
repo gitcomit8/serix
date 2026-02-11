@@ -35,7 +35,7 @@ Each IDT entry (16 bytes on x86_64) contains:
 #### CPU Exception Vectors (0-31)
 
 | Vector | Exception | Description |
-|--------|-----------|-------------|
+| -------- | ----------- | ------------- |
 | 0 | #DE | Divide Error |
 | 1 | #DB | Debug Exception |
 | 2 | NMI | Non-Maskable Interrupt |
@@ -385,19 +385,19 @@ extern "x86-interrupt" fn handler(stack_frame: InterruptStackFrame)
 ```
 (Higher addresses)
 +------------------+
-| SS               | <- Pushed by CPU if privilege change
+| SS | <- Pushed by CPU if privilege change 
 +------------------+
-| RSP              | <- Pushed by CPU if privilege change
+| RSP | <- Pushed by CPU if privilege change 
 +------------------+
-| RFLAGS           | <- Always pushed by CPU
+| RFLAGS | <- Always pushed by CPU 
 +------------------+
-| CS               | <- Always pushed by CPU
+| CS | <- Always pushed by CPU 
 +------------------+
-| RIP              | <- Always pushed by CPU
+| RIP | <- Always pushed by CPU 
 +------------------+
-| Error Code       | <- Pushed by CPU for some exceptions
+| Error Code | <- Pushed by CPU for some exceptions 
 +------------------+
-| (Handler stack)  |
+| (Handler stack) |
 (Lower addresses)
 ```
 
@@ -496,7 +496,7 @@ fn exception_handler(...) {
 ```rust
 use x86_64::instructions::interrupts;
 
-interrupts::without_interrupts(|| {
+ interrupts::without_interrupts( || { 
     // Critical section - interrupts disabled
     let mut data = SHARED_DATA.lock();
     data.modify();

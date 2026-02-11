@@ -84,7 +84,7 @@ const SCANDCODE_TO_ASCII: [u8; 128] = [
 **Mapping Details**:
 
 | Scancode | Key | ASCII | Notes |
-|----------|-----|-------|-------|
+| ---------- | ----- | ------- | ------- |
 | 0x00 | (none) | 0 | Reserved |
 | 0x01 | Escape | 27 | ASCII ESC |
 | 0x02-0x0B | 1-9, 0 | '1'-'9', '0' | Number row |
@@ -265,12 +265,12 @@ struct KeyboardState {
 
 ```rust
 pub fn handle_scancode(scancode: u8) {
-    if scancode == 0x2A || scancode == 0x36 {  // Shift
+ if scancode == 0x2A || scancode == 0x36 {  // Shift 
         unsafe { KEYBOARD_STATE.shift_pressed = true; }
         return;
     }
     
-    if scancode == 0xAA || scancode == 0xB6 {  // Shift release
+ if scancode == 0xAA || scancode == 0xB6 {  // Shift release 
         unsafe { KEYBOARD_STATE.shift_pressed = false; }
         return;
     }
@@ -307,7 +307,7 @@ const SHIFT_MAP: [(u8, u8); 47] = [
     (b'5', b'%'), (b'6', b'^'), (b'7', b'&'), (b'8', b'*'),
     (b'9', b'('), (b'0', b')'), (b'-', b'_'), (b'=', b'+'),
     (b'[', b'{'), (b']', b'}'), (b';', b':'), (b'\'', b'"'),
-    (b'`', b'~'), (b'\\', b'|'), (b',', b'<'), (b'.', b'>'),
+ (b'`', b'~'), (b'\\', b' | '), (b',', b'<'), (b'.', b'>'), 
     (b'/', b'?'),
     // ... plus uppercase letters
 ];
@@ -423,7 +423,7 @@ pub fn send_keyboard_command(cmd: u8) {
 **Common Commands**:
 
 | Command | Value | Description |
-|---------|-------|-------------|
+| --------- | ------- | ------------- |
 | Set LEDs | 0xED | Set Num/Caps/Scroll Lock LEDs |
 | Echo | 0xEE | Returns 0xEE (diagnostic) |
 | Get/Set Scancode Set | 0xF0 | Query or change scancode set |
@@ -440,8 +440,8 @@ pub fn send_keyboard_command(cmd: u8) {
 ```rust
 pub fn set_keyboard_leds(num_lock: bool, caps_lock: bool, scroll_lock: bool) {
     let led_state = 
-        (num_lock as u8) |
-        ((caps_lock as u8) << 1) |
+ (num_lock as u8) |
+ ((caps_lock as u8) << 1) |
         ((scroll_lock as u8) << 2);
     
     send_keyboard_command(0xED);  // Set LEDs command
@@ -532,7 +532,7 @@ pub fn set_typematic_rate(rate: u8, delay: u8) {
     send_keyboard_command(0xF3);  // Set typematic rate/delay
     wait_for_ack();
     
-    let param = (delay & 0x03) << 5 | (rate & 0x1F);
+ let param = (delay & 0x03) << 5 | (rate & 0x1F); 
     send_keyboard_command(param);
     wait_for_ack();
 }

@@ -158,12 +158,12 @@ pub fn draw_memory_map(fb: &Framebuffer, entries: &[&Entry])
 
 ```
 +-----------------------------------+
-|                                   |
-|     Screen content                |
-|                                   |
-|                                   |
+||
+| Screen content |
+||
+||
 +-----------------------------------+
-| [===Memory Map Bars (40px)===]  | ← Bottom 40 pixels
+| [===Memory Map Bars (40px)===] | ← Bottom 40 pixels 
 +-----------------------------------+
 ```
 
@@ -198,10 +198,10 @@ for (i, entry) in entries.iter().take(max_count).enumerate() {
 ```
 [Green][Green][Yellow][Gray][Green][Green][Gray]...
   ^       ^       ^      ^
-  |       |       |      |
-  |       |       |      +-- Reserved (ACPI, MMIO)
-  |       |       +--------- Bootloader code
-  |       +----------------- More usable RAM
+||||
+||| +-- Reserved (ACPI, MMIO) 
+|| +--------- Bootloader code 
+| +----------------- More usable RAM 
   +------------------------- Usable RAM
 ```
 
@@ -558,7 +558,7 @@ console.put_char('\n');
 ### Pixel Write Performance
 
 | Operation | Pixels | Typical Time (3GHz CPU) |
-|-----------|--------|-------------------------|
+| ----------- | -------- | ------------------------- |
 | Single pixel | 1 | ~10 ns |
 | Character (8×16) | 128 | ~1 μs |
 | Line (240 chars) | 30,720 | ~100 μs |
@@ -594,7 +594,7 @@ static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
 **Solution**: Use interrupt-safe mutex or disable interrupts around console operations:
 
 ```rust
-x86_64::instructions::interrupts::without_interrupts(|| {
+ x86_64::instructions::interrupts::without_interrupts( || { 
     fb_println!("Critical message");
 });
 ```

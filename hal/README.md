@@ -114,7 +114,7 @@ let value = unsafe { inb(0x71) };
 ### Port Access Characteristics
 
 | Port Range | Typical Usage |
-|------------|---------------|
+| ------------ | --------------- |
 | 0x000-0x01F | DMA controller |
 | 0x020-0x021 | Master PIC (8259A) |
 | 0x040-0x043 | PIT (Programmable Interval Timer) |
@@ -396,7 +396,7 @@ pub fn init_serial()
 **Implementation**:
 
 ```rust
-SERIAL_PORT.call_once(|| Mutex::new(SerialPort::new()));
+ SERIAL_PORT.call_once( || Mutex::new(SerialPort::new())); 
 ```
 
 **Thread Safety**: `Once::call_once` guarantees:
@@ -669,7 +669,7 @@ static SERIAL_PORT: Once<Mutex<SerialPort>>;
 **Solution**: Disable interrupts around serial operations in interrupt-sensitive contexts:
 
 ```rust
-x86_64::instructions::interrupts::without_interrupts(|| {
+ x86_64::instructions::interrupts::without_interrupts( || { 
     serial_println!("Critical message");
 });
 ```
@@ -722,13 +722,16 @@ Most HAL functions are marked `unsafe`:
 **QEMU Serial Redirection**:
 
 ```bash
-# To stdout
+
+## To stdout
 qemu-system-x86_64 -serial stdio ...
 
-# To file
+
+## To file
 qemu-system-x86_64 -serial file:serial.log ...
 
-# To TCP
+
+## To TCP
 qemu-system-x86_64 -serial tcp::4444,server,nowait ...
 ```
 

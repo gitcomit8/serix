@@ -1,91 +1,39 @@
 ===================================
-Serix Kernel Boot Process
-===================================
 
-:Author: Serix Kernel Team
-:Version: v0.0.5
-:Architecture: x86_64
-:Bootloader: Limine v10.x
+# Serix Kernel Boot Process
 
-.. contents::
-    :depth: 3
+.. contents
 
-Overview
-========
+```
+:depth: 3
+
+```
+
+## Overview
 
 Serix uses a multi-stage boot process that transitions from firmware (BIOS/UEFI)
 through the Limine bootloader to the kernel proper. This document specifies each
 stage, the handoff between stages, and the complete kernel initialization sequence.
 
-Boot Flow Summary
------------------
+## Boot Flow Summary
 
-The boot process follows this sequence::
+The boot process follows this sequence
 
-    Firmware (BIOS/UEFI)
-         |
-         | - Power-On Self-Test (POST)
-         | - Initialize hardware
-         | - Load bootloader from disk
-         v
-    Limine Stage 1
-         |
-         | - Load Stage 2 from disk
-         | - Minimal environment setup
-         v
-    Limine Stage 2
-         |
-         | - Setup memory map
-         | - Load kernel ELF
-         | - Setup framebuffer
-         | - Enter long mode (64-bit)
-         | - Setup initial page tables
-         | - Parse limine.conf
-         v
-    Kernel Entry (_start)
-         |
-         | - Serial init (debug output)
-         | - Read bootloader info
-         | - System detection
-         v
-    Early Initialization
-         |
-         | - APIC setup
-         | - IDT setup
-         | - Enable interrupts
-         v
-    Memory Initialization
-         |
-         | - Page tables
-         | - Frame allocator
-         | - Heap initialization
-         v
-    Device Initialization
-         |
-         | - Framebuffer
-         | - Console
-         | - Timer
-         | - VFS and ramdisk
-         v
-    Userspace Initialization
-         |
-         | - Load init binary from ramdisk
-         | - Execute userspace init
-         v
-    Kernel Idle Loop
-         |
-         | - HLT instruction
-         | - Wait for interrupts
+```
 
-.. asciinema:: boot-sequence.cast
-   :alt: Recording of complete boot sequence from QEMU start to kernel idle loop.
-         Shows serial console output with all initialization messages, framebuffer
-         appearing with blue screen and memory map visualization, and first timer
-         interrupts. Duration: ~10 seconds. Commands: make run, wait for boot to
-         complete, press a few keys to demonstrate keyboard input.
+Firmware (BIOS/UEFI)
+Limine Stage 1
+Limine Stage 2
+Kernel Entry (_start)
+Early Initialization
+Memory Initialization
+Device Initialization
+Userspace Initialization
+Kernel Idle Loop
 
-Time Estimates
---------------
+```
+
+## Time Estimates
 
 ============== =================== ============================================
 Stage          Duration            Notes
@@ -97,15 +45,13 @@ Kernel Init    10-50 ms            Serial, APIC, IDT, memory, heap, graphics
 Total Boot     1-4 seconds         Typical on modern hardware in QEMU
 ============== =================== ============================================
 
-Boot Stages
-===========
+## Boot Stages
 
-Stage 0: Firmware (BIOS/UEFI)
-------------------------------
+## Stage 0: Firmware (BIOS/UEFI)
 
 BIOS Boot
 
-~~~~~~~~~
+```~~~~~~
 
 The BIOS boot process follows these steps:
 
@@ -122,14 +68,17 @@ The BIOS boot process follows these steps:
 6. Load bootloader code from MBR to 0x7C00
 7. Jump to 0x7C00 (bootloader entry)
 
-Environment at handoff::
+Environment at handoff
 
-    CPU Mode:   Real mode (16-bit)
-    Memory:     Low memory available (<1 MB)
-    A20 Line:   May be disabled (limits addressing to 1 MB)
+```
 
+CPU Mode:   Real mode (16-bit)
+Memory:     Low memory available (<1 MB)
+A20 Line:   May be disabled (limits addressing to 1 MB)
+
+```
 UEFI Boot
-~~~~~~~~~
+```~~~~~~
 
 The UEFI boot process:
 
@@ -142,14 +91,18 @@ The UEFI boot process:
 7. Load EFI bootloader application (.efi file)
 8. Execute bootloader in UEFI context
 
-Environment at handoff::
+Environment at handoff
 
-    CPU Mode:   Long mode (64-bit) or protected mode (32-bit)
-    Memory:     Full memory available
-    Services:   UEFI runtime services available
+```
 
-Stage 1: Limine Stage 1
-------------------------
+CPU Mode:   Long mode (64-bit) or protected mode (32-bit)
+Memory:     Full memory available
+Services:   UEFI runtime services available
+
+```
+
+
+## Stage 1: Limine Stage 1
 
 **Location**: MBR/VBR (Volume Boot Record)
 
@@ -157,11 +110,15 @@ Stage 1: Limine Stage 1
 
 **Purpose**: Load Stage 2 from disk
 
-Operation::
+Operation
 
-    1. Read Stage 2 sectors from known disk location
-    2. Load Stage 2 to memory
-    3. Jump to Stage 2 entry point
+```
+
+1. Read Stage 2 sectors from known disk location
+2. Load Stage 2 to memory
+3. Jump to Stage 2 entry point
+
+```
 
 **Limitations**:
 
@@ -169,8 +126,8 @@ Operation::
 - Real mode only (BIOS) or limited environment (UEFI)
 - No filesystem support
 
-Stage 2: Limine Stage 2
-------------------------
+
+## Stage 2: Limine Stage 2
 
 **Location**: Dedicated partition or filesystem
 
@@ -186,22 +143,26 @@ Capabilities:
 - Framebuffer initialization
 - Configuration parsing
 
-Operation::
+Operation
 
-    1. Parse configuration file (limine.conf)
-    2. Setup memory map
-    3. Setup framebuffer (if available)
-    4. Load kernel ELF from filesystem
-    5. Setup initial page tables
-    6. Enter long mode (if not already)
-    7. Create Limine boot info structures
-    8. Jump to kernel entry point
+```
 
-Limine Bootloader
-==================
+1. Parse configuration file (limine.conf)
+2. Setup memory map
+3. Setup framebuffer (if available)
+4. Load kernel ELF from filesystem
+5. Setup initial page tables
+6. Enter long mode (if not already)
+7. Create Limine boot info structures
+8. Jump to kernel entry point
 
-Limine Protocol
----------------
+```
+
+
+## Limine Bootloader
+
+
+## Limine Protocol
 
 **Version**: 10.x
 
@@ -213,19 +174,20 @@ Limine Protocol
 - Bootloader populates "responses" before kernel entry
 - Allows kernel to request specific features/information
 
-Configuration File
-------------------
+
+## Configuration File
 
 **Path**: ``/limine.conf`` (root of boot partition)
 
-Serix configuration::
+Serix configuration
 
-    TIMEOUT=3
-    
-    :Serix OS v0.0.5
-        PROTOCOL=limine
-        KERNEL_PATH=boot:///serix-kernel
-        MODULE_PATH=boot:///init
+```
+
+TIMEOUT=3
+
+:Serix OS v0.0.5
+
+```
 
 **Directives**:
 
@@ -244,19 +206,21 @@ KERNEL_PATH
 MODULE_PATH
     Path to init binary module
 
-Boot Protocol Requests
------------------------
+
+## Boot Protocol Requests
 
 Serix defines several requests in kernel code.
 
 Base Revision Request
 
-~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~
 
-::
 
-    static BASE_REVISION: BaseRevision = BaseRevision::new();
+```
 
+static BASE_REVISION: BaseRevision = BaseRevision::new();
+
+```
 **Purpose**: Declares bootloader protocol version
 
 **Section**: ``.limine_reqs``
@@ -264,12 +228,14 @@ Base Revision Request
 **Required**: Yes (protocol version check)
 
 Framebuffer Request
-~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~
 
-::
 
-    static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
+```
 
+static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
+
+```
 **Purpose**: Requests graphics framebuffer
 
 **Response Includes**:
@@ -283,12 +249,14 @@ Framebuffer Request
 **Multiple Framebuffers**: Response may include multiple displays
 
 Memory Map Request
-~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~
 
-::
 
-    static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
+```
 
+static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
+
+```
 **Purpose**: Requests system memory map
 
 **Response Includes**:
@@ -323,71 +291,86 @@ FRAMEBUFFER
     Framebuffer memory
 
 HHDM Request
-~~~~~~~~~~~~
+```~~~~~~~~~
 
-::
 
-    static HHDM_REQ: HhdmRequest = HhdmRequest::new();
+```
 
+static HHDM_REQ: HhdmRequest = HhdmRequest::new();
+
+```
 **Purpose**: Requests Higher Half Direct Mapping offset
 
 **Response**: Virtual address offset for physical memory mapping
 (typically 0xFFFF_8000_0000_0000)
 
 Module Request
-~~~~~~~~~~~~~~
+```~~~~~~~~~~~
 
-::
 
-    static MODULE_REQ: ModuleRequest = ModuleRequest::new();
+```
 
+static MODULE_REQ: ModuleRequest = ModuleRequest::new();
+
+```
 **Purpose**: Requests loaded modules (init binary)
 
 **Response**: Array of loaded modules with addresses and sizes
 
-Limine Handoff State
----------------------
 
-CPU state at kernel entry::
+## Limine Handoff State
 
-    RIP:        Kernel entry point (_start)
-    CS:         Kernel code segment (typically 0x08)
-    DS/ES/SS:   Kernel data segment (typically 0x10)
-    RSP:        Valid stack pointer
-    RFLAGS:     IF=0 (interrupts disabled), DF=0
-    CR0:        PE=1 (protected mode), PG=1 (paging enabled)
-    CR3:        Page table base (identity + higher half mapped)
-    CR4:        PAE=1, PGE=1, OSFXSR=1, OSXMMEXCPT=1
+CPU state at kernel entry
 
-Memory layout::
+```
 
-    Identity mapping:   0x0 - [physical RAM size]
-    Higher half:        0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF
-                        (Kernel loaded here)
-    Physical mapping:   0xFFFF_8000_0000_0000 - 0xFFFF_8000_FFFF_FFFF
-                        (HHDM, all physical RAM mapped)
+RIP:        Kernel entry point (_start)
+CS:         Kernel code segment (typically 0x08)
+DS/ES/SS:   Kernel data segment (typically 0x10)
+RSP:        Valid stack pointer
+RFLAGS:     IF=0 (interrupts disabled), DF=0
+CR0:        PE=1 (protected mode), PG=1 (paging enabled)
+CR3:        Page table base (identity + higher half mapped)
+CR4:        PAE=1, PGE=1, OSFXSR=1, OSXMMEXCPT=1
 
-GDT (Global Descriptor Table)::
+```
+Memory layout
 
-    Entry 0: Null descriptor
-    Entry 1: Kernel code segment (0x08)
-    Entry 2: Kernel data segment (0x10)
+```
 
+Identity mapping:   0x0 - [physical RAM size]
+Higher half:        0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF
+Physical mapping:   0xFFFF_8000_0000_0000 - 0xFFFF_8000_FFFF_FFFF
+
+```
+GDT (Global Descriptor Table)
+
+```
+
+Entry 0: Null descriptor
+Entry 1: Kernel code segment (0x08)
+Entry 2: Kernel data segment (0x10)
+
+```
 **Interrupts**: Disabled (IF=0), IDT not loaded
 
 
-Kernel Entry Point
-==================
 
-_start Function
----------------
+## Kernel Entry Point
+
+
+## _start Function
 
 **Location**: ``kernel/src/main.rs``
 
-**Signature**::
+**Signature**
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn _start() -> !
+```
+
+[unsafe(no_mangle)]
+pub extern "C" fn_start() -> !
+
+```
 
 **Attributes**:
 
@@ -402,48 +385,24 @@ _start Function
 - Stack allocated by bootloader
 - Limine responses populated
 
-Initial Code
-------------
 
-The kernel entry point structure::
+## Initial Code
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn _start() -> ! {
-        // PHASE 1: Minimal Setup
-        hal::init_serial();
-        serial_println!("Serix Kernel v0.0.5 Starting...");
-        serial_println!("Serial console initialized");
-        
-        // PHASE 2: Interrupt Setup
-        unsafe {
-            apic::enable();
-            apic::ioapic::init_ioapic();
-            apic::timer::register_handler();
-        }
-        idt::init_idt();
-        x86_64::instructions::interrupts::enable();
-        
-        unsafe {
-            apic::timer::init_hardware();
-        }
-        
-        // PHASE 3: Memory Discovery
-        let fb_response = FRAMEBUFFER_REQ.get_response()
-            .expect("No framebuffer reply");
-        let mmap_response = MMAP_REQ.get_response()
-            .expect("No memory map response");
-        let hhdm_response = HHDM_REQ.get_response()
-            .expect("No HHDM response");
-        
-        // PHASE 4-10: Continued initialization...
-    }
+The kernel entry point structure
+
+```
+
+[unsafe(no_mangle)]
+pub extern "C" fn_start() -> ! {
+
+}
+
+```
+
+## Initialization Sequence
 
 
-Initialization Sequence
-========================
-
-Phase 1: Serial Console (0-1 ms)
----------------------------------
+## Phase 1: Serial Console (0-1 ms)
 
 **Purpose**: Establish debug output channel
 
@@ -458,23 +417,28 @@ Phase 1: Serial Console (0-1 ms)
 
 **Critical**: Must be first step for debug output
 
-Serial output::
+Serial output
 
-    Serix Kernel v0.0.5 Starting...
-    Serial console initialized
+```
 
-Phase 2: APIC Setup (1-2 ms)
------------------------------
+Serix Kernel v0.0.5 Starting...
+Serial console initialized
+
+```
+
+## Phase 2: APIC Setup (1-2 ms)
 
 **Purpose**: Setup interrupt controller
 
 Disable Legacy PIC
-~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~
 
-::
 
-    unsafe { apic::enable(); }  // Also calls disable_pic()
+```
 
+unsafe { apic::enable(); }  // Also calls disable_pic()
+
+```
 **Steps**:
 
 1. Initialize PIC (ICW1-ICW4)
@@ -484,12 +448,14 @@ Disable Legacy PIC
 **Why**: Prevent conflicts between PIC and APIC
 
 Enable Local APIC
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
 
-::
 
-    unsafe { apic::enable(); }
+```
 
+unsafe { apic::enable(); }
+
+```
 **Steps**:
 
 1. Read IA32_APIC_BASE MSR (0x1B)
@@ -500,12 +466,14 @@ Enable Local APIC
 **Verification**: Read SVR, check bit 8 is set
 
 Initialize I/O APIC
-~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~
 
-::
 
-    unsafe { apic::ioapic::init_ioapic(); }
+```
 
+unsafe { apic::ioapic::init_ioapic(); }
+
+```
 **Steps**:
 
 1. Map IRQ0 (timer) to vector 32
@@ -514,34 +482,42 @@ Initialize I/O APIC
 **Registers**: I/O APIC redirection table entries
 
 Register Timer Handler
-~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~
 
-::
+```
 
-    unsafe { apic::timer::register_handler(); }
+unsafe { apic::timer::register_handler(); }
+
+```
 
 **Purpose**: Register handler before IDT is loaded
 
 **Handler**: ``timer_interrupt`` (vector 49)
 
-Serial output::
+Serial output
 
-    Legacy PIC disabled
-    APIC enabled
+```
 
-Phase 3: IDT Setup (2-3 ms)
-----------------------------
+Legacy PIC disabled
+APIC enabled
+
+```
+
+
+## Phase 3: IDT Setup (2-3 ms)
 
 **Purpose**: Setup interrupt and exception handlers
 
 Load IDT
 
-~~~~~~~~
+```~~~~~
 
-::
 
-    idt::init_idt();
+```
 
+idt::init_idt();
+
+```
 **Steps**:
 
 1. Initialize IDT structure (lazy_static)
@@ -562,46 +538,59 @@ Vector Handler
 ====== ========================
 
 Enable Interrupts
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
 
-::
+```
 
-    x86_64::instructions::interrupts::enable();
+x86_64::instructions::interrupts::enable();
+
+```
 
 **Operation**: Execute STI instruction (set IF flag)
 
 **Effect**: CPU now responds to hardware interrupts
 
-Phase 4: Timer Hardware (3-4 ms)
----------------------------------
+
+## Phase 4: Timer Hardware (3-4 ms)
 
 **Purpose**: Start LAPIC timer for timekeeping
 
-**Operations**::
+**Operations**
 
-    unsafe { apic::timer::init_hardware(); }
+```
+
+unsafe { apic::timer::init_hardware(); }
+
+```
 
 **Steps**:
 
 1. Write divide config register (0x3E0) = 0x3 (divide by 16)
-2. Write LVT timer register (0x320) = vector 49 | 0x20000 (periodic)
+ 2. Write LVT timer register (0x320) = vector 49 | 0x20000 (periodic) 
 3. Write initial count register (0x380) = 100,000
 
 **Result**: Timer fires every ~1.6 ms (625 Hz)
 
-Serial output::
+Serial output
 
-    Keyboard ready for input!
+```
 
-Phase 5: Framebuffer Access (4-5 ms)
--------------------------------------
+Keyboard ready for input!
+
+```
+
+
+## Phase 5: Framebuffer Access (4-5 ms)
 
 **Purpose**: Get graphics output capability
 
-**Operations**::
+**Operations**
 
-    let fb_response = FRAMEBUFFER_REQ.get_response()
-        .expect("No framebuffer reply");
+```
+
+let fb_response = FRAMEBUFFER_REQ.get_response()
+
+```
 
 **Response Fields**:
 
@@ -616,68 +605,56 @@ Phase 5: Framebuffer Access (4-5 ms)
 
 **Usage**: Passed to graphics subsystem for rendering
 
-.. image:: framebuffer-blue-screen.png
-   :alt: Screenshot of Serix framebuffer showing solid blue background with
-         memory map visualization at bottom as colored horizontal bars.
-         Resolution 1024x768, taken after graphics initialization completes.
 
-Phase 6: Memory Map Processing (5-10 ms)
------------------------------------------
+## Phase 6: Memory Map Processing (5-10 ms)
 
 **Purpose**: Discover available RAM
 
-**Operations**::
+**Operations**
 
-    let mmap_response = MMAP_REQ.get_response()
-        .expect("No memory map response");
-    let entries = mmap_response.entries();
+```
 
-Processing loop::
+let mmap_response = MMAP_REQ.get_response()
+let entries = mmap_response.entries();
 
-    for entry in entries.iter() {
-        serial_println!("Memory region:");
-        serial_println!("  Base:   {:#x}", entry.base);
-        serial_println!("  Length: {:#x}", entry.length);
-        serial_println!("  Type:   {:?}", entry.entry_type);
-    }
+```
 
-Example serial output::
+Processing loop
 
-    Memory region:
-      Base:   0x0
-      Length: 0x9fc00
-      Type:   USABLE
-    Memory region:
-      Base:   0x100000
-      Length: 0x3fef0000
-      Type:   USABLE
-    Memory region:
-      Base:   0x40000000
-      Length: 0x200000
-      Type:   RESERVED
+```
 
-.. image:: memory-map-visualization.png
-   :alt: Screenshot of memory map visualization showing colored bars at bottom
-         of framebuffer. Green bars indicate USABLE memory, red bars indicate
-         RESERVED memory, yellow bars indicate BOOTLOADER_RECLAIMABLE memory.
-         Screenshot taken after memory map is painted on framebuffer.
+for entry in entries.iter() {
+}
 
-Phase 7: Page Table Initialization (10-15 ms)
-----------------------------------------------
+```
+
+Example serial output
+
+```
+
+Memory region:
+Memory region:
+Memory region:
+
+```
+
+
+## Phase 7: Page Table Initialization (10-15 ms)
 
 **Purpose**: Setup virtual memory management
 
 Initialize Offset Page Table
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-::
 
-    let phys_mem_offset = hhdm_response.offset();
-    let mut mapper = unsafe { 
-        memory::init_offset_page_table(VirtAddr::new(phys_mem_offset))
-    };
+```
 
+let phys_mem_offset = hhdm_response.offset();
+let mut mapper = unsafe {
+};
+
+```
 **Steps**:
 
 1. Read CR3 (get current PML4 physical address)
@@ -687,53 +664,46 @@ Initialize Offset Page Table
 **Result**: ``mapper`` can be used to manipulate page tables
 
 Preallocate Frames
-~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~
 
-Iterate through usable memory regions and store frames::
+Iterate through usable memory regions and store frames
 
-    let mut frame_count = 0;
-    for region in entries.iter()
-        .filter(|r| r.entry_type == EntryType::USABLE)
-    {
-        let start_frame = PhysFrame::containing_address(
-            PhysAddr::new(region.base)
-        );
-        let end_frame = PhysFrame::containing_address(
-            PhysAddr::new(region.base + region.length - 1)
-        );
-        
-        for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
-            if frame_count < memory::heap::MAX_BOOT_FRAMES {
-                unsafe {
-                    memory::heap::BOOT_FRAMES[frame_count] = Some(frame);
-                }
-                frame_count += 1;
-            }
-        }
-    }
+```
 
+let mut frame_count = 0;
+for region in entries.iter()
+{
+
+}
+
+```
 **Purpose**: Store available frames in static array (pre-heap allocation)
 
 **Capacity**: 65,536 frames (256 MB maximum)
 
 Create Frame Allocator
-~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~
 
-::
 
-    let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
+```
 
+let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
+
+```
 **Purpose**: Wrap frame array in FrameAllocator trait
 
-Phase 8: Heap Initialization (15-25 ms)
-----------------------------------------
+
+## Phase 8: Heap Initialization (15-25 ms)
 
 **Purpose**: Enable dynamic memory allocation
 
-**Operations**::
+**Operations**
 
-    init_heap(&mut mapper, &mut frame_alloc);
+```
 
+init_heap(&mut mapper, &mut frame_alloc);
+
+```
 **Steps**:
 
 1. Calculate heap page range (256 pages for 1 MB)
@@ -750,26 +720,29 @@ Phase 8: Heap Initialization (15-25 ms)
 
 **Duration**: ~10 ms (depends on page count and TLB flush overhead)
 
-**Heap Configuration**::
+**Heap Configuration**
 
-    HEAP_START: 0xFFFF_8000_4444_0000
-    HEAP_SIZE:  1 MB (1,048,576 bytes)
+```
 
-Phase 9: Graphics Initialization (25-35 ms)
---------------------------------------------
+HEAP_START: 0xFFFF_8000_4444_0000
+HEAP_SIZE:  1 MB (1,048,576 bytes)
+
+```
+
+## Phase 9: Graphics Initialization (25-35 ms)
 
 **Purpose**: Setup visual output
 
 Paint Screen Blue
-~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~
 
-::
 
-    if let Some(fb) = fb_response.framebuffers().next() {
-        fill_screen_blue(&fb);
-        draw_memory_map(&fb, mmap_response.entries());
-    }
+```
 
+if let Some(fb) = fb_response.framebuffers().next() {
+}
+
+```
 **Steps**:
 
 1. Get first framebuffer
@@ -781,18 +754,16 @@ Paint Screen Blue
 **Visual Result**: Solid blue screen with memory map at bottom
 
 Initialize Text Console
-~~~~~~~~~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~~~~~~~~~
 
-::
 
-    let fb = fb_response.framebuffers().next().expect("No framebuffer");
-    init_console(
-        fb.addr(),
-        fb.width() as usize,
-        fb.height() as usize,
-        fb.pitch() as usize
-    );
+```
 
+let fb = fb_response.framebuffers().next().expect("No framebuffer");
+init_console(
+);
+
+```
 **Steps**:
 
 1. Create FramebufferConsole instance
@@ -801,26 +772,27 @@ Initialize Text Console
 
 **Result**: ``fb_println!`` macro now functional
 
-Test output::
+Test output
 
-    graphics::fb_println!("Welcome to Serix OS v0.0.5!");
-    graphics::fb_println!("Framebuffer: {}x{}", fb.width(), fb.height());
-    graphics::fb_println!("Memory: {} MB usable", total_mb);
+```
 
-.. image:: console-text-output.png
-   :alt: Screenshot showing text output on framebuffer. White text on blue
-         background displaying "Welcome to Serix OS v0.0.5!" and system
-         information. Screenshot taken after graphics console initialization.
+graphics::fb_println!("Welcome to Serix OS v0.0.5!");
+graphics::fb_println!("Framebuffer: {}x{}", fb.width(), fb.height());
+graphics::fb_println!("Memory: {} MB usable", total_mb);
 
-Phase 10: VFS Initialization (35-40 ms)
-----------------------------------------
+```
+
+## Phase 10: VFS Initialization (35-40 ms)
 
 **Purpose**: Setup virtual filesystem with ramdisk
 
-**Operations**::
+**Operations**
 
-    vfs::init_ramdisk(&module_response);
+```
 
+vfs::init_ramdisk(&module_response);
+
+```
 **Steps**:
 
 1. Get module response from Limine
@@ -830,19 +802,20 @@ Phase 10: VFS Initialization (35-40 ms)
 
 **Result**: Files can be accessed through VFS
 
-Phase 11: Userspace Initialization (40-50 ms)
-----------------------------------------------
+
+## Phase 11: Userspace Initialization (40-50 ms)
 
 **Purpose**: Load and execute init binary
 
 Load Init Binary
-~~~~~~~~~~~~~~~~
+```~~~~~~~~~~~~~
 
-::
 
-    let init_binary = vfs::read_file("/init")
-        .expect("Failed to read init binary");
+```
 
+let init_binary = vfs::read_file("/init")
+
+```
 **Steps**:
 
 1. Read init binary from ramdisk
@@ -852,32 +825,29 @@ Load Init Binary
 5. Setup userspace stack
 
 Execute Init
-~~~~~~~~~~~~
+```~~~~~~~~~
 
-::
 
-    loader::exec_elf(&init_binary)
-        .expect("Failed to execute init");
+```
 
+loader::exec_elf(&init_binary)
+
+```
 **Result**: First userspace process running
 
-Serial output::
+Serial output
 
-    Init process started (PID 1)
-    Userspace initialized
+```
 
-.. asciinema:: init-execution.cast
-   :alt: Recording showing init binary being loaded and executed. Serial console
-         shows "Init process started (PID 1)" message, then init makes syscalls
-         (serix_write) to print "Hello from userspace!". Duration: ~5 seconds.
-         Commands: make run, wait for init to execute, observe output.
+Init process started (PID 1)
+Userspace initialized
+
+```
+
+## Subsystem Initialization
 
 
-Subsystem Initialization
-=========================
-
-Summary Table
--------------
+## Summary Table
 
 ===== ========== ======== ================ ================================
 Phase Subsystem  Duration Dependencies     Purpose
@@ -895,61 +865,49 @@ Phase Subsystem  Duration Dependencies     Purpose
 11    Userspace  40-50 ms VFS, Loader      Init process
 ===== ========== ======== ================ ================================
 
-Dependency Graph
-----------------
 
-::
+## Dependency Graph
 
-    Firmware
-        |
-        v
-    Limine
-        |
-        +----> Framebuffer Access --------+
-        |                                  |
-        +----> Memory Map                  |
-        |           |                      |
-        v           v                      |
-    HAL (Serial)    Page Tables            |
-        |               |                  |
-        v               v                  |
-    APIC            Heap <-----------------+
-        |               |
-        v               +----> VFS
-    IDT                 |        |
-        |               |        v
-        v               |     Loader
-    Timer               |        |
-                        |        v
-                        +----> Graphics
-                                 |
-                                 v
-                              Console
 
-Critical Path
--------------
+```
 
-The critical path (longest dependency chain) is::
+Firmware
+Limine
+ HAL (Serial)    Page Tables |
+APIC            Heap <-----------------+
+ IDT ||
+ Timer ||
 
-    Firmware -> Limine -> HAL -> APIC -> IDT -> Timer
+```
 
+## Critical Path
+
+The critical path (longest dependency chain) is
+
+```
+
+Firmware -> Limine -> HAL -> APIC -> IDT -> Timer
+
+```
 Total critical path duration: ~4 ms
 
 Parallel paths (Memory/Graphics/VFS) take longer but don't block interrupt setup.
 
 
-Boot Completion
-===============
 
-Main Loop Entry
----------------
+## Boot Completion
 
-After initialization completes, kernel enters idle loop::
 
-    loop {
-        hlt()
-    }
+## Main Loop Entry
 
+After initialization completes, kernel enters idle loop
+
+```
+
+loop {
+}
+
+```
 **Purpose**: Kernel idle loop
 
 **Behavior**:
@@ -962,19 +920,22 @@ After initialization completes, kernel enters idle loop::
 
 **CPU Usage**: <1% (only active during interrupts)
 
-Boot Success Indicators
------------------------
 
-Serial console output::
+## Boot Success Indicators
 
-    Serix Kernel v0.0.5 Starting...
-    Serial console initialized
-    Legacy PIC disabled
-    APIC enabled
-    Keyboard ready for input!
-    Init process started (PID 1)
-    Entering idle loop
+Serial console output
 
+```
+
+Serix Kernel v0.0.5 Starting...
+Serial console initialized
+Legacy PIC disabled
+APIC enabled
+Keyboard ready for input!
+Init process started (PID 1)
+Entering idle loop
+
+```
 Framebuffer display:
 
 - Blue screen background
@@ -987,99 +948,74 @@ Interrupt functionality:
 - Timer ticking (~625 Hz, visible in serial output if enabled)
 - Keyboard responding to input (characters appear on screen)
 
-.. asciinema:: keyboard-input.cast
-   :alt: Recording showing keyboard input working. User types "hello" and
-         characters appear both in serial console and on framebuffer console.
-         Duration: ~10 seconds. Commands: make run, wait for boot, type several
-         keys, observe echoed characters on both consoles.
+
+## Boot Diagnostics
 
 
-Boot Diagnostics
-================
-
-Early Boot Debugging
---------------------
+## Early Boot Debugging
 
 **Serial Output**: Primary diagnostic tool
 
 **Strategy**: Add serial_println! at each major step
 
-Example checkpoint pattern::
+Example checkpoint pattern
 
-    serial_println!("[CHECKPOINT] HAL init");
-    hal::init_serial();
-    serial_println!("[CHECKPOINT] APIC init");
-    apic::enable();
-    serial_println!("[CHECKPOINT] IDT init");
-    idt::init_idt();
+```
 
-Boot Stages Logging
--------------------
+serial_println!("[CHECKPOINT] HAL init");
+hal::init_serial();
+serial_println!("[CHECKPOINT] APIC init");
+apic::enable();
+serial_println!("[CHECKPOINT] IDT init");
+idt::init_idt();
 
-Enumeration for tracking boot progress::
+```
 
-    enum BootStage {
-        Firmware,
-        Bootloader,
-        KernelEntry,
-        HalInit,
-        ApicInit,
-        IdtInit,
-        TimerInit,
-        MemoryInit,
-        HeapInit,
-        GraphicsInit,
-        VfsInit,
-        UserspaceInit,
-        MainLoop,
-    }
-    
-    fn set_boot_stage(stage: BootStage) {
-        unsafe { BOOT_STAGE = stage; }
-        serial_println!("Boot stage: {:?}", stage);
-    }
+## Boot Stages Logging
 
-Checkpoint Macro
-----------------
+Enumeration for tracking boot progress
 
-Simple macro for progress tracking::
+```
 
-    macro_rules! checkpoint {
-        ($msg:expr) => {
-            serial_println!("[CHECKPOINT] {}", $msg);
-        };
-    }
-    
-    // Usage
-    checkpoint!("Serial initialized");
-    checkpoint!("APIC enabled");
-    checkpoint!("IDT loaded");
+enum BootStage {
+}
 
-Memory Map Dump
----------------
+fn set_boot_stage(stage: BootStage) {
+}
 
-Detailed memory map logging::
+```
 
-    fn dump_memory_map(entries: &[&Entry]) {
-        serial_println!("=== Memory Map ===");
-        for (i, entry) in entries.iter().enumerate() {
-            serial_println!(
-                "{}: {:#018x} - {:#018x} ({:#x} bytes) {:?}",
-                i,
-                entry.base,
-                entry.base + entry.length,
-                entry.length,
-                entry.entry_type
-            );
-        }
-    }
+## Checkpoint Macro
+
+Simple macro for progress tracking
+
+```
+
+macro_rules! checkpoint {
+}
+
+// Usage
+checkpoint!("Serial initialized");
+checkpoint!("APIC enabled");
+checkpoint!("IDT loaded");
+
+```
+
+## Memory Map Dump
+
+Detailed memory map logging
+
+```
+
+fn dump_memory_map(entries: &[&Entry]) {
+}
+
+```
+
+## Troubleshooting
 
 
-Troubleshooting
-===============
-
-No Serial Output
-----------------
+## No Serial Output
 
 **Symptoms**: Nothing on serial console
 
@@ -1089,16 +1025,21 @@ No Serial Output
 2. Wrong COM port configured
 3. Kernel not starting (bootloader failure)
 
-**Debug Steps**::
+**Debug Steps**
 
-    # QEMU with serial
-    qemu-system-x86_64 -serial stdio -cdrom serix.iso
-    
-    # Check bootloader messages
-    qemu-system-x86_64 -serial file:boot.log -cdrom serix.iso
+```
 
-Triple Fault / Reboot Loop
----------------------------
+## QEMU with serial
+
+qemu-system-x86_64 -serial stdio -cdrom serix.iso
+
+## Check bootloader messages
+
+qemu-system-x86_64 -serial file:boot.log -cdrom serix.iso
+
+```
+
+## Triple Fault / Reboot Loop
 
 **Symptoms**: System reboots immediately after kernel entry
 
@@ -1115,15 +1056,18 @@ Triple Fault / Reboot Loop
 2. Binary search: comment out later code until boot succeeds
 3. Check linker script (stack size, section alignment)
 
-**QEMU Debug Mode**::
+**QEMU Debug Mode**
 
-    qemu-system-x86_64 -d int,cpu_reset -no-reboot -cdrom serix.iso
+```
 
+qemu-system-x86_64 -d int,cpu_reset -no-reboot -cdrom serix.iso
+
+```
 This will dump interrupt/exception information and stop on triple fault instead
 of rebooting.
 
-Hang During Initialization
----------------------------
+
+## Hang During Initialization
 
 **Symptoms**: Boot stops at specific point, no further output
 
@@ -1140,22 +1084,23 @@ Hang During Initialization
 3. Check for infinite loops without timeout
 4. Verify hardware is available in QEMU
 
-Example timeout pattern::
+Example timeout pattern
 
-    // Bad: Can hang forever
-    while !serial_port_ready() {}
-    
-    // Good: Timeout
-    let mut timeout = 10000;
-    while !serial_port_ready() && timeout > 0 {
-        timeout -= 1;
-    }
-    if timeout == 0 {
-        serial_println!("ERROR: Serial port timeout");
-    }
+```
 
-No Framebuffer / Black Screen
-------------------------------
+// Bad: Can hang forever
+while !serial_port_ready() {}
+
+// Good: Timeout
+let mut timeout = 10000;
+while !serial_port_ready() && timeout > 0 {
+}
+if timeout == 0 {
+}
+
+```
+
+## No Framebuffer / Black Screen
 
 **Symptoms**: No visual output, but serial works
 
@@ -1166,28 +1111,27 @@ No Framebuffer / Black Screen
 3. Wrong pixel format
 4. QEMU graphics backend issue
 
-**Debug Code**::
+**Debug Code**
 
-    let fb_response = FRAMEBUFFER_REQ.get_response();
-    if fb_response.is_none() {
-        serial_println!("ERROR: No framebuffer response");
-        halt_loop();
-    }
-    
-    let fb = fb_response.unwrap().framebuffers().next();
-    if fb.is_none() {
-        serial_println!("ERROR: No framebuffer in response");
-        halt_loop();
-    }
-    
-    let fb = fb.unwrap();
-    serial_println!("Framebuffer: {:#x}", fb.addr());
-    serial_println!("  Size: {}x{}", fb.width(), fb.height());
-    serial_println!("  Pitch: {}", fb.pitch());
-    serial_println!("  BPP: {}", fb.bpp());
+```
 
-Interrupt Issues
-----------------
+let fb_response = FRAMEBUFFER_REQ.get_response();
+if fb_response.is_none() {
+}
+
+let fb = fb_response.unwrap().framebuffers().next();
+if fb.is_none() {
+}
+
+let fb = fb.unwrap();
+serial_println!("Framebuffer: {:#x}", fb.addr());
+serial_println!("  Size: {}x{}", fb.width(), fb.height());
+serial_println!("  Pitch: {}", fb.pitch());
+serial_println!("  BPP: {}", fb.bpp());
+
+```
+
+## Interrupt Issues
 
 **Symptoms**: Timer not ticking, keyboard not responding
 
@@ -1199,28 +1143,23 @@ Interrupt Issues
 4. IDT not loaded
 5. Missing EOI in handler
 
-**Debug Code**::
+**Debug Code**
 
-    // Check IF flag
-    let rflags: u64;
-    unsafe {
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
-    }
-    serial_println!("RFLAGS: {:#x} (IF={})", rflags, (rflags >> 9) & 1);
-    
-    // Check APIC enabled
-    let svr = unsafe { lapic_reg(0xF0).read_volatile() };
-    serial_println!("APIC SVR: {:#x} (enabled={})", svr, (svr >> 8) & 1);
+```
 
-.. asciinema:: interrupt-debugging.cast
-   :alt: Recording showing interrupt debugging process. Serial console output
-         displays RFLAGS register value, APIC SVR register, and I/O APIC
-         redirection entries. Shows timer interrupts incrementing tick counter.
-         Duration: ~15 seconds. Commands: Build kernel with debug output enabled,
-         make run, observe interrupt status messages.
+// Check IF flag
+let rflags: u64;
+unsafe {
+}
+serial_println!("RFLAGS: {:#x} (IF={})", rflags, (rflags >> 9) & 1);
 
-Page Fault During Boot
------------------------
+// Check APIC enabled
+let svr = unsafe { lapic_reg(0xF0).read_volatile() };
+serial_println!("APIC SVR: {:#x} (enabled={})", svr, (svr >> 8) & 1);
+
+```
+
+## Page Fault During Boot
 
 **Symptoms**: Page fault exception logged, system halts
 
@@ -1237,16 +1176,19 @@ Page Fault During Boot
 - Check RIP (instruction pointer where fault occurred)
 - Check error code (present, write, user flags)
 
-**Prevention**::
+**Prevention**
 
-    // Ensure heap initialized before use
-    init_heap(&mut mapper, &mut frame_alloc);
-    
-    // Now safe to allocate
-    let v = Vec::new();
+```
 
-Out of Memory
--------------
+// Ensure heap initialized before use
+init_heap(&mut mapper, &mut frame_alloc);
+
+// Now safe to allocate
+let v = Vec::new();
+
+```
+
+## Out of Memory
 
 **Symptoms**: Allocation returns null, system panics
 
@@ -1258,138 +1200,178 @@ Out of Memory
 
 **Solutions**:
 
-Increase heap size in ``memory/src/heap.rs``::
+Increase heap size in ``memory/src/heap.rs``
 
-    pub const HEAP_SIZE: usize = 4 * 1024 * 1024;  // 4 MB
+```
 
-Add heap statistics for debugging::
+pub const HEAP_SIZE: usize = 4 *1024* 1024;  // 4 MB
 
-    serial_println!("Heap: {} / {} bytes used", heap_used(), HEAP_SIZE);
+```
+Add heap statistics for debugging
 
+```
 
-Build and Run Commands
-=======================
+serial_println!("Heap: {} / {} bytes used", heap_used(), HEAP_SIZE);
 
-Building
---------
+```
 
-Build kernel binary::
-
-    cargo build --release --manifest-path kernel/Cargo.toml \
-        --target x86_64-unknown-none
-
-Build init userspace binary::
-
-    make init
-
-Create bootable ISO::
-
-    make iso
-
-Running
--------
-
-Run in QEMU with default settings::
-
-    make run
-
-Run with serial output to file::
-
-    qemu-system-x86_64 -serial file:serial.log -cdrom build/serix.iso
-
-Run with debugging::
-
-    qemu-system-x86_64 -serial stdio -d int,cpu_reset \
-        -no-reboot -cdrom build/serix.iso
-
-Run with GDB support::
-
-    qemu-system-x86_64 -serial stdio -s -S -cdrom build/serix.iso
-    
-    # In another terminal:
-    gdb target/x86_64-unknown-none/release/kernel
-    (gdb) target remote :1234
-    (gdb) break _start
-    (gdb) continue
-
-Cleaning
---------
-
-Clean build artifacts::
-
-    make clean
-    cargo clean
+## Build and Run Commands
 
 
-Appendix
-========
+## Building
 
-Boot Sequence Timing (QEMU)
-----------------------------
+Build kernel binary
 
-Typical timing on modern hardware::
+```
 
-    Time (ms)   Event
-    ─────────────────────────────────────────────────────────
-    0           Firmware POST begins
-    500-2000    Firmware POST completes, Limine Stage 1 loads
-    2000        Limine Stage 2 loads
-    2100        Kernel ELF loaded into memory
-    2200        Kernel entry (_start)
-    2201        Serial init
-    2202        APIC init
-    2203        IDT init
-    2204        Timer init
-    2205        Framebuffer access
-    2215        Memory map processed
-    2225        Page table init
-    2235        Heap init
-    2240        Graphics init
-    2245        VFS init
-    2250        Init binary loaded and executed
-    2252        Main loop entered
-    ─────────────────────────────────────────────────────────
-    Total: ~2.2 seconds (typical)
+cargo build --release --manifest-path kernel/Cargo.toml \
 
-ISO Structure
--------------
+```
+Build init userspace binary
 
-The bootable ISO has this structure::
+```
 
-    serix.iso/
-    ├── boot/
-    │   ├── serix-kernel          # Kernel ELF binary
-    │   └── init                  # Init userspace binary
-    ├── limine/
-    │   ├── limine-bios.sys       # BIOS bootloader
-    │   ├── limine-bios-cd.bin    # BIOS CD boot
-    │   └── limine-uefi-cd.bin    # UEFI CD boot
-    ├── EFI/
-    │   └── BOOT/
-    │       └── BOOTX64.EFI       # UEFI bootloader
-    └── limine.conf               # Boot configuration
+make init
 
-Limine Files
-------------
+```
+Create bootable ISO
 
-Bootloader components::
+```
 
-    limine/
-    ├── limine-bios.sys       # BIOS bootloader (loaded by Stage 1)
-    ├── limine-bios-cd.bin    # BIOS CD boot sector
-    ├── limine-uefi-cd.bin    # UEFI CD boot sector
-    └── BOOTX64.EFI           # UEFI bootloader application
+make iso
 
-QEMU Command Reference
------------------------
+```
 
-Common QEMU options for Serix::
+## Running
 
-    -m 4G                     # 4GB RAM
-    -serial stdio             # Serial output to terminal
-    -d int,cpu_reset          # Debug interrupts and CPU resets
-    -no-reboot                # Stop on triple fault instead of reboot
-    -s                        # GDB server on port 1234
-    -S                        # Start paused (wait for GDB)
-    -drive file=disk.img,...  # Attach disk image
-    -device virtio-blk-pci    # VirtIO block device
+Run in QEMU with default settings
+
+```
+
+make run
+
+```
+Run with serial output to file
+
+```
+
+qemu-system-x86_64 -serial file:serial.log -cdrom build/serix.iso
+
+```
+Run with debugging
+
+```
+
+qemu-system-x86_64 -serial stdio -d int,cpu_reset \
+
+```
+Run with GDB support
+
+```
+
+qemu-system-x86_64 -serial stdio -s -S -cdrom build/serix.iso
+
+## In another terminal:
+
+gdb target/x86_64-unknown-none/release/kernel
+(gdb) target remote :1234
+(gdb) break_start
+(gdb) continue
+
+```
+
+## Cleaning
+
+Clean build artifacts
+
+```
+
+make clean
+cargo clean
+
+```
+
+## Appendix
+
+
+## Boot Sequence Timing (QEMU)
+
+Typical timing on modern hardware
+
+```
+
+Time (ms)   Event
+─────────────────────────────────────────────────────────
+0           Firmware POST begins
+500-2000    Firmware POST completes, Limine Stage 1 loads
+2000        Limine Stage 2 loads
+2100        Kernel ELF loaded into memory
+2200        Kernel entry (_start)
+2201        Serial init
+2202        APIC init
+2203        IDT init
+2204        Timer init
+2205        Framebuffer access
+2215        Memory map processed
+2225        Page table init
+2235        Heap init
+2240        Graphics init
+2245        VFS init
+2250        Init binary loaded and executed
+2252        Main loop entered
+─────────────────────────────────────────────────────────
+Total: ~2.2 seconds (typical)
+
+```
+
+## ISO Structure
+
+The bootable ISO has this structure
+
+```
+
+serix.iso/
+├── boot/
+│   ├── serix-kernel          # Kernel ELF binary
+│   └── init                  # Init userspace binary
+├── limine/
+│   ├── limine-bios.sys       # BIOS bootloader
+│   ├── limine-bios-cd.bin    # BIOS CD boot
+│   └── limine-uefi-cd.bin    # UEFI CD boot
+├── EFI/
+│   └── BOOT/
+│       └── BOOTX64.EFI       # UEFI bootloader
+└── limine.conf               # Boot configuration
+
+```
+
+## Limine Files
+
+Bootloader components
+
+```
+
+limine/
+├── limine-bios.sys       # BIOS bootloader (loaded by Stage 1)
+├── limine-bios-cd.bin    # BIOS CD boot sector
+├── limine-uefi-cd.bin    # UEFI CD boot sector
+└── BOOTX64.EFI           # UEFI bootloader application
+
+```
+
+## QEMU Command Reference
+
+Common QEMU options for Serix
+
+```
+
+-m 4G                     # 4GB RAM
+-serial stdio             # Serial output to terminal
+-d int,cpu_reset          # Debug interrupts and CPU resets
+-no-reboot                # Stop on triple fault instead of reboot
+-s                        # GDB server on port 1234
+-S                        # Start paused (wait for GDB)
+-drive file=disk.img,...  # Attach disk image
+-device virtio-blk-pci    # VirtIO block device
+
+```

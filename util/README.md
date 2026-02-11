@@ -120,7 +120,7 @@ loop { hlt() }
 ### Panic vs Oops
 
 | Aspect | `panic!()` | `oops()` |
-|--------|-----------|----------|
+| -------- | ----------- | ---------- |
 | Origin | Rust runtime | Kernel-defined |
 | Use Case | Software bugs | Hardware/CPU exceptions |
 | Call Site | Explicit `panic!()` | Exception handlers |
@@ -338,7 +338,7 @@ pub fn validate_pointer<T>(ptr: *const T) -> Result<(), &'static str> {
 }
 
 // Usage
-validate_pointer(ptr).unwrap_or_else(|e| {
+ validate_pointer(ptr).unwrap_or_else( | e | { 
     oops(e);
 });
 ```
@@ -469,7 +469,7 @@ pub fn oops(msg: &str) {
 ### Halt vs Busy-Wait
 
 | Operation | CPU Usage | Power | Thermal | Responsiveness |
-|-----------|-----------|-------|---------|----------------|
+| ----------- | ----------- | ------- | --------- | ---------------- |
 | Busy-wait (`loop {}`) | 100% | High | High | Immediate |
 | Halt loop (`loop { hlt() }`) | <1% | Low | Low | ~1µs (interrupt latency) |
 
@@ -667,7 +667,7 @@ if let Err(_) = operation() {
 }
 
 // Do this (explicit handling):
-operation().unwrap_or_else(|e| {
+ operation().unwrap_or_else( | e | { 
     serial_println!("Operation failed: {:?}", e);
     oops("Unrecoverable error");
 });
