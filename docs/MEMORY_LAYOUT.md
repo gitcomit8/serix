@@ -118,7 +118,7 @@ Each userspace process has this address space layout
 
 Higher Half Direct Map (HHDM)
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Physical memory is mapped at fixed offset
 
@@ -136,7 +136,7 @@ Translation:
 **Usage**: Frame allocator, DMA buffers, device MMIO
 
 Kernel Heap
-```~~~~~~~~
+```
 
 Dynamic kernel memory allocation
 
@@ -157,7 +157,7 @@ Future expansion planned for:
 - Network buffers
 
 Kernel Image
-```~~~~~~~~~
+```
 
 Kernel ELF sections loaded by bootloader
 
@@ -367,7 +367,7 @@ Global TLB flush
 Physical memory is managed in 4 KiB frames. Two allocators are used:
 
 Boot Frame Allocator (Pre-Heap)
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Used during early boot before heap is initialized
 
@@ -385,7 +385,7 @@ Usage:
 
 Heap Frame Allocator (Post-Heap)
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Used after heap initialization (planned for v0.1.0)
 
@@ -404,7 +404,7 @@ Features:
 Kernel heap provides dynamic memory allocation:
 
 Current Allocator: linked_list_allocator
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -424,7 +424,7 @@ Usage:
 
 Planned Allocator: SLAB (v0.1.0)
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -466,7 +466,7 @@ fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr>
 ## Stack Allocation
 
 Kernel Stack
-```~~~~~~~~~
+```
 
 Each kernel task has its own kernel stack
 
@@ -484,7 +484,7 @@ Layout (grows downward):
 detects stack overflow and terminates task.
 
 Userspace Stack
-```~~~~~~~~~~~~
+```
 
 Each userspace thread has its own stack
 

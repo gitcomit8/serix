@@ -191,7 +191,7 @@ Graphics initialization occurs after heap setup
 
 struct Framebuffer
 
-```~~~~~~~~~~~~~~~
+```
 
 Provided by Limine bootloader protocol (limine crate)
 
@@ -216,7 +216,7 @@ Memory:     ~8.3 MB (1920 × 1080 × 4)
 ## Core Functions
 
 write_pixel()
-```~~~~~~~~~~
+```
 
 Write a single pixel to framebuffer
 
@@ -281,7 +281,7 @@ unsafe {
 
 ```
 fill_screen_blue()
-```~~~~~~~~~~~~~~~
+```
 
 Fill entire framebuffer with blue color
 
@@ -326,7 +326,7 @@ Optimization Note:
 
 draw_memory_map()
 
-```~~~~~~~~~~~~~~
+```
 
 Visualize physical memory map as colored bars
 
@@ -364,7 +364,7 @@ Bootloader Reclaimable Cyan  [0xFF, 0xFF, 0x00, 0x00]
 ## Coordinate Calculations
 
 Offset Calculation
-```~~~~~~~~~~~~~~~
+```
 
 Calculate byte offset for pixel at (x, y)
 
@@ -537,7 +537,7 @@ Architecture
 ## Data Structures
 
 struct FramebufferConsole
-```~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Console state and rendering context
 
@@ -578,7 +578,7 @@ Cursor Position:
 ## Initialization Functions
 
 FramebufferConsole::new()
-```~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Low-level constructor (prefer init_console for global instance)
 
@@ -608,7 +608,7 @@ Safety Requirements:
   - No concurrent writes to framebuffer allowed
 
 init_console()
-```~~~~~~~~~~~
+```
 
 Initialize global console singleton
 
@@ -646,7 +646,7 @@ fb_println!("Console initialized!");
 ## Character Output Functions
 
 put_char()
-```~~~~~~~
+```
 
 Write single character at cursor position
 
@@ -696,7 +696,7 @@ Unsupported Characters:
   Non-ASCII characters (> 127) are rendered as '?'
 
 write_string()
-```~~~~~~~~~~~
+```
 
 Write string to console
 
@@ -718,7 +718,7 @@ for c in s.chars() {
 
 ```
 write_fmt()
-```~~~~~~~~
+```
 
 Formatted output (core::fmt::Write trait)
 
@@ -741,7 +741,7 @@ Usage:
 ## Console Macros
 
 fb_print!
-```~~~~~~
+```
 
 Print without newline
 
@@ -759,7 +759,7 @@ fb_print!("{}", core_count);
 
 ```
 fb_println!
-```~~~~~~~~
+```
 
 Print with newline
 
@@ -1002,7 +1002,7 @@ Alternative Approaches (Not Implemented):
 ## Font Format
 
 FONT_8X16 Bitmap Font
-```~~~~~~~~~~~~~~~~~~
+```
 
 Static bitmap font data
 
@@ -1070,7 +1070,7 @@ let glyph = &FONT_8X16[char_index..char_index + 16];
 ## Pixel Format
 
 BGRA Format (Default)
-```~~~~~~~~~~~~~~~~~~
+```
 
 Most common framebuffer pixel format
 
@@ -1094,7 +1094,7 @@ Memory Layout
 
 ```
 RGB Format (Alternative)
-```~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Less common but supported by some framebuffers
 
@@ -1147,7 +1147,7 @@ Alpha Channel:
 ## Memory Type Configuration
 
 Write-Combining (WC)
-```~~~~~~~~~~~~~~~~~
+```
 
 Framebuffers typically use WC memory type for optimal performance
 
@@ -1163,7 +1163,7 @@ Use Case:          Graphics framebuffers
 
 ```
 Uncached (UC)
-```~~~~~~~~~~
+```
 
 Alternative (slower) memory type
 
@@ -1179,7 +1179,7 @@ Use Case:          Device registers, strict ordering required
 
 ```
 Cached (WB)
-```~~~~~~~~
+```
 
 NOT used for framebuffers
 
@@ -1208,7 +1208,7 @@ Framebuffer (UC)   ~100 MB/s         ~500 ns
 ## Optimization Techniques
 
 Write-Combining Efficiency
-```~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Efficient (sequential, batched)
 
@@ -1227,7 +1227,7 @@ for i in [0, 500, 100, 800, 50] {
 
 ```
 Memory Barriers
-```~~~~~~~~~~~~
+```
 
 Not Required on x86_64:
   - Strong memory ordering model
@@ -1425,7 +1425,7 @@ pub fn draw_line(
 ## Planned Features
 
 Color Support
-```~~~~~~~~~~
+```
 
 Text with color attributes
 
@@ -1439,7 +1439,7 @@ impl FramebufferConsole {
 
 ```
 Unicode Support
-```~~~~~~~~~~~~
+```
 
 Extended character set
 
@@ -1453,7 +1453,7 @@ const FONT_8X16_UNICODE: &[u8] = include_bytes!("unifont-8x16.bin");
 
 ```
 Graphical Primitives
-```~~~~~~~~~~~~~~~~~
+```
 
 Drawing library
 
@@ -1464,7 +1464,7 @@ pub mod draw {
 
 ```
 Double Buffering
-```~~~~~~~~~~~~~
+```
 
 Eliminate tearing
 
@@ -1478,7 +1478,7 @@ impl DoubleBuffer {
 
 ```
 Hardware Acceleration
-```~~~~~~~~~~~~~~~~~~
+```
 
 GPU-accelerated operations
 

@@ -112,7 +112,7 @@ Examples   Page fault, divide by zero           Timer, keyboard, disk I/O
 
 Entry Format
 
-```~~~~~~~~~
+```
 
 16 bytes per entry
 
@@ -120,7 +120,7 @@ Entry Format
 
 ```
 Gate Types
-```~~~~~~~
+```
 
 **Interrupt Gate (0xE)**:
   * Automatically disables interrupts (clears IF flag)
@@ -143,7 +143,7 @@ Implementation in idt/src/lib.rs
 
 ```
 IDTR Register
-```~~~~~~~~~~
+```
 
 **Format** (10 bytes)
 
@@ -170,14 +170,14 @@ IDTR Register
 
 Why Disable?
 
-```~~~~~~~~~
+```
 
   * APIC is superior (better multiprocessor support, more IRQs)
   * PIC conflicts with APIC if both active
   * PIC defaults to vectors 0-15 (overlaps CPU exceptions)
 
 Disable Procedure
-```~~~~~~~~~~~~~~
+```
 
 Implementation in apic/src/lib.rs
 
@@ -198,7 +198,7 @@ PIC Ports
 
 APIC Registers
 
-```~~~~~~~~~~~
+```
 
 ======  ==========  ================================
 Offset  Register    Purpose
@@ -218,7 +218,7 @@ Offset  Register    Purpose
 ======  ==========  ================================
 
 Enabling APIC
-```~~~~~~~~~~
+```
 
 Implementation in apic/src/lib.rs
 
@@ -226,7 +226,7 @@ Implementation in apic/src/lib.rs
 
 ```
 IA32_APIC_BASE MSR (0x1B)
-```~~~~~~~~~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -234,7 +234,7 @@ IA32_APIC_BASE MSR (0x1B)
 
 SVR Register (0xF0)
 
-```~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -246,7 +246,7 @@ SVR Register (0xF0)
 **MMIO Base**: 0xFEC00000 (256 bytes)
 
 I/O APIC Registers
-```~~~~~~~~~~~~~~~
+```
 
 ======  ========  =========================
 Offset  Register  Access
@@ -256,7 +256,7 @@ Offset  Register  Access
 ======  ========  =========================
 
 Indirect Access Model
-```~~~~~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -264,7 +264,7 @@ Indirect Access Model
 
 Redirection Table Registers
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Each IRQ has a 64-bit redirection entry (two 32-bit registers)
 
@@ -288,7 +288,7 @@ Destination       56-63   CPU ID            Target APIC ID
 ================  ======  ================  ======================================
 
 IRQ Routing
-```~~~~~~~~
+```
 
 Implementation in apic/src/ioapic.rs
 
@@ -299,12 +299,12 @@ Implementation in apic/src/ioapic.rs
 ## LAPIC Timer Configuration
 
 Purpose
-```~~~~
+```
 
 Periodic interrupts for scheduling and timekeeping.
 
 Configuration
-```~~~~~~~~~~
+```
 
 Implementation in apic/src/timer.rs
 
@@ -312,14 +312,14 @@ Implementation in apic/src/timer.rs
 
 ```
 LVT Timer Register (0x320)
-```~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
 
 ```
 Timer Frequency Calculation
-```~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 ```
 
@@ -342,14 +342,14 @@ Complete flow from hardware event to handler completion
 
 Same Privilege Level (ring 0 → ring 0)
 
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
 
 ```
 Privilege Change (ring 3 → ring 0)
-```~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 Kernel Stack
 
@@ -438,7 +438,7 @@ Implementation in idt/src/lib.rs
 
 ```
 Error Code Format
-```~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -533,7 +533,7 @@ LAPIC-generated interrupts
 ## EOI (End of Interrupt)
 
 Purpose
-```~~~~
+```
 
 Signals to APIC that interrupt has been serviced.
 
@@ -542,7 +542,7 @@ Signals to APIC that interrupt has been serviced.
 **Address**: 0xFEE000B0 (physical) = 0xFEE000B0 (direct mapped in Serix)
 
 Operation
-```~~~~~~
+```
 
 Implementation in apic/src/lib.rs
 
@@ -550,7 +550,7 @@ Implementation in apic/src/lib.rs
 
 ```
 Critical Requirements
-```~~~~~~~~~~~~~~~~~~
+```
 
   * Must be called at end of every interrupt handler
   * Failure to send EOI blocks future interrupts at same/lower priority
@@ -570,7 +570,7 @@ Latency breakdown
 
 ```
 Factors Affecting Latency
-```~~~~~~~~~~~~~~~~~~~~~~~
+```
 
   * Cache misses (IDT, handler code not in cache)
   * TLB misses (stack not in TLB)
@@ -582,7 +582,7 @@ Factors Affecting Latency
 ## Handler Optimization
 
 Keep Handlers Short
-```~~~~~~~~~~~~~~~~
+```
 
 Good: Minimal work in handler
 
@@ -595,7 +595,7 @@ Bad: Long operation in handler
 
 ```
 Defer Work
-```~~~~~~~
+```
 
 Use "top half / bottom half" pattern
 
@@ -606,12 +606,12 @@ Use "top half / bottom half" pattern
 ## Interrupt Prioritization
 
 Hardware Priority
-```~~~~~~~~~~~~~~
+```
 
 I/O APIC can route interrupts by priority.
 
 Software Priority
-```~~~~~~~~~~~~~~
+```
 
 LAPIC Task Priority Register (TPR)
 
@@ -631,7 +631,7 @@ interrupt acceptance and delivery.
 **Vector**: Typically 255 (0xFF), configured in SVR[0:7].
 
 Handler Implementation
-```~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
@@ -646,7 +646,7 @@ Handler Implementation
 ## Common Issues
 
 Interrupts Not Firing
-```~~~~~~~~~~~~~~~~~~~
+```
 
 **Symptoms**: No keyboard input, timer not ticking.
 
@@ -666,7 +666,7 @@ Debug Code
 
 ```
 Interrupt Storm
-```~~~~~~~~~~~~
+```
 
 **Symptoms**: System hangs, 100% CPU usage, no serial output.
 
@@ -683,7 +683,7 @@ Prevention
 
 ```
 Double/Triple Fault
-```~~~~~~~~~~~~~~~~
+```
 
 **Symptoms**: System reboots or hangs without output.
 
@@ -702,21 +702,21 @@ Double/Triple Fault
 ## Diagnostic Tools
 
 Interrupt Counters
-```~~~~~~~~~~~~~~~
+```
 
 
 ```
 
 ```
 APIC Register Dump
-```~~~~~~~~~~~~~~~
+```
 
 
 ```
 
 ```
 I/O APIC Redirection Dump
-```~~~~~~~~~~~~~~~~~~~~~~~
+```
 
 
 ```
