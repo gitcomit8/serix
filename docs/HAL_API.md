@@ -1,153 +1,152 @@
-# Hardware Abstraction Layer API Technical Specification
+================================================================================
+Serix Hardware Abstraction Layer (HAL) Documentation
+================================================================================
 
-**Document Version:** 2.0  
-**Last Updated:** 2025-10-13  
-**Target Architecture:** x86_64  
-**Module Path:** `hal/src/`
+:Author: Serix Kernel Team
+:Version: v0.0.5
+:Last Updated: 2025-01-XX
+:Architecture: x86_64
+:Module Path: hal/src/
 
-## Table of Contents
+.. Contents:
 
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [CPU Control Interface](#cpu-control-interface)
-4. [I/O Port Access](#io-port-access)
-5. [Serial Communication (COM Ports)](#serial-communication-com-ports)
-6. [Hardware Registers](#hardware-registers)
-7. [Platform Abstraction](#platform-abstraction)
-8. [Thread Safety and Synchronization](#thread-safety-and-synchronization)
-9. [Usage Examples](#usage-examples)
-10. [Future Extensions](#future-extensions)
-11. [Appendix](#appendix)
+   1. Introduction
+   2. Hardware Initialization
+   3. Serial Console Driver
+   4. CPU Control Interface  
+   5. I/O Port Operations
+   6. CPU Topology Detection
+   7. Debugging and Tracing
+   8. Future Work
 
----
 
-## Overview
+1. Introduction
+================================================================================
 
-The Serix Hardware Abstraction Layer (HAL) provides low-level interfaces to x86_64 hardware, isolating platform-specific code from higher kernel layers. The HAL exposes safe abstractions over CPU instructions, I/O ports, and serial communication while maintaining zero-cost performance characteristics.
+The Serix HAL provides low-level interfaces to x86_64 hardware, isolating 
+platform-specific code from kernel subsystems. This layer exposes safe Rust
+abstractions over CPU instructions, legacy I/O ports, and serial communication
+devices while maintaining zero-cost performance characteristics.
 
-### Design Philosophy
+1.1 Design Principles
+-----------------------------------------------------------
 
-1. **Zero-Cost Abstractions**: Inline assembly with no runtime overhead
-2. **Type-Safe Hardware Access**: Rust's type system prevents common hardware bugs
-3. **Minimal Unsafe Surface**: Unsafe operations isolated and clearly marked
-4. **Platform Independence**: Abstraction ready for future multi-architecture support
-5. **Direct Hardware Control**: No unnecessary indirection or buffering
+* Zero-Cost Abstractions - Inline assembly with no runtime overhead
+* Type-Safe Hardware Access - Rust's type system prevents hardware bugs  
+* Minimal Unsafe Surface - Unsafe operations clearly marked and isolated
+* Direct Hardware Control - No buffering or indirection layers
 
-### Key Features
+1.2 Current Features (v0.0.5)
+-----------------------------------------------------------
 
-- **CPU Control**: Interrupt management, halt instructions, processor identification
-- **I/O Port Access**: Low-level port I/O for device communication
-- **Serial Communication**: Full-featured COM1 UART driver with formatting support
-- **Thread-Safe Serial**: Global serial port protected by spinlocks
-- **Zero-Copy I/O**: Direct hardware access without intermediate buffers
+Serial Console (WORKING)::
 
-### Module Structure
+  - COM1 UART 16550 driver fully operational
+  - Debug output via serial_println! macro
+  - 115200 baud, 8N1 configuration
+  - Thread-safe global singleton with spinlock protection
 
-```
-hal/
-├── src/
-│   ├── lib.rs      // Module exports and re-exports
-│   ├── cpu.rs      // CPU control (halt, interrupts)
-│   ├── io.rs       // Port I/O primitives (inb, outb)
-│   └── serial.rs   // Serial port driver (UART 16550)
-├── Cargo.toml
-└── README.md
-```
+CPU Control (WORKING)::
 
-### Dependencies
+  - Interrupt enable/disable (CLI/STI instructions)
+  - Halt instruction (HLT) for idle loops
+  - Basic CPU feature detection via CPUID
 
-```toml
-[dependencies]
-x86_64 = "0.15.2"   # x86_64 architecture support (registers, instructions)
-spin = "0.10.0"     # Spinlock for thread-safe serial port
-```
+I/O Port Access (WORKING)::
 
----
+  - Low-level inb/outb primitives for legacy devices
+  - 16-bit port address space (0x0000-0xFFFF)
 
-## Architecture
+CPU Topology (BASIC)::
 
-### System Context
+  - Single-CPU detection
+  - Placeholder for multi-core enumeration
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                    Kernel Subsystems                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Memory    │  │     IDT     │  │    Task     │      │
-│  │  Manager    │  │  (Interrupts)│  │  Scheduler  │      │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │
-│         │                │                │              │
-│         │    ┌───────────┴────────────┐   │              │
-│         └────┤      HAL API           ├───┘              │
-│              │  (hal crate)           │                  │
-│              │                        │                  │
-│              │  ┌──────────────────┐  │                  │
-│              │  │  CPU Control     │  │                  │
-│              │  │  - halt()        │  │                  │
-│              │  │  - enable_irq()  │  │                  │
-│              │  │  - disable_irq() │  │                  │
-│              │  └──────────────────┘  │                  │
-│              │                        │                  │
-│              │  ┌──────────────────┐  │                  │
-│              │  │  I/O Ports       │  │                  │
-│              │  │  - inb()         │  │                  │
-│              │  │  - outb()        │  │                  │
-│              │  └──────────────────┘  │                  │
-│              │                        │                  │
-│              │  ┌──────────────────┐  │                  │
-│              │  │  Serial Driver   │  │                  │
-│              │  │  - SerialPort    │  │                  │
-│              │  │  - serial_print()│  │                  │
-│              │  └──────────────────┘  │                  │
-│              └────────┬───────────────┘                  │
-└───────────────────────┼──────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-┌──────────────┐ ┌─────────────┐ ┌──────────────┐
-│ CPU Hardware │ │  I/O Ports  │ │  UART 16550  │
-│   (x86_64)   │ │  (0x3F8,    │ │   (COM1)     │
-│              │ │   0x60, etc)│ │              │
-└──────────────┘ └─────────────┘ └──────────────┘
-```
+1.3 Module Organization
+-----------------------------------------------------------
 
-### Component Relationships
+::
 
-```
-┌──────────────────────────────────────────────────────┐
-│                 hal::lib (Re-exports)                │
-│  pub use io::{inb, outb};                            │
-│  pub use serial::{init_serial, serial_print};       │
-└────────────┬────────────────────────────────────────┘
-             │
-             ├─────────────────────────────────────┐
-             │                                     │
-    ┌────────▼─────────┐                 ┌────────▼─────────┐
-    │   cpu.rs         │                 │   serial.rs      │
-    │                  │                 │                  │
-    │  - halt()        │                 │  - SerialPort    │
-    │  - enable_irq()  │◄────depends on──┤  - init_serial() │
-    │  - disable_irq() │                 │  - serial_print()│
-    └──────────────────┘                 └────────┬─────────┘
-                                                   │
-                                          ┌────────▼─────────┐
-                                          │     io.rs        │
-                                          │                  │
-                                          │  - inb()         │
-                                          │  - outb()        │
-                                          └──────────────────┘
-```
+  hal/
+  ├── src/
+  │   ├── lib.rs          # Public API exports
+  │   ├── cpu.rs          # CPU control (halt, interrupts, CPUID)
+  │   ├── io.rs           # Port I/O (inb, outb)
+  │   ├── serial.rs       # UART 16550 serial driver
+  │   └── topology.rs     # CPU topology detection (stub)
+  ├── Cargo.toml
+  └── README.md
 
-### Data Flow
+Dependencies::
 
-#### Serial Output Path
+  [dependencies]
+  x86_64 = "0.15"      # Architecture primitives
+  spin = "0.10"        # Spinlock for serial port
 
-```
-serial_println!("Hello")
-    → serial::_serial_print(format_args!())
-    → SERIAL_PORT.get().lock()
-    → SerialPort::write_str()
-    → SerialPort::write_byte() for each byte
+
+
+2. Hardware Initialization
+================================================================================
+
+2.1 Boot Sequence
+-----------------------------------------------------------
+
+The HAL is initialized early during kernel boot, immediately after the Limine
+bootloader transfers control to the kernel entry point (_start). The following
+sequence must be strictly observed:
+
+1. Initialize serial console (hal::init_serial)
+2. Disable legacy PIC, enable APIC
+3. Load IDT with exception/interrupt handlers  
+4. Enable interrupts (STI instruction)
+5. Other subsystems may now use serial_println!
+
+Example initialization code::
+
+  // kernel/src/main.rs
+  pub extern "C" fn _start() -> ! {
+      // Step 1: Serial console (CRITICAL - enables debug output)
+      hal::init_serial();
+      serial_println!("[HAL] Serial console initialized at COM1 (0x3F8)");
+      
+      // Step 2: Disable PIC, enable APIC
+      apic::disable_pic();
+      apic::enable();
+      
+      // Step 3: Load IDT  
+      idt::init();
+      
+      // Step 4: Enable interrupts
+      x86_64::instructions::interrupts::enable();
+      serial_println!("[HAL] Interrupts enabled");
+      
+      // ... rest of kernel initialization ...
+  }
+
+.. warning::
+   Never use Vec, Box, String, or call serial_println! before init_serial().
+   Doing so will cause a page fault or triple fault.
+
+2.2 Early Boot Constraints
+-----------------------------------------------------------
+
+During early boot (before heap initialization), the following restrictions apply:
+
+* No dynamic allocations (Vec, Box, String, format!)
+* No serial_println! before init_serial()
+* Interrupts disabled until IDT loaded
+* Stack is limited (typically 64 KB from bootloader)
+
+The serial console is the ONLY output mechanism available during early boot.
+Framebuffer initialization happens much later, after memory management is ready.
+
+2.3 Asciinema Demo
+-----------------------------------------------------------
+
+.. asciinema:: recordings/hal-init-sequence.cast
+
+   Shows HAL initialization sequence with serial port setup and first debug
+   messages appearing on COM1. Demonstrates checkpoint logging during boot.
     → SerialPort::is_transmit_empty() (polling)
     → outb(COM1 + DATA_REG, byte)
     → I/O port write to 0x3F8
@@ -167,1305 +166,858 @@ disable_interrupts()
 
 ---
 
-## CPU Control Interface
 
-### Module: `hal::cpu`
 
-**Purpose**: Provides abstractions over CPU control instructions (halt, interrupt management).
-
-**Safety**: All functions are safe wrappers over unsafe assembly instructions.
+3. Serial Console Driver
+================================================================================
+
+The serial console is the primary debug interface during kernel boot and runtime.
+It provides reliable output before framebuffer initialization and persists even
+if graphics fail. All kernel boot messages, panics, and debug output route
+through COM1.
+
+3.1 Hardware: UART 16550
+-----------------------------------------------------------
+
+The 16550 Universal Asynchronous Receiver/Transmitter (UART) is a legacy serial
+controller present in all x86 systems (real hardware and QEMU/VirtualBox).
+
+Base Address (COM1)::
+
+  0x3F8  (I/O port space)
+
+Register Map (DLAB=0)::
+
+  Offset  | Name | Read             | Write            | Description
+  --------|------|------------------|------------------|---------------------------
+  +0      | RBR  | Receive Buffer   | Transmit Buffer  | Data register
+  +1      | IER  | Int Enable Reg   | Int Enable Reg   | RX/TX interrupt control
+  +2      | IIR  | Int ID Reg       | (write-only FCR) | FIFO control/status
+  +3      | LCR  | Line Control Reg | Line Control Reg | Word length, parity, DLAB
+  +4      | MCR  | Modem Control    | Modem Control    | DTR, RTS, loopback  
+  +5      | LSR  | Line Status Reg  | (read-only)      | TX empty, RX ready
+  +6      | MSR  | Modem Status Reg | (read-only)      | CTS, DSR, carrier detect
+  +7      | SCR  | Scratch Reg      | Scratch Reg      | Test register
+
+When DLAB=1 (Line Control Register bit 7 set)::
+
+  Offset +0 = Divisor Latch Low Byte  (baud rate LSB)
+  Offset +1 = Divisor Latch High Byte (baud rate MSB)
+
+3.2 Initialization Sequence
+-----------------------------------------------------------
+
+The serial port must be configured before any output is possible. This is done
+in hal::serial::SerialPort::new().
+
+Initialization Steps::
+
+  1. Disable all interrupts (IER = 0x00)
+  2. Enable DLAB (set LCR bit 7)
+  3. Set baud rate divisor:
+       Divisor = 115200 / desired_baud
+       For 115200 baud: divisor = 1
+       Write 0x01 to DLL (offset +0)
+       Write 0x00 to DLH (offset +1)
+  4. Configure line: 8N1, disable DLAB (LCR = 0x03)
+       Bits 0-1: 11 = 8 data bits
+       Bit 2:    0  = 1 stop bit
+       Bits 3-5: 000 = no parity
+       Bit 7:    0  = DLAB off (normal mode)
+  5. Enable FIFO with 14-byte threshold (FCR = 0xC7)
+       Bit 0:   1 = Enable FIFO
+       Bit 1:   1 = Clear RX FIFO
+       Bit 2:   1 = Clear TX FIFO  
+       Bits 6-7: 11 = 14-byte trigger level
+  6. Enable IRQ and set RTS/DSR (MCR = 0x0B)
+       Bit 0: 1 = DTR (Data Terminal Ready)
+       Bit 1: 1 = RTS (Request To Send)
+       Bit 3: 1 = OUT2 (enables IRQ line to APIC)
+
+Code example from hal/src/serial.rs::
+
+  impl SerialPort {
+      pub fn new() -> Self {
+          let base = COM1;  // 0x3F8
+          unsafe {
+              // Step 1: Disable interrupts
+              outb(base + 1, 0x00);
+              
+              // Step 2: Enable DLAB
+              outb(base + 3, 0x80);
+              
+              // Step 3: Set divisor = 1 (115200 baud)
+              outb(base + 0, 0x01);  // DLL
+              outb(base + 1, 0x00);  // DLH
+              
+              // Step 4: 8N1, disable DLAB
+              outb(base + 3, 0x03);
+              
+              // Step 5: Enable FIFO, clear, 14-byte threshold
+              outb(base + 2, 0xC7);
+              
+              // Step 6: Enable IRQ, RTS/DSR
+              outb(base + 4, 0x0B);
+          }
+          SerialPort { base }
+      }
+  }
+
+3.3 Transmitting Data
+-----------------------------------------------------------
+
+Transmission is polled (no interrupts used). Each byte is sent by:
+
+1. Wait for transmitter to be ready (poll LSR bit 5)
+2. Write byte to data register (offset +0)
+3. UART serializes byte and sends over TX line
+
+Line Status Register (LSR) Bit 5 - THRE::
+
+  Transmitter Holding Register Empty
+  1 = Ready to accept new byte
+  0 = Busy, previous byte still transmitting
+
+Typical transmission time::
+
+  At 115200 baud with 8N1 (10 bits per byte):
+  Time per byte = 10 / 115200 ≈ 87 microseconds
+
+Code::
+
+  pub fn write_byte(&self, byte: u8) {
+      // Poll until ready
+      while unsafe { inb(self.base + 5) } & 0x20 == 0 {
+          core::hint::spin_loop();  // Yield CPU
+      }
+      
+      // Write byte to TX buffer
+      unsafe {
+          outb(self.base + 0, byte);
+      }
+  }
+
+For strings::
 
----
-
-### Functions
-
-#### halt
-
-```rust
-#[inline(always)]
-pub fn halt()
-```
+  pub fn write_str(&self, s: &str) {
+      for byte in s.bytes() {
+          self.write_byte(byte);
+      }
+  }
 
-**Purpose**: Halts CPU until next interrupt (low-power idle state).
+3.4 Thread-Safe Global Serial Port
+-----------------------------------------------------------
 
-**Behavior**:
-- Executes `HLT` instruction
-- CPU enters low-power state
-- Resumes on next interrupt (timer, keyboard, etc.)
-- Returns after interrupt handler completes
+The kernel provides a global serial port protected by a spinlock. This allows
+safe concurrent access from interrupt handlers and kernel threads.
 
-**Power Characteristics**:
-- **Idle Power**: ~1-5% of active power
-- **Wake Latency**: ~1-10 µs (CPU-dependent)
-- **Suitable For**: Idle loops, wait states
+Global singleton::
+
+  static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
+  
+  pub fn init_serial() {
+      SERIAL_PORT.call_once(|| Mutex::new(SerialPort::new()));
+  }
 
-**Example Usage**:
-```rust
-use hal::cpu;
+Thread-safe print function::
+
+  pub fn _serial_print(args: fmt::Arguments) {
+      use core::fmt::Write;
+      
+      if let Some(serial) = SERIAL_PORT.get() {
+          let mut serial = serial.lock();
+          serial.write_fmt(args).unwrap();
+      }
+  }
+
+Convenience macros::
+
+  #[macro_export]
+  macro_rules! serial_print {
+      ($($arg:tt)*) => {
+          $crate::serial::_serial_print(format_args!($($arg)*));
+      };
+  }
+  
+  #[macro_export]
+  macro_rules! serial_println {
+      () => ($crate::serial_print!("\n"));
+      ($($arg:tt)*) => {
+          $crate::serial::_serial_print(
+              format_args!("{}\n", format_args!($($arg)*))
+          );
+      };
+  }
 
-// Idle loop (used after kernel tasks complete)
-loop {
-    cpu::halt();  // Sleep until interrupt
-    // Process interrupt, then halt again
-}
-```
+Usage::
 
-**Assembly**:
-```asm
-hlt
-```
+  serial_print!("CPU initialized");
+  serial_println!("Memory map has {} entries", count);
 
-**Interrupt Interaction**:
-- If interrupts disabled (`cli`), `HLT` waits forever (deadlock)
-- Always ensure interrupts enabled before halt loop
-- Non-maskable interrupts (NMI) still wake CPU
+3.5 Reading Serial Input (Future)
+-----------------------------------------------------------
 
-**Comparison to Spin Loop**:
-```rust
-// Bad: Burns 100% CPU
-loop {
-    core::hint::spin_loop();
-}
-
-// Good: Uses ~1% CPU
-loop {
-    hal::cpu::halt();
-}
-```
-
-**Thread Safety**: Safe to call from any context (atomic CPU instruction).
-
----
-
-#### enable_interrupts
-
-```rust
-#[inline(always)]
-pub fn enable_interrupts()
-```
-
-**Purpose**: Enables hardware interrupts by setting IF (Interrupt Flag) in RFLAGS.
-
-**Behavior**:
-- Executes `STI` instruction
-- Sets RFLAGS.IF = 1
-- CPU will process pending interrupts immediately
-- Future interrupts will be handled
+Currently, the serial driver is transmit-only. Receive functionality is planned
+for v0.1.0 and will use interrupts (IRQ 4 via APIC).
 
-**Example Usage**:
-```rust
-use hal::cpu;
+Planned RX interrupt handler::
 
-// During kernel initialization
-idt::init_idt();              // Set up IDT first
-cpu::enable_interrupts();     // Then enable interrupts
-```
-
-**Assembly**:
-```asm
-sti
-```
+  - Configure IER to enable RX interrupts (bit 0)
+  - Register IRQ 4 handler in IDT
+  - Handler reads RBR when data available (LSR bit 0 set)
+  - Data pushed to ring buffer for kernel debugger
 
-**Critical Sections**: Do not enable interrupts during critical sections:
-```rust
-// Bad: Race condition possible
-let mut data = SHARED_DATA.lock();
-cpu::enable_interrupts();   // Interrupt could occur here
-data.modify();
-
-// Good: Keep interrupts disabled
-let mut data = SHARED_DATA.lock();
-data.modify();
-drop(data);
-cpu::enable_interrupts();   // Enable after critical section
-```
-
-**Interrupt Latency**: Pending interrupts processed within 1-10 CPU cycles after `STI`.
-
-**Thread Safety**: Safe but must coordinate with lock acquisition.
+3.6 Debugging Serial Output
+-----------------------------------------------------------
 
----
+QEMU Configuration::
 
-#### disable_interrupts
+  make run uses: qemu-system-x86_64 ... -serial stdio
+  
+  This redirects COM1 to QEMU's standard output/input, allowing serial
+  messages to appear in the terminal where QEMU was launched.
 
-```rust
-#[inline(always)]
-pub fn disable_interrupts()
-```
-
-**Purpose**: Disables hardware interrupts by clearing IF (Interrupt Flag) in RFLAGS.
+VirtualBox Configuration::
 
-**Behavior**:
-- Executes `CLI` instruction
-- Clears RFLAGS.IF = 0
-- CPU ignores maskable interrupts
-- Non-maskable interrupts (NMI) still processed
+  VM Settings → Serial Ports → Port 1
+  ☑ Enable Serial Port
+  Port Number: COM1
+  Port Mode: Raw File
+  Path/Address: /path/to/serial.log
 
-**Example Usage**:
-```rust
-use hal::cpu;
+Real Hardware::
 
-// Protect critical section
-cpu::disable_interrupts();
-let mut data = SHARED_DATA.lock();
-data.modify();
-drop(data);
-cpu::enable_interrupts();
-```
+  Connect null modem cable to physical COM port
+  Use terminal program: minicom, screen, or PuTTY
+  Configuration: 115200 8N1, no flow control
 
-**Assembly**:
-```asm
-cli
-```
+.. asciinema:: recordings/serial-console-demo.cast
 
-**Preferred Pattern** (RAII-style):
-```rust
-use x86_64::instructions::interrupts;
+   Demonstration of serial output during Serix boot. Shows initialization
+   messages, memory map printing, and task scheduling debug output in real-time
+   as they are transmitted over COM1 at 115200 baud.
 
-// Automatically restores interrupt state
-interrupts::without_interrupts(|| {
-    // Critical section here
-    let mut data = SHARED_DATA.lock();
-    data.modify();
-}); // Interrupts restored here
-```
+3.7 Port I/O Implementation Details
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Deadlock Warning**: Never call `halt()` with interrupts disabled:
-```rust
-// Deadlock: CPU will never wake up
-cpu::disable_interrupts();
-cpu::halt();  // Waits forever
-```
+The serial driver uses hal::io::inb and hal::io::outb for register access.
+These are thin wrappers over x86 IN/OUT instructions.
 
-**Maximum Disabled Duration**: Keep interrupts disabled for <100 µs to avoid:
-- Timer drift
-- Input lag (keyboard, mouse)
-- Network packet loss
+Assembly for outb (write to I/O port)::
 
-**Thread Safety**: Safe to call, but caller must ensure system consistency.
+  pub unsafe fn outb(port: u16, value: u8) {
+      asm!(
+          "out dx, al",
+          in("dx") port,
+          in("al") value,
+          options(nostack, nomem)
+      );
+  }
 
----
+Assembly for inb (read from I/O port)::
 
-### Interrupt State Management
+  pub unsafe fn inb(port: u16) -> u8 {
+      let ret: u8;
+      asm!(
+          "in al, dx",
+          out("al") ret,
+          in("dx") port,
+          options(nostack, nomem)
+      );
+      ret
+  }
 
-#### Check Interrupt State
-
-```rust
-use x86_64::instructions::interrupts;
-
-if interrupts::are_enabled() {
-    println!("Interrupts enabled");
-} else {
-    println!("Interrupts disabled");
-}
-```
-
-#### Save and Restore
-
-```rust
-use x86_64::registers::rflags::{self, RFlags};
-
-// Save current state
-let flags = rflags::read();
-let interrupts_were_enabled = flags.contains(RFlags::INTERRUPT_FLAG);
-
-// ... modify interrupt state ...
+Why unsafe::
 
-// Restore
-if interrupts_were_enabled {
-    cpu::enable_interrupts();
-} else {
-    cpu::disable_interrupts();
-}
-```
+  - Direct hardware access
+  - Wrong port address can crash system
+  - Reading from write-only register causes undefined behavior
+  - Writing to read-only register may be ignored or cause fault
 
----
-
-## I/O Port Access
+I/O port address space::
 
-### Module: `hal::io`
-
-**Purpose**: Provides low-level x86 I/O port access via `IN` and `OUT` instructions.
-
-**Port Address Space**: 
-- 16-bit address space (0x0000 - 0xFFFF)
-- 65,536 possible ports
-- Legacy devices: 0x0000 - 0x03FF
-- Extended devices: 0x0400 - 0xFFFF
-
-**Safety**: All I/O operations are `unsafe` (direct hardware access).
-
----
-
-### Functions
-
-#### outb
-
-```rust
-#[inline]
-pub unsafe fn outb(port: u16, value: u8)
-```
-
-**Purpose**: Writes a byte to an I/O port.
-
-**Parameters**:
-- `port`: 16-bit port address (0x0000 - 0xFFFF)
-- `value`: 8-bit value to write
-
-**Safety Requirements**:
-- Port must correspond to writable hardware
-- Value must be valid for target device
-- Caller must ensure device is in correct state
-- No concurrent writes to same port
-
-**Assembly**:
-```asm
-out dx, al
-```
-**Operands**:
-- `dx`: Port number (16-bit)
-- `al`: Value to write (8-bit)
-
-**Performance**:
-- **Latency**: ~100-1000 CPU cycles (depends on device)
-- **Throughput**: ~1-10 MB/s (limited by ISA/LPC bus)
-- **Serializing**: I/O instructions serialize CPU pipeline
-
-**Example Usage**:
-```rust
-use hal::io::outb;
-
-const COM1_DATA: u16 = 0x3F8;
-
-unsafe {
-    outb(COM1_DATA, b'A');  // Write 'A' to serial port
-}
-```
-
-**Common Ports**:
-```rust
-const PIC1_COMMAND: u16 = 0x20;    // PIC Master Command
-const PIC1_DATA: u16    = 0x21;    // PIC Master Data
-const PIC2_COMMAND: u16 = 0xA0;    // PIC Slave Command
-const PIC2_DATA: u16    = 0xA1;    // PIC Slave Data
-const PS2_DATA: u16     = 0x60;    // PS/2 Controller Data
-const PS2_STATUS: u16   = 0x64;    // PS/2 Controller Status
-const COM1: u16         = 0x3F8;   // Serial Port 1
-const COM2: u16         = 0x2F8;   // Serial Port 2
-```
-
-**Device-Specific Considerations**:
-- Some devices require specific write sequences
-- Some ports are read-only or write-only
-- Some devices have side effects on write (e.g., clearing interrupt)
+  x86 has separate 16-bit I/O address space (0x0000 - 0xFFFF)
+  Distinct from memory address space
+  Accessed via IN/OUT instructions, not MOV
 
----
+Performance characteristics::
 
-#### inb
+  - Latency: 100-1000 CPU cycles per I/O operation
+  - I/O instructions serialize the CPU pipeline
+  - No caching (always hits actual hardware)
+  - Slower than MMIO on modern systems
 
-```rust
-#[inline]
-pub unsafe fn inb(port: u16) -> u8
-```
 
-**Purpose**: Reads a byte from an I/O port.
 
-**Parameters**:
-- `port`: 16-bit port address (0x0000 - 0xFFFF)
+4. CPU Control Interface
+================================================================================
 
-**Returns**: 8-bit value read from port.
+Module: hal::cpu
 
-**Safety Requirements**:
-- Port must correspond to readable hardware
-- Reading must not have unwanted side effects
-- Caller must ensure device is in correct state
-- No concurrent reads from same port (if device is stateful)
+Provides safe wrappers over x86_64 CPU control instructions (HLT, CLI, STI) and
+basic CPU feature detection via CPUID.
 
-**Assembly**:
-```asm
-in al, dx
-```
-**Operands**:
-- `al`: Value read (8-bit, output)
-- `dx`: Port number (16-bit)
+4.1 Halt Instruction
+-----------------------------------------------------------
 
-**Performance**:
-- **Latency**: ~100-1000 CPU cycles (depends on device)
-- **Throughput**: ~1-10 MB/s (limited by ISA/LPC bus)
-- **Serializing**: I/O instructions serialize CPU pipeline
+Function::
 
-**Example Usage**:
-```rust
-use hal::io::inb;
-
-const PS2_DATA: u16 = 0x60;
-
-unsafe {
-    let scancode = inb(PS2_DATA);  // Read keyboard scancode
-    println!("Scancode: {:#x}", scancode);
-}
-```
+  #[inline(always)]
+  pub fn halt()
 
-**Side Effects**: Some ports have side effects on read:
-- **0x60 (PS/2 Data)**: Clears keyboard buffer, acknowledges interrupt
-- **0x64 (PS/2 Status)**: No side effects (safe to poll)
-- **COM1+5 (Line Status)**: Clears overrun error flag on read
+Halts the CPU until the next interrupt arrives. The processor enters a low-power
+state (C1) and will wake on any interrupt, including timer, keyboard, or NMI.
 
-**Ordering**: Use `core::sync::atomic::compiler_fence()` if read order matters:
-```rust
-use core::sync::atomic::{compiler_fence, Ordering};
+Assembly::
 
-unsafe {
-    let status = inb(STATUS_PORT);
-    compiler_fence(Ordering::Acquire);  // Prevent reordering
-    let data = inb(DATA_PORT);
-}
-```
+  hlt
 
----
+Behavior::
 
-### Extended I/O Operations (Future)
+  - CPU enters low-power idle state (~1-5% of active power)
+  - Wakes on next interrupt (timer, keyboard, NMI, etc.)
+  - Returns after interrupt handler completes
+  - Wake latency: 1-10 microseconds (CPU-dependent)
 
-#### 16-bit I/O
+Usage in idle loop::
 
-```rust
-// Not yet implemented
-pub unsafe fn outw(port: u16, value: u16);
-pub unsafe fn inw(port: u16) -> u16;
-```
+  pub fn idle_loop() -> ! {
+      loop {
+          x86_64::instructions::interrupts::enable();
+          hal::cpu::halt();
+          // Interrupt occurred, process it, then loop again
+      }
+  }
 
-#### 32-bit I/O
+.. warning::
+   NEVER call halt() with interrupts disabled! The CPU will deadlock::
+
+     // DEADLOCK - CPU sleeps forever
+     x86_64::instructions::interrupts::disable();
+     hal::cpu::halt();
 
-```rust
-// Not yet implemented
-pub unsafe fn outl(port: u16, value: u32);
-pub unsafe fn inl(port: u16) -> u32;
-```
+   Non-maskable interrupts (NMI) can still wake the CPU, but this is not
+   reliable for normal operation.
 
-#### I/O Delay
+4.2 Interrupt Control
+-----------------------------------------------------------
 
-```rust
-// Port 0x80: Diagnostic port (1-4 µs delay per write)
-pub unsafe fn io_wait() {
-    outb(0x80, 0);
-}
-```
-
-**Use Case**: Delay between I/O operations for slow devices.
-
----
-
-## Serial Communication (COM Ports)
-
-### Module: `hal::serial`
-
-**Purpose**: Provides a full-featured UART 16550 driver for COM1 serial port.
-
-**Features**:
-- 115200 baud, 8N1 configuration
-- FIFO buffering (14-byte threshold)
-- Thread-safe global singleton
-- Rust formatting trait support
-- Macros for convenient output
-
----
-
-### Hardware: UART 16550
-
-**Register Map** (Base address: COM1 = 0x3F8):
-
-| Offset | DLAB=0 | DLAB=1 | Register Name | Description |
-|--------|--------|--------|---------------|-------------|
-| +0 | Data | DLL | Transmit/Receive Buffer | Data register (read: RX, write: TX) |
-| +1 | IER | DLH | Interrupt Enable | Enable interrupts for RX, TX, errors |
-| +2 | IIR | IIR | Interrupt Identification | Identify interrupt cause (read-only) |
-| +2 | FCR | FCR | FIFO Control | Enable FIFO, clear buffers, set threshold |
-| +3 | LCR | LCR | Line Control | Data bits, stop bits, parity, DLAB |
-| +4 | MCR | MCR | Modem Control | DTR, RTS, loopback mode |
-| +5 | LSR | LSR | Line Status | TX empty, RX ready, errors (read-only) |
-| +6 | MSR | MSR | Modem Status | CTS, DSR, carrier detect (read-only) |
-| +7 | SCR | SCR | Scratch | Scratch register (test read/write) |
-
-**DLAB**: Divisor Latch Access Bit (LCR bit 7) - switches register bank.
-
-**Configuration Constants**:
-```rust
-const COM1: u16 = 0x3F8;               // COM1 base address
-
-// Register offsets
-const DATA_REG: u16 = 0;               // Transmit/Receive
-const INT_EN_REG: u16 = 1;             // Interrupt Enable
-const FIFO_REG: u16 = 2;               // FIFO Control
-const LINE_CTRL_REG: u16 = 3;          // Line Control
-const MODEM_CTRL_REG: u16 = 4;         // Modem Control
-const LINE_STATUS_REG: u16 = 5;        // Line Status
-```
-
----
-
-### Data Structures
-
-#### SerialPort
-
-```rust
-pub struct SerialPort {
-    base: u16,  // Base I/O port address (COM1 = 0x3F8)
-}
-```
-
-**Purpose**: Represents a single serial port with associated I/O operations.
-
-**Thread Safety**: Not `Send` or `Sync` by itself (use `Mutex<SerialPort>` for sharing).
-
----
-
-### Construction and Initialization
-
-#### SerialPort::new
-
-```rust
-pub fn new() -> Self
-```
-
-**Purpose**: Creates and initializes a new COM1 serial port.
-
-**Configuration**:
-- **Baud Rate**: 115200 (divisor = 1)
-- **Data Bits**: 8
-- **Parity**: None
-- **Stop Bits**: 1
-- **Flow Control**: None (IRQ enabled for future use)
-- **FIFO**: Enabled, 14-byte threshold
-
-**Initialization Sequence**:
-```rust
-unsafe {
-    // 1. Disable interrupts
-    outb(base + INT_EN_REG, 0x00);
-    
-    // 2. Enable DLAB (set bit 7 of LCR)
-    outb(base + LINE_CTRL_REG, 0x80);
-    
-    // 3. Set divisor to 1 (115200 baud)
-    //    Divisor = 115200 / desired_baud
-    //    115200 / 115200 = 1
-    outb(base + DATA_REG, 0x01);       // Low byte
-    outb(base + INT_EN_REG, 0x00);     // High byte
-    
-    // 4. Configure line: 8N1, disable DLAB
-    //    LCR = 0b00000011
-    //    Bit 0-1: Word length (11 = 8 bits)
-    //    Bit 2:   Stop bits (0 = 1 stop bit)
-    //    Bit 3-5: Parity (000 = none)
-    //    Bit 7:   DLAB (0 = normal mode)
-    outb(base + LINE_CTRL_REG, 0x03);
-    
-    // 5. Enable FIFO, clear buffers, 14-byte threshold
-    //    FCR = 0b11000111
-    //    Bit 0:   Enable FIFO (1)
-    //    Bit 1:   Clear RX FIFO (1)
-    //    Bit 2:   Clear TX FIFO (1)
-    //    Bit 6-7: Interrupt threshold (11 = 14 bytes)
-    outb(base + FIFO_REG, 0xC7);
-    
-    // 6. Enable IRQ, RTS/DSR set
-    //    MCR = 0b00001011
-    //    Bit 0:   DTR (1)
-    //    Bit 1:   RTS (1)
-    //    Bit 3:   OUT2 (1, enables IRQ)
-    outb(base + MODEM_CTRL_REG, 0x0B);
-}
-```
-
-**Baud Rate Calculation**:
-```
-Divisor = 115200 / Desired_Baud_Rate
-
-Examples:
-  9600 baud:   divisor = 115200 / 9600   = 12 (0x000C)
-  19200 baud:  divisor = 115200 / 19200  = 6  (0x0006)
-  38400 baud:  divisor = 115200 / 38400  = 3  (0x0003)
-  57600 baud:  divisor = 115200 / 57600  = 2  (0x0002)
-  115200 baud: divisor = 115200 / 115200 = 1  (0x0001)
-```
-
-**Example Usage**:
-```rust
-let port = SerialPort::new();
-port.write_str("Hello, serial!\n");
-```
-
----
-
-#### init_serial (Global Initialization)
-
-```rust
-pub fn init_serial()
-```
-
-**Purpose**: Initializes the global serial port singleton.
-
-**Effect**: Creates `SerialPort` and stores in `SERIAL_PORT` static.
-
-**Thread Safety**: Uses `Once` for one-time initialization (idempotent).
-
-**Example Usage**:
-```rust
-// In kernel initialization:
-hal::init_serial();
-
-// Now can use serial_print!() macros:
-serial_println!("Serial initialized!");
-```
-
-**Implementation**:
-```rust
-static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
-
-pub fn init_serial() {
-    SERIAL_PORT.call_once(|| Mutex::new(SerialPort::new()));
-}
-```
-
----
-
-### Writing to Serial Port
-
-#### is_transmit_empty
-
-```rust
-fn is_transmit_empty(&self) -> bool
-```
-
-**Purpose**: Checks if UART transmit buffer is empty (ready for next byte).
-
-**Returns**: `true` if ready to transmit, `false` if busy.
-
-**Implementation**:
-```rust
-unsafe {
-    inb(self.base + LINE_STATUS_REG) & 0x20 != 0
-}
-```
-
-**Line Status Register (LSR) Bit 5**: Transmitter Holding Register Empty (THRE)
-- **1**: Transmitter ready for new byte
-- **0**: Transmitter busy, previous byte still being sent
-
-**Polling Loop**:
-```rust
-while !self.is_transmit_empty() {
-    core::hint::spin_loop();  // Yield to CPU for efficiency
-}
-```
-
-**Typical Wait Time**: 87 µs per byte at 115200 baud (8N1 = 10 bits per byte).
-
----
-
-#### write_byte
-
-```rust
-pub fn write_byte(&self, byte: u8)
-```
-
-**Purpose**: Writes a single byte to serial port (blocking).
-
-**Parameters**:
-- `byte`: 8-bit value to transmit
-
-**Behavior**:
-1. Polls `is_transmit_empty()` until ready
-2. Writes byte to data register
-3. Returns immediately (transmission continues in background)
-
-**Blocking**: Waits up to ~87 µs per byte.
-
-**Example Usage**:
-```rust
-let port = SerialPort::new();
-port.write_byte(b'A');
-port.write_byte(b'\n');
-```
-
-**Implementation**:
-```rust
-pub fn write_byte(&self, byte: u8) {
-    while !self.is_transmit_empty() {
-        core::hint::spin_loop();
-    }
-    
-    unsafe {
-        outb(self.base + DATA_REG, byte);
-    }
-}
-```
-
----
-
-#### write_str
-
-```rust
-pub fn write_str(&self, s: &str)
-```
-
-**Purpose**: Writes a string to serial port byte-by-byte.
-
-**Parameters**:
-- `s`: String slice to transmit
-
-**Behavior**: Iterates over bytes, calling `write_byte()` for each.
-
-**Performance**: ~87 µs per character at 115200 baud.
-
-**Example Usage**:
-```rust
-let port = SerialPort::new();
-port.write_str("Hello, world!\n");
-```
-
-**Implementation**:
-```rust
-pub fn write_str(&self, s: &str) {
-    for byte in s.bytes() {
-        self.write_byte(byte);
-    }
-}
-```
-
----
-
-### Global Serial Access
-
-#### serial_print (Function)
-
-```rust
-pub fn serial_print(s: &str)
-```
-
-**Purpose**: Writes string to global serial port (thread-safe).
-
-**Parameters**:
-- `s`: String slice to transmit
-
-**Thread Safety**: Locks `SERIAL_PORT` mutex, safe to call from multiple contexts.
-
-**Example Usage**:
-```rust
-use hal::serial_print;
-
-serial_print("Debug: ");
-serial_print("Value = 42\n");
-```
-
-**Implementation**:
-```rust
-pub fn serial_print(s: &str) {
-    if let Some(serial) = SERIAL_PORT.get() {
-        let port = serial.lock();
-        port.write_str(s);
-    }
-}
-```
-
----
-
-### Macros
-
-#### serial_print!
-
-```rust
-#[macro_export]
-macro_rules! serial_print {
-    ($($arg:tt)*) => {
-        $crate::serial::_serial_print(format_args!($($arg)*))
-    };
-}
-```
-
-**Purpose**: Prints formatted text to serial port (analogous to `print!`).
-
-**Usage**:
-```rust
-serial_print!("Hello");
-serial_print!("Value: {}", 42);
-serial_print!("Hex: {:#x}", 0xDEADBEEF);
-```
-
-**Formatting**: Supports all standard Rust format specifiers.
-
----
-
-#### serial_println!
-
-```rust
-#[macro_export]
-macro_rules! serial_println {
-    () => {
-        $crate::serial_print!("\n")
-    };
-    ($($arg:tt)*) => {
-        $crate::serial_print!("{}\n", format_args!($($arg)*))
-    };
-}
-```
-
-**Purpose**: Prints formatted text with newline to serial port (analogous to `println!`).
-
-**Usage**:
-```rust
-serial_println!();                       // Just newline
-serial_println!("Hello, world!");        // String + newline
-serial_println!("Value: {}", 42);        // Formatted + newline
-```
-
----
-
-### Formatting Support
-
-#### _serial_print (Internal)
-
-```rust
-pub fn _serial_print(args: core::fmt::Arguments)
-```
-
-**Purpose**: Internal function for macro expansion (handles formatting).
-
-**Parameters**:
-- `args`: Format arguments from `format_args!()` macro
-
-**Implementation**:
-```rust
-pub fn _serial_print(args: core::fmt::Arguments) {
-    use core::fmt::Write;
-    
-    struct SerialWriter;
-    
-    impl Write for SerialWriter {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            serial_print(s);
-            Ok(())
-        }
-    }
-    
-    SerialWriter.write_fmt(args).ok();
-}
-```
+Enable Interrupts (STI)::
 
-**Integration**: Enables use of Rust's standard formatting infrastructure.
+  #[inline(always)]  
+  pub fn enable_interrupts()
+  
+  Sets RFLAGS.IF = 1
+  Assembly: sti
+  Effect: CPU processes pending and future hardware interrupts
 
----
+Disable Interrupts (CLI)::
 
-## Hardware Registers
+  #[inline(always)]
+  pub fn disable_interrupts()
+  
+  Clears RFLAGS.IF = 0
+  Assembly: cli  
+  Effect: CPU ignores maskable interrupts (NMI still processed)
 
-### x86_64 Registers
+Critical Section Pattern::
 
-#### Control Registers
+  // RAII-style (recommended)
+  use x86_64::instructions::interrupts;
+  
+  interrupts::without_interrupts(|| {
+      // Interrupts disabled here
+      let mut data = SHARED_DATA.lock();
+      data.modify();
+      // Interrupts re-enabled automatically on scope exit
+  });
 
-**CR0** - Control Register 0:
-```rust
-use x86_64::registers::control::Cr0;
+Manual control (less safe)::
 
-let cr0 = Cr0::read();
-println!("Paging enabled: {}", cr0.contains(Cr0Flags::PAGING));
-```
+  hal::cpu::disable_interrupts();
+  // Critical section - keep short (<100 microseconds)
+  let mut data = SHARED_DATA.lock();
+  data.modify();
+  drop(data);
+  hal::cpu::enable_interrupts();
 
-**CR2** - Page Fault Linear Address:
-```rust
-use x86_64::registers::control::Cr2;
+Interrupt State Query::
 
-let faulting_address = Cr2::read();
-println!("Page fault at: {:#x}", faulting_address.as_u64());
-```
+  use x86_64::instructions::interrupts;
+  
+  if interrupts::are_enabled() {
+      serial_println!("Interrupts enabled");
+  }
 
-**CR3** - Page Table Base:
-```rust
-use x86_64::registers::control::Cr3;
+Maximum Interrupt-Disabled Duration::
 
-let (pml4_frame, flags) = Cr3::read();
-println!("PML4 at: {:#x}", pml4_frame.start_address().as_u64());
-```
+  Keep interrupts disabled for <100 microseconds to avoid:
+  - Timer drift (LAPIC timer ticks missed)
+  - Input device buffer overflow (keyboard, mouse)
+  - Network packet loss
+  - Real-time deadline violations
 
-**CR4** - Control Register 4:
-```rust
-use x86_64::registers::control::Cr4;
-
-let cr4 = Cr4::read();
-println!("PAE enabled: {}", cr4.contains(Cr4Flags::PHYSICAL_ADDRESS_EXTENSION));
-```
-
----
-
-#### Model-Specific Registers (MSRs)
-
-**APIC Base**:
-```rust
-use x86_64::registers::model_specific::Msr;
-
-const IA32_APIC_BASE: u32 = 0x1B;
+4.3 CPU Identification (CPUID)
+-----------------------------------------------------------
 
-unsafe {
-    let mut apic_base_msr = Msr::new(IA32_APIC_BASE);
-    let apic_base = apic_base_msr.read();
-    println!("APIC base: {:#x}", apic_base);
-}
-```
+The CPUID instruction provides CPU vendor, model, and feature information.
 
-**EFER** (Extended Feature Enable Register):
-```rust
-use x86_64::registers::model_specific::Efer;
+Basic usage from x86_64 crate::
 
-let efer = Efer::read();
-println!("NX enabled: {}", efer.contains(EferFlags::NO_EXECUTE_ENABLE));
-```
+  use x86_64::registers::model_specific::Msr;
+  use core::arch::x86_64::__cpuid;
+  
+  // Get vendor string
+  let vendor = unsafe { __cpuid(0) };
+  let vendor_str = [
+      vendor.ebx.to_le_bytes(),
+      vendor.edx.to_le_bytes(),
+      vendor.ecx.to_le_bytes(),
+  ].concat();  // e.g., "GenuineIntel" or "AuthenticAMD"
+  
+  // Get features (leaf 1)
+  let features = unsafe { __cpuid(1) };
+  let has_apic = features.edx & (1 << 9) != 0;
+  let has_x2apic = features.ecx & (1 << 21) != 0;
 
----
-
-#### Segment Registers
+Feature flags (CPUID leaf 1, EDX)::
 
-**CS** (Code Segment):
-```rust
-use x86_64::instructions::segmentation::{Segment, CS};
+  Bit 0:  FPU   - x87 FPU on-chip
+  Bit 4:  TSC   - Time Stamp Counter (RDTSC instruction)
+  Bit 5:  MSR   - Model-Specific Registers (RDMSR/WRMSR)
+  Bit 6:  PAE   - Physical Address Extension
+  Bit 9:  APIC  - On-chip APIC
+  Bit 11: SEP   - SYSENTER/SYSEXIT instructions
+  Bit 23: MMX   - MMX technology
+  Bit 25: SSE   - SSE extensions
+  Bit 26: SSE2  - SSE2 extensions
 
-let cs = CS::get_reg();
-println!("CS selector: {:#x}", cs.0);
-```
+HAL CPU topology module (hal/src/topology.rs) uses CPUID to enumerate cores,
+but this is currently a stub returning 1 CPU.
 
-**SS** (Stack Segment):
-```rust
-use x86_64::instructions::segmentation::{Segment, SS};
 
-let ss = SS::get_reg();
-println!("SS selector: {:#x}", ss.0);
-```
+5. I/O Port Operations
+================================================================================
 
----
+Module: hal::io
 
-#### RFLAGS
+Low-level x86 I/O port access via IN and OUT instructions. The x86 architecture
+has a separate 16-bit I/O address space (65,536 ports) distinct from memory.
 
-```rust
-use x86_64::registers::rflags::{self, RFlags};
-
-let flags = rflags::read();
+5.1 Port Address Space
+-----------------------------------------------------------
 
-if flags.contains(RFlags::INTERRUPT_FLAG) {
-    println!("Interrupts enabled");
-}
+Address Range::
 
-if flags.contains(RFlags::CARRY_FLAG) {
-    println!("Carry flag set");
-}
-```
+  0x0000 - 0xFFFF  (65,536 ports)
 
----
+Common Port Ranges::
 
-## Platform Abstraction
+  0x0000 - 0x001F   DMA controller
+  0x0020 - 0x003F   Programmable Interrupt Controller (PIC)
+  0x0040 - 0x005F   Programmable Interval Timer (PIT)
+  0x0060 - 0x006F   PS/2 keyboard and mouse  
+  0x0070 - 0x007F   CMOS/RTC
+  0x00F0 - 0x00FF   Math coprocessor
+  0x0170 - 0x017F   Secondary IDE controller
+  0x01F0 - 0x01FF   Primary IDE controller
+  0x0278 - 0x027F   Parallel port (LPT2)
+  0x02F8 - 0x02FF   Serial port (COM2)
+  0x0378 - 0x037F   Parallel port (LPT1)
+  0x03B0 - 0x03DF   VGA controller
+  0x03F0 - 0x03F7   Floppy disk controller
+  0x03F8 - 0x03FF   Serial port (COM1)
+  0x0CF8 - 0x0CFF   PCI configuration space
 
-### Multi-Architecture Support (Future)
+5.2 Output to Port (outb)
+-----------------------------------------------------------
 
-**Goal**: Abstract HAL for ARM64, RISC-V, etc.
+Function::
 
-**Trait-Based Approach**:
-```rust
-pub trait CpuControl {
-    fn halt();
-    fn enable_interrupts();
-    fn disable_interrupts();
-}
+  #[inline]
+  pub unsafe fn outb(port: u16, value: u8)
 
-pub trait IoAccess {
-    unsafe fn read_port_u8(port: u16) -> u8;
-    unsafe fn write_port_u8(port: u16, value: u8);
-}
+Writes an 8-bit value to the specified I/O port.
 
-pub trait SerialDriver {
-    fn init() -> Self;
-    fn write_byte(&self, byte: u8);
-    fn write_str(&self, s: &str);
-}
-```
+Parameters::
 
-**Platform Selection** (compile-time):
-```rust
-#[cfg(target_arch = "x86_64")]
-mod arch {
-    pub use crate::x86_64::*;
-}
+  port:  16-bit port address (0x0000 - 0xFFFF)
+  value: 8-bit value to write
 
-#[cfg(target_arch = "aarch64")]
-mod arch {
-    pub use crate::aarch64::*;
-}
+Assembly::
 
-pub use arch::*;
-```
+  out dx, al
+  
+  dx = port address (16-bit)
+  al = value to write (8-bit)
 
----
+Example - Write to serial port::
 
-## Thread Safety and Synchronization
+  use hal::io::outb;
+  
+  const COM1_DATA: u16 = 0x3F8;
+  unsafe {
+      outb(COM1_DATA, b'A');
+  }
 
-### Serial Port Locking
+Example - Disable PIC::
 
-**Global Serial Port**:
-```rust
-static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
-```
+  const PIC1_DATA: u16 = 0x21;
+  const PIC2_DATA: u16 = 0xA1;
+  
+  unsafe {
+      outb(PIC1_DATA, 0xFF);  // Mask all IRQs on master PIC
+      outb(PIC2_DATA, 0xFF);  // Mask all IRQs on slave PIC
+  }
 
-**Lock Characteristics**:
-- **Type**: `spin::Mutex` (spinlock)
-- **Overhead**: ~50-200 cycles per lock/unlock
-- **Fairness**: Not guaranteed (FIFO not enforced)
-- **Deadlock**: Possible if lock held during interrupt
+Safety Requirements::
 
-**Safe Usage Pattern**:
-```rust
-use x86_64::instructions::interrupts;
+  - Port must correspond to writable hardware
+  - Value must be valid for target device register
+  - Caller must ensure device is in correct state for write
+  - No concurrent access to stateful devices
 
-interrupts::without_interrupts(|| {
-    serial_println!("Critical message");
-});
-```
+5.3 Input from Port (inb)
+-----------------------------------------------------------
 
----
+Function::
 
-### Interrupt-Safe Logging
+  #[inline]
+  pub unsafe fn inb(port: u16) -> u8
 
-**Problem**: Deadlock if interrupt handler tries to print while main code holds serial lock.
+Reads an 8-bit value from the specified I/O port.
 
-**Solution**: Disable interrupts during serial operations.
+Parameters::
 
-**Future Enhancement**:
-```rust
-#[macro_export]
-macro_rules! serial_println {
-    ($($arg:tt)*) => {{
-        ::x86_64::instructions::interrupts::without_interrupts(|| {
-            // Serial print here
-        });
-    }};
-}
-```
+  port: 16-bit port address (0x0000 - 0xFFFF)
 
----
+Returns::
 
-## Usage Examples
+  8-bit value read from port
 
-### Basic Serial Output
+Assembly::
 
-```rust
-use hal::{init_serial, serial_println};
+  in al, dx
+  
+  al = value read (8-bit, output)
+  dx = port address (16-bit, input)
 
-// Initialize once during boot
-init_serial();
+Example - Read serial port status::
 
-// Use anywhere
-serial_println!("Kernel booting...");
-serial_println!("Memory: {} MB", memory_size / 1024 / 1024);
+  use hal::io::inb;
+  
+  const COM1_LSR: u16 = 0x3FD;  // Line Status Register
+  let status = unsafe { inb(COM1_LSR) };
+  
+  if status & 0x20 != 0 {
+      serial_println!("Transmitter ready");
+  }
 
-for i in 0..10 {
-    serial_println!("Loop iteration: {}", i);
-}
-```
-
----
-
-### Custom Serial Port
-
-```rust
-use hal::serial::SerialPort;
-use hal::io::{inb, outb};
+Example - Poll keyboard controller::
 
-// Initialize COM2 instead of COM1
-const COM2: u16 = 0x2F8;
-
-let mut port = SerialPort::new();  // COM1
-port.write_str("Hello from COM1\n");
-
-// Manual COM2 initialization (similar to COM1)
-// ... (omitted for brevity)
-```
-
----
-
-### Low-Level Device Access
-
-```rust
-use hal::io::{inb, outb};
-
-const PIC1_COMMAND: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-
-unsafe {
-    // Remap PIC1 to IRQ 32-39
-    outb(PIC1_COMMAND, 0x11);  // Initialize command
-    outb(PIC1_DATA, 32);        // Vector offset
-    outb(PIC1_DATA, 0x04);      // Cascade to PIC2
-    outb(PIC1_DATA, 0x01);      // 8086 mode
-    
-    // Mask all interrupts
-    outb(PIC1_DATA, 0xFF);
-}
-```
-
----
-
-### Halt Loop
-
-```rust
-use hal::cpu;
-
-pub fn idle_loop() -> ! {
-    loop {
-        // Enable interrupts and halt (wakes on interrupt)
-        cpu::enable_interrupts();
-        cpu::halt();
-        
-        // Process interrupt, then halt again
-    }
-}
-```
-
----
-
-## Future Extensions
-
-### Planned Features
-
-#### 1. DMA Support
-
-```rust
-pub mod dma {
-    pub struct DmaChannel {
-        channel: u8,
-    }
-    
-    impl DmaChannel {
-        pub fn new(channel: u8) -> Self;
-        pub fn setup_transfer(&self, src: PhysAddr, dst: PhysAddr, count: usize);
-        pub fn start(&self);
-        pub fn is_complete(&self) -> bool;
-    }
-}
-```
-
----
-
-#### 2. PCI Configuration Space
-
-```rust
-pub mod pci {
-    pub fn read_config_u32(bus: u8, device: u8, function: u8, offset: u8) -> u32;
-    pub fn write_config_u32(bus: u8, device: u8, function: u8, offset: u8, value: u32);
-    
-    pub struct PciDevice {
-        pub bus: u8,
-        pub device: u8,
-        pub function: u8,
-        pub vendor_id: u16,
-        pub device_id: u16,
-    }
-    
-    pub fn enumerate_devices() -> Vec<PciDevice>;
-}
-```
-
----
-
-#### 3. ACPI Tables
-
-```rust
-pub mod acpi {
-    pub struct AcpiTables {
-        rsdp: PhysAddr,
-    }
-    
-    impl AcpiTables {
-        pub unsafe fn from_rsdp(rsdp: PhysAddr) -> Self;
-        pub fn find_table(&self, signature: &[u8; 4]) -> Option<PhysAddr>;
-    }
-}
-```
-
----
-
-#### 4. SMP Support
-
-```rust
-pub mod smp {
-    pub fn cpu_count() -> usize;
-    pub fn current_cpu_id() -> usize;
-    pub fn start_ap(apic_id: u8, entry_point: extern "C" fn() -> !);
-}
-```
-
----
-
-#### 5. Performance Counters
-
-```rust
-pub mod perf {
-    pub fn read_tsc() -> u64;  // Time Stamp Counter
-    pub fn read_pmc(index: u32) -> u64;  // Performance Monitoring Counter
-    
-    pub struct PerfCounter {
-        index: u32,
-    }
-    
-    impl PerfCounter {
-        pub fn start(&mut self);
-        pub fn stop(&mut self) -> u64;
-    }
-}
-```
-
----
-
-## Appendix
-
-### Complete API Reference
-
-#### CPU Control
-
-```rust
-pub mod cpu {
-    pub fn halt();
-    pub fn enable_interrupts();
-    pub fn disable_interrupts();
-}
-```
-
----
-
-#### I/O Ports
-
-```rust
-pub mod io {
-    pub unsafe fn inb(port: u16) -> u8;
-    pub unsafe fn outb(port: u16, value: u8);
-}
-```
-
----
-
-#### Serial Driver
-
-```rust
-pub mod serial {
-    pub struct SerialPort {
-        base: u16,
-    }
-    
-    impl SerialPort {
-        pub fn new() -> Self;
-        pub fn write_byte(&self, byte: u8);
-        pub fn write_str(&self, s: &str);
-    }
-    
-    pub fn init_serial();
-    pub fn serial_print(s: &str);
-    pub fn _serial_print(args: core::fmt::Arguments);
-}
-```
-
----
-
-#### Macros
-
-```rust
-serial_print!($($arg:tt)*);
-serial_println!();
-serial_println!($($arg:tt)*);
-```
-
----
-
-### Configuration Constants
-
-```rust
-// Serial Port Addresses
-pub const COM1: u16 = 0x3F8;
-pub const COM2: u16 = 0x2F8;
-pub const COM3: u16 = 0x3E8;
-pub const COM4: u16 = 0x2E8;
-
-// Serial Port Registers (offsets from base)
-pub const DATA_REG: u16 = 0;
-pub const INT_EN_REG: u16 = 1;
-pub const FIFO_REG: u16 = 2;
-pub const LINE_CTRL_REG: u16 = 3;
-pub const MODEM_CTRL_REG: u16 = 4;
-pub const LINE_STATUS_REG: u16 = 5;
-
-// Common I/O Ports
-pub const PIC1_COMMAND: u16 = 0x20;
-pub const PIC1_DATA: u16 = 0x21;
-pub const PIC2_COMMAND: u16 = 0xA0;
-pub const PIC2_DATA: u16 = 0xA1;
-pub const PS2_DATA: u16 = 0x60;
-pub const PS2_STATUS: u16 = 0x64;
-```
-
----
-
-### Performance Benchmarks
-
-**Test System**: Intel i5-10400, 16GB RAM
-
-| Operation | Duration | Throughput |
-|-----------|----------|------------|
-| halt() | ~50 ns (wake latency: ~2 µs) | N/A |
-| enable_interrupts() | ~10 ns | N/A |
-| disable_interrupts() | ~10 ns | N/A |
-| inb() | ~500 ns | ~2M ops/s |
-| outb() | ~500 ns | ~2M ops/s |
-| serial_print("A") | ~87 µs | 11.5K chars/s |
-| serial_println!("Hello") | ~435 µs | 2.3K lines/s |
-
----
-
-### Error Handling
-
-**Current Implementation**: Most functions return `()` or panic on error.
-
-**Future Error Handling**:
-```rust
-pub enum HalError {
-    IoError,
-    DeviceNotFound,
-    Timeout,
-    InvalidParameter,
-}
-
-pub type HalResult<T> = Result<T, HalError>;
-```
-
----
-
-### Safety Guidelines
-
-#### When to Use `unsafe`
-
-**Always `unsafe`**:
-- Direct I/O port access (`inb`, `outb`)
-- Register manipulation
-- Hardware initialization sequences
-
-**Sometimes `unsafe`**:
-- Interrupt control (if not using RAII wrappers)
-
-**Never `unsafe`**:
-- Serial printing (after initialization)
-- CPU halt (safe wrapper)
-
-#### Safety Checklist
-
-Before using `unsafe` I/O operations:
-1. ✓ Verify port address is correct
-2. ✓ Ensure device is in expected state
-3. ✓ Check for concurrent access
-4. ✓ Validate write values
-5. ✓ Consider side effects of read/write
-
----
-
-**End of Document**
+  const PS2_STATUS: u16 = 0x64;
+  
+  loop {
+      let status = unsafe { inb(PS2_STATUS) };
+      if status & 0x01 != 0 {
+          // Data available in output buffer
+          break;
+      }
+  }
+
+Side Effects::
+
+  Reading some ports has side effects:
+  - PIC IRR: Reading clears interrupt request
+  - RTC registers: Reading advances index register
+  - Device FIFOs: Reading consumes data
+
+5.4 Performance Characteristics
+-----------------------------------------------------------
+
+I/O port operations are significantly slower than memory access::
+
+  Memory load/store:    ~4 CPU cycles (L1 cache hit)
+  I/O port operation:   100-1000 CPU cycles (depends on device)
+
+Why so slow::
+
+  - I/O operations traverse chipset (not cached)
+  - LPC/ISA bus is slow (~8 MHz effective)
+  - I/O instructions serialize CPU pipeline
+  - Device may insert wait states
+
+Serialization::
+
+  IN and OUT instructions are serializing - they force all previous instructions
+  to complete before executing, and all subsequent instructions wait until the
+  I/O completes. This prevents speculative execution and reordering.
+
+Use MMIO for performance-critical devices::
+
+  Modern devices (PCIe, AHCI, NVMe, network cards) use memory-mapped I/O (MMIO)
+  instead of port I/O. MMIO is cacheable and much faster. Legacy devices (serial,
+  PIC, PIT, PS/2) still use port I/O.
+
+
+6. CPU Topology Detection  
+================================================================================
+
+Module: hal::topology
+
+Detects number of CPUs, cores, and threads in the system using CPUID and ACPI
+tables. Currently this module is a stub returning 1 CPU.
+
+6.1 Current Implementation (v0.0.5)
+-----------------------------------------------------------
+
+Function::
+
+  pub fn cpu_count() -> usize
+
+Returns::
+
+  Always returns 1 (single-CPU assumed)
+
+Planned for v0.1.0::
+
+  - Parse ACPI MADT (Multiple APIC Description Table) for CPU list
+  - Use CPUID leaf 0x0B (x2APIC topology) for core/thread enumeration
+  - Detect hyperthreading vs. physical cores
+  - Enumerate NUMA domains
+
+6.2 Multi-Processor Detection (Future)
+-----------------------------------------------------------
+
+ACPI MADT provides list of Local APICs::
+
+  Each CPU core has a Local APIC with unique APIC ID
+  MADT contains APIC ID → Processor ID mapping
+  Enabled cores have flags bit 0 set
+
+CPUID Topology Enumeration::
+
+  Leaf 0x0B provides hierarchical topology:
+  - SMT level (hyperthreads sharing a core)
+  - Core level (cores sharing a package)
+  - Package level (physical CPUs)
+
+Example code (planned)::
+
+  pub struct CpuInfo {
+      pub apic_id: u8,
+      pub package_id: u8,
+      pub core_id: u8,
+      pub thread_id: u8,
+  }
+  
+  pub fn enumerate_cpus() -> Vec<CpuInfo> {
+      // Parse ACPI MADT
+      // For each APIC entry, decode topology with CPUID
+      // Return list of CPUs
+  }
+
+
+7. Debugging and Tracing
+================================================================================
+
+7.1 Serial Console Debugging
+-----------------------------------------------------------
+
+The serial console is the primary debugging interface. It works in all scenarios:
+- Early boot (before heap, framebuffer)
+- Kernel panics (when graphics may be corrupted)
+- Interrupt handlers (when framebuffer is unsafe)
+- Real hardware (via null modem cable)
+
+Logging conventions::
+
+  serial_println!("[SUBSYSTEM] message");
+  
+  Examples:
+  serial_println!("[HAL] Serial console initialized");
+  serial_println!("[MEMORY] Heap at {:?}, size {}", addr, size);
+  serial_println!("[IDT] Loaded IDT with {} entries", count);
+
+Checkpoint logging during boot::
+
+  serial_println!("[CHECKPOINT] About to initialize heap");
+  init_heap();
+  serial_println!("[CHECKPOINT] Heap initialized successfully");
+
+This helps isolate hangs and triple faults.
+
+7.2 Debug Output Configuration
+-----------------------------------------------------------
+
+QEMU::
+
+  make run includes -serial stdio
+  Serial output appears in terminal
+  Can redirect to file: -serial file:serial.log
+
+VirtualBox::
+
+  VM Settings → Serial Ports → Enable COM1
+  Port Mode: Raw File or Host Pipe
+  All serial_println! output saved to file
+
+Real Hardware::
+
+  Requires physical COM port (rare on modern systems)
+  USB-to-serial adapters work
+  Null modem cable to another PC running terminal emulator
+  
+  Terminal settings: 115200 8N1, no flow control
+
+7.3 Common Debugging Scenarios
+-----------------------------------------------------------
+
+Kernel hangs during boot::
+
+  Add serial_println! checkpoints to isolate where it hangs:
+  
+  serial_println!("[CHECKPOINT 1] Before heap init");
+  init_heap();
+  serial_println!("[CHECKPOINT 2] After heap init");
+  
+  If checkpoint 2 never appears, heap init is hanging/faulting.
+
+Triple fault::
+
+  CPU resets, QEMU shows "Triple fault, resetting"
+  Usually caused by:
+  - Page fault with no IDT loaded
+  - Stack overflow (nested exceptions)
+  - Invalid page table entry
+  
+  Use QEMU monitor: -monitor stdio -serial file:serial.log
+  Or: -d int,cpu_reset -no-reboot (dumps CPU state on triple fault)
+
+Interrupt handler debugging::
+
+  serial_println! is safe to call from interrupt handlers:
+  
+  extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
+      static mut TICKS: u64 = 0;
+      unsafe { TICKS += 1; }
+      if unsafe { TICKS % 100 == 0 } {
+          serial_println!("[TIMER] {} ticks", unsafe { TICKS });
+      }
+      apic::send_eoi();
+  }
+
+7.4 Asciinema Recordings
+-----------------------------------------------------------
+
+This documentation references asciinema recordings demonstrating HAL operation:
+
+recordings/serial-console-demo.cast::
+
+  Shows serial output during full Serix boot sequence
+  - Limine bootloader messages
+  - HAL initialization (serial port setup)
+  - Memory map enumeration
+  - Graphics initialization
+  - Task scheduler startup
+  - Idle loop with periodic timer interrupts
+  
+  Demonstrates real-time serial output as kernel executes.
+
+recordings/hal-init-sequence.cast::
+
+  Focused view of HAL initialization:
+  - Serial port configuration (0x3F8)
+  - First debug messages
+  - APIC enable sequence
+  - IDT loading
+  - Interrupt enable (STI)
+  
+  Shows checkpoint logging used to debug early boot issues.
+
+To record your own::
+
+  asciinema rec serial-output.cast
+  make run
+  # Boot kernel, serial output captured
+  # Press Ctrl+C to stop QEMU
+  exit  # Stop recording
+
+
+8. Future Work
+================================================================================
+
+8.1 Planned for v0.1.0
+-----------------------------------------------------------
+
+Serial RX Support::
+
+  - Enable UART RX interrupts (IER bit 0)
+  - Register IRQ 4 handler
+  - Ring buffer for incoming data
+  - Integration with kernel debugger (GDB stub)
+
+CPU Topology::
+
+  - Parse ACPI MADT for CPU enumeration
+  - CPUID topology leaves (0x0B, 0x1F)
+  - Detect hyperthreading vs. physical cores
+  - NUMA domain detection
+
+MSR Access::
+
+  - Safe wrappers for RDMSR/WRMSR
+  - MSR definitions for common registers (APIC base, EFER, etc.)
+  - MSR-based feature detection
+
+8.2 Planned for v0.2.0
+-----------------------------------------------------------
+
+PCI Configuration Space::
+
+  - PCI config space access (I/O ports 0xCF8/0xCFC)
+  - PCIe MMIO configuration space (ECAM)
+  - Device enumeration
+  - BAR (Base Address Register) parsing
+  - Capability list parsing
+
+DMA Support::
+
+  - ISA DMA controller programming (legacy)
+  - Bus master DMA setup
+  - Scatter-gather lists
+  - IOMMU integration (Intel VT-d, AMD-Vi)
+
+Performance Monitoring::
+
+  - TSC (Time Stamp Counter) calibration
+  - PMC (Performance Monitoring Counter) access
+  - CPU frequency scaling detection
+  - Cache hierarchy enumeration
+
+8.3 Planned for v1.0.0
+-----------------------------------------------------------
+
+ACPI Integration::
+
+  - Full ACPI table parsing (DSDT, SSDT)
+  - ACPI event handling (_Lxx, _Exx)
+  - Power state transitions (S1-S5)
+  - Thermal zone monitoring
+
+SMP Bootstrapping::
+
+  - Application Processor (AP) startup via INIT-SIPI-SIPI
+  - Per-CPU data structures
+  - Inter-processor interrupts (IPI)
+  - TLB shootdown protocol
+
+Hardware Watchdog::
+
+  - Watchdog timer configuration
+  - Automatic reset on kernel hang
+  - Integration with panic handler
+
+================================================================================
+End of HAL Documentation
+================================================================================
