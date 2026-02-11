@@ -140,7 +140,7 @@ cargo clippy --target x86_64-unknown-none
    - Load and execute init binary
    - Enter idle loop
 
-See [`docs/BOOT_PROCESS.md`](docs/BOOT_PROCESS.md) for more details.
+See [Boot Process Documentation](docs/BOOT_PROCESS.md) for more details.
 
 ## Code Style Guidelines
 
@@ -208,8 +208,8 @@ Serix follows specific coding conventions that differ from standard Rust in some
 
 ### Debug Output
 
-- **Use `serial_println!` for debug output**: Primary debugging mechanism
-- **Use `fb_println!` for framebuffer output**: After graphics initialization
+- **Use `serial_println!` for debug output**: Primary debugging mechanism (see [HAL module](hal/README.md))
+- **Use `fb_println!` for framebuffer output**: After graphics initialization (see [Graphics module](graphics/README.md))
 - **Checkpoint pattern**: Use descriptive checkpoints during initialization
 
   ```rust
@@ -447,7 +447,7 @@ These areas require more groundwork before accepting contributions:
 
 - **GitHub Issues**: For bug reports and feature requests
 - **GitHub Discussions**: For questions and general discussion
-- **Documentation**: Check the [`docs/`](docs/) folder first
+- **Documentation**: Check the [docs/](docs/) folder first
 
 ### Asking Questions
 

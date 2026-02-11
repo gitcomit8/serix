@@ -1375,3 +1375,13 @@ Common QEMU options for Serix
 -device virtio-blk-pci    # VirtIO block device
 
 ```
+
+## See Also
+
+- **[Memory Layout](MEMORY_LAYOUT.md)** - Virtual and physical memory organization
+- **[Interrupt Handling](INTERRUPT_HANDLING.md)** - IDT and APIC configuration details
+- **[Architecture Overview](ARCHITECTURE.md)** - High-level system design
+- **[HAL Module](../hal/README.md)** - Serial console and hardware abstraction implementation
+- **[APIC Module](../apic/README.md)** - APIC interrupt controller implementation
+- **[Kernel Module](../kernel/README.md)** - Kernel entry point and initialization code
+- **[Graphics Module](../graphics/README.md)** - Framebuffer console implementation
