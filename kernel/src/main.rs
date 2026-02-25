@@ -25,11 +25,9 @@ use loader::LoadableSegment;
 use memory::heap::{StaticBootFrameAllocator, init_heap};
 use spin::{Mutex, Once};
 use task::{Scheduler, TaskCB};
-use task::{init_executor, poll_executor};
+use task::init_executor;
 use util::panic::halt_loop;
 use vfs::{INode, RamFile};
-use x86_64::instructions::hlt;
-use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
@@ -302,6 +300,322 @@ unsafe fn map_mmio_range(
 }
 
 /*
+ * init_cpu - Initialize CPU subsystems
+ *
+ * Sets up GDT, SSE, APIC, IDT, interrupts, executor, syscalls, and scheduler.
+ * Must be the first initialization step.
+ */
+unsafe fn init_cpu() {
+	hal::init_serial();
+	serial_println!("Serix Kernel Starting.....");
+
+	/* Initialize Global Descriptor Table */
+	gdt::init();
+	gdt::init_per_cpu();
+	hal::cpu::enable_sse();
+
+	/* Enable APIC and disable legacy PIC */
+	apic::enable();
+
+	/* Register interrupt handlers before IDT is loaded */
+	apic::timer::register_handler();
+	/* Register keyboard handler (defined in this module to avoid circular deps) */
+	idt::register_interrupt_handler(33, keyboard_interrupt_handler);
+
+	/* Setup CPU exception handlers and load IDT */
+	idt::init_idt();
+
+	serial_println!("Keyboard ready for input!");
+
+	/* Enable interrupts globally */
+	x86_64::instructions::interrupts::enable();
+
+	init_executor();
+
+	let core_type = hal::topology::get_core_type();
+	serial_println!("CORE TYPE: {:?}", core_type);
+	syscall::init_syscalls();
+
+	let cap = capability::CapabilityHandle::generate();
+	serial_println!("Generated Secure Capability Handle: {:?}", cap);
+
+	/* Initialize global task scheduler */
+	Scheduler::init_global();
+	Scheduler::global().lock().add_task(TaskCB::running_task());
+	serial_println!("Kernel task registered");
+}
+
+/*
+ * init_memory - Initialize virtual memory, heap, and MMIO mappings
+ * @phys_mem_offset: Higher Half Direct Map base address
+ *
+ * Sets up page tables, populates the boot frame allocator, initializes the
+ * kernel heap, and maps LAPIC/IOAPIC MMIO regions.
+ * Returns the mapper and frame allocator for use by later phases.
+ */
+unsafe fn init_memory(
+	phys_mem_offset: VirtAddr,
+) -> (
+	x86_64::structures::paging::OffsetPageTable<'static>,
+	StaticBootFrameAllocator,
+) {
+	let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
+	let entries = mmap_response.entries();
+
+	let mut mapper = memory::init_offset_page_table(phys_mem_offset);
+
+	/*
+	 * Preallocate all usable physical frames before heap mapping.
+	 * This populates the boot frame allocator with available memory.
+	 */
+	let mut frame_count = 0;
+	for region in entries
+		.iter()
+		.filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
+	{
+		let start = region.base;
+		let end = region.base + region.length;
+		let start_frame = PhysFrame::containing_address(PhysAddr::new(start));
+		let end_frame = PhysFrame::containing_address(PhysAddr::new(end - 1));
+		for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
+			if frame_count >= memory::heap::MAX_BOOT_FRAMES {
+				break;
+			}
+			memory::heap::BOOT_FRAMES[frame_count] = Some(frame);
+			frame_count += 1;
+		}
+		if frame_count >= memory::heap::MAX_BOOT_FRAMES {
+			break;
+		}
+	}
+
+	let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
+	hal::cpu::enable_interrupts();
+
+	/* Initialize kernel heap with identity-mapped pages */
+	init_heap(&mut mapper, &mut frame_alloc);
+
+	let lapic_phys = 0xFEE00000u64;
+	let ioapic_phys = 0xFEC00000u64;
+	let lapic_virt = phys_mem_offset + lapic_phys;
+	let ioapic_virt = phys_mem_offset + ioapic_phys;
+
+	map_mmio(&mut mapper, &mut frame_alloc, lapic_phys, lapic_virt);
+	map_mmio(&mut mapper, &mut frame_alloc, ioapic_phys, ioapic_virt);
+
+	/* Tell APIC driver to use these new virtual addresses */
+	apic::set_bases(lapic_virt.as_u64());
+	apic::ioapic::set_base(ioapic_virt.as_u64());
+
+	/* Now configure I/O APIC with virtual address */
+	apic::ioapic::init_ioapic();
+
+	(mapper, frame_alloc)
+}
+
+/*
+ * init_graphics - Initialize framebuffer display and console
+ * @fb_response: Limine framebuffer response
+ * @mmap_response: Limine memory map response
+ *
+ * Fills the screen blue, draws the memory map visualization,
+ * and initializes the framebuffer TTY console.
+ */
+unsafe fn init_graphics(
+	fb_response: &limine::response::FramebufferResponse,
+	mmap_response: &limine::response::MemoryMapResponse,
+) {
+	/* Paint screen blue and draw memory map visualization */
+	if let Some(fb) = fb_response.framebuffers().next() {
+		fill_screen_blue(&fb);
+		draw_memory_map(&fb, mmap_response.entries());
+	}
+
+	/* Initialize framebuffer TTY */
+	if let Some(fb) = fb_response.framebuffers().next() {
+		graphics::init_console(
+			fb.addr(),
+			fb.width() as usize,
+			fb.height() as usize,
+			fb.pitch() as usize,
+		);
+	}
+	graphics::kprintln!("Hello from the Serix TTY");
+
+	/* Display welcome message */
+	fb_println!("Welcome to Serix OS!");
+	let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
+	fb_println!("Memory map entries: {}", mmap_response.entries().len());
+}
+
+/*
+ * init_devices - Initialize hardware devices
+ * @mapper: Kernel page table mapper
+ * @frame_alloc: Physical frame allocator
+ * @phys_mem_offset: Higher Half Direct Map base address
+ *
+ * Initializes PS/2 keyboard, scans and initializes PCI/VirtIO devices,
+ * runs a VFS smoke-test, tests IPC, and starts the APIC timer.
+ */
+unsafe fn init_devices(
+	mapper: &mut x86_64::structures::paging::OffsetPageTable,
+	frame_alloc: &mut StaticBootFrameAllocator,
+	phys_mem_offset: VirtAddr,
+) {
+	/* Initialize PS/2 keyboard controller */
+	init_ps2_keyboard();
+
+	serial_println!("--- Phase 3 System Check ---");
+	let devices = pci::enumerate_pci();
+	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
+
+	let mut mmio_mapper = |phys: u64, size: u64| -> *mut u8 {
+		let virt = phys_mem_offset + phys;
+		map_mmio_range(mapper, frame_alloc, phys, virt, size);
+		virt.as_mut_ptr()
+	};
+
+	for dev in devices {
+		if let Some(_blk) = VirtioBlock::init(dev, &mut mmio_mapper) {
+			serial_println!("VirtIO Block Device Initialized!");
+		}
+	}
+
+	let file = RamFile::new("system.log");
+	file.write(0, b"Serix Kernel Phase 3 OK");
+
+	let mut read_buf = [0u8; 23];
+	file.read(0, &mut read_buf);
+	if let Ok(msg) = core::str::from_utf8(&read_buf) {
+		serial_println!("VFS Readback: {}", msg);
+	}
+
+	/* IPC initialization and smoke test */
+	serial_println!("Testing IPC initialization");
+	let test_port_id = 100;
+	let port = ipc::IPC_GLOBAL.create_port(test_port_id);
+
+	let msg = ipc::Message {
+		sender_id: 1,
+		id: 0xBEEF,
+		len: 11,
+		data: {
+			let mut d = [0u8; ipc::MAX_MSG_SIZE];
+			let payload = b"Hello World!";
+			d[0..payload.len()].copy_from_slice(payload);
+			d
+		},
+	};
+
+	port.send(msg);
+	serial_println!("IPC: Sent test message to port {}", test_port_id);
+	if let Some(recv_msg) = port.receive() {
+		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
+	}
+
+	/* Initialize timer hardware */
+	apic::timer::init_hardware();
+}
+
+/*
+ * init_vfs - Initialize the virtual filesystem
+ *
+ * Builds the /root, /dev/console, and /init tree.
+ * Returns the root directory node.
+ */
+unsafe fn init_vfs() -> alloc::sync::Arc<vfs::RamDir> {
+	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
+
+	/* Create /dev directory */
+	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
+	root.insert("dev", dev_dir.clone())
+		.expect("Failed to create /dev");
+
+	/* Mount /dev/console */
+	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
+	dev_dir
+		.insert("console", console)
+		.expect("Failed to mount console");
+
+	/* Create /init from embedded shellcode */
+	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
+	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
+	init_file.write(0, shellcode_elf);
+	root.insert("init", init_file.clone())
+		.expect("Failed to create /init");
+
+	/* Test the VFS by writing to /dev/console via lookup */
+	if let Some(node) = root.lookup("dev").and_then(|d| d.lookup("console")) {
+		node.write(0, b"Hello from /dev/console!\n");
+	}
+
+	serial_println!("Created /init (Size: {} bytes)", init_file.size());
+
+	root
+}
+
+/*
+ * init_userspace - Load and launch the init process in Ring 3
+ * @root: VFS root directory
+ * @mapper: Kernel page table mapper
+ * @frame_alloc: Physical frame allocator
+ * @phys_mem_offset: Higher Half Direct Map base address
+ *
+ * Reads /init from the VFS, parses the ELF, sets up a user address space,
+ * maps segments, allocates a user stack, and jumps to Ring 3. Does not return.
+ */
+unsafe fn init_userspace(
+	root: alloc::sync::Arc<vfs::RamDir>,
+	mapper: &mut x86_64::structures::paging::OffsetPageTable,
+	frame_alloc: &mut StaticBootFrameAllocator,
+	phys_mem_offset: VirtAddr,
+) -> ! {
+	serial_println!("--- Phase 4: User Mode Transition ---");
+
+	/* Read back from VFS (simulating loading from disk) */
+	let init_file = root.lookup("init").expect("No /init in VFS");
+	let mut file_buffer = alloc::vec::Vec::new();
+	file_buffer.resize(init_file.size(), 0);
+	init_file.read(0, &mut file_buffer);
+
+	/* Parse ELF */
+	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
+	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
+
+	/* Create User Address Space */
+	let new_pml4_frame = memory::create_user_page_table(frame_alloc, phys_mem_offset)
+		.expect("Failed to create user page table");
+	let mut user_mapper = memory::create_mapper(new_pml4_frame, phys_mem_offset);
+
+	/* Map Segments */
+	for segment in image.segments {
+		map_segment(&mut user_mapper, frame_alloc, &segment, phys_mem_offset);
+	}
+	serial_println!("Segments mapped.");
+
+	/* Allocate User Stack */
+	let user_stack = allocate_user_stack(&mut user_mapper, frame_alloc, phys_mem_offset);
+	serial_println!("User Stack allocated at {:#x}", user_stack.as_u64());
+
+	/* Switch Page Table (CR3) */
+	use x86_64::registers::control::{Cr3, Cr3Flags};
+	Cr3::write(new_pml4_frame, Cr3Flags::empty());
+	serial_println!("Switched CR3 to User Table.");
+
+	let current_rsp: u64;
+	core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+	let stack_addr = VirtAddr::new(current_rsp);
+
+	/* Set BOTH TSS (interrupts) and GS (syscalls) */
+	gdt::set_kernel_stack(stack_addr);
+	gdt::set_syscall_stack(stack_addr);
+
+	serial_println!("Jumping to Ring 3...");
+	enter_user_mode(image.entry_point, user_stack, new_pml4_frame);
+}
+
+
+/*
  * init_ps2_keyboard - Initialize PS/2 keyboard controller
  *
  * Enables the PS/2 keyboard and clears any stale data in the buffer.
@@ -343,293 +657,22 @@ unsafe fn init_ps2_keyboard() {
 /*
  * _start - Kernel entry point
  *
- * This is the main kernel initialization function called by the bootloader.
- * It initializes all subsystems and enters the main execution loop.
+ * Orchestrates kernel initialization by calling named phase functions.
+ * Each phase encapsulates a logical group of subsystem initialization.
  */
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-	hal::init_serial();
-	serial_println!("Serix Kernel Starting.....");
-
-	/* Initialize Global Descriptor Table */
-	gdt::init();
-
-	unsafe {
-		gdt::init_per_cpu();
-		hal::cpu::enable_sse();
-		/* Enable APIC and disable legacy PIC */
-		apic::enable();
-		/* I/O APIC initialization moved to after virtual address remapping */
-		/* Register interrupt handlers before IDT is loaded */
-		apic::timer::register_handler();
-		/* Register keyboard handler (defined in this module to avoid circular deps) */
-		idt::register_interrupt_handler(33, keyboard_interrupt_handler);
-	}
-
-	/* Setup CPU exception handlers and load IDT */
-	idt::init_idt();
-
-	/* Initialize keyboard */
-	serial_println!("Keyboard ready for input!");
-
-	/* Enable interrupts globally */
-	x86_64::instructions::interrupts::enable();
-
-	init_executor();
-
-	let core_type = hal::topology::get_core_type();
-	serial_println!("CORE TYPE: {:?}", core_type);
-	syscall::init_syscalls();
-	let cap = capability::CapabilityHandle::generate();
-	serial_println!("Generated Secure Capability Handle: {:?}", cap);
-
-	/* Access framebuffer information from Limine */
-	let fb_response = FRAMEBUFFER_REQ
-		.get_response()
-		.expect("No framebuffer reply");
-
-	let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
-	let entries = mmap_response.entries();
-
-	/* Get Higher Half Direct Map offset from Limine */
 	let hhdm_response = HHDM_REQ.get_response().expect("No HHDM response");
 	let phys_mem_offset = VirtAddr::new(hhdm_response.offset());
-	let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
-
-	/*
-	 * Preallocate all usable physical frames before heap mapping.
-	 * This populates the boot frame allocator with available memory.
-	 */
-	let mut frame_count = 0;
-	for region in entries
-		.iter()
-		.filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
-	{
-		let start = region.base;
-		let end = region.base + region.length;
-		let start_frame = PhysFrame::containing_address(PhysAddr::new(start));
-		let end_frame = PhysFrame::containing_address(PhysAddr::new(end - 1));
-		for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
-			if frame_count >= memory::heap::MAX_BOOT_FRAMES {
-				break;
-			}
-			unsafe {
-				memory::heap::BOOT_FRAMES[frame_count] = Some(frame);
-			}
-			frame_count += 1;
-		}
-		if frame_count >= memory::heap::MAX_BOOT_FRAMES {
-			break;
-		}
-	}
-
-	let mut frame_alloc = StaticBootFrameAllocator::new(frame_count);
-	hal::cpu::enable_interrupts();
-
-	/* Initialize kernel heap with identity-mapped pages */
-	init_heap(&mut mapper, &mut frame_alloc);
-
-	let lapic_phys = 0xFEE00000u64;
-	let ioapic_phys = 0xFEC00000u64;
-
-	let lapic_virt = phys_mem_offset + lapic_phys;
-	let ioapic_virt = phys_mem_offset + ioapic_phys;
 
 	unsafe {
-		map_mmio(&mut mapper, &mut frame_alloc, lapic_phys, lapic_virt);
-		map_mmio(&mut mapper, &mut frame_alloc, ioapic_phys, ioapic_virt);
-
-		// Tell APIC driver to use these new virtual addresses
-		apic::set_bases(lapic_virt.as_u64());
-		apic::ioapic::set_base(ioapic_virt.as_u64());
-
-		// Now configure I/O APIC with virtual address
-		apic::ioapic::init_ioapic();
-
-		// Initialize PS/2 keyboard controller
-		init_ps2_keyboard();
-	}
-
-	/* Paint screen blue and draw memory map visualization */
-	if let Some(fb) = fb_response.framebuffers().next() {
-		fill_screen_blue(&fb);
-		draw_memory_map(&fb, mmap_response.entries());
-	}
-
-	// Initialize frambuffer TTY
-	if let Some(fb_response) = FRAMEBUFFER_REQ.get_response() {
-		if let Some(fb) = fb_response.framebuffers().next() {
-			unsafe {
-				graphics::init_console(
-					fb.addr(),
-					fb.width() as usize,
-					fb.height() as usize,
-					fb.pitch() as usize,
-				);
-			}
-		}
-	}
-	graphics::kprintln!("Hello from the Serix TTY");
-
-	serial_println!("--- Phase 3 System Check ---");
-	let devices = pci::enumerate_pci();
-	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
-
-	let mut mmio_mapper = |phys: u64, size: u64| -> *mut u8 {
-		let virt = phys_mem_offset + phys;
-
-		// Actually map the physical frames to the virtual HHDM address
-		unsafe {
-			map_mmio_range(&mut mapper, &mut frame_alloc, phys, virt, size);
-		}
-
-		virt.as_mut_ptr()
-	};
-
-	for dev in devices {
-		// Initialize VirtIO Block Device with the mapper
-		if let Some(_blk) = unsafe { VirtioBlock::init(dev, &mut mmio_mapper) } {
-			serial_println!("VirtIO Block Device Initialized!");
-		}
-	}
-
-	let file = RamFile::new("system.log");
-	file.write(0, b"Serix Kernel Phase 3 OK");
-
-	let mut read_buf = [0u8; 23];
-	file.read(0, &mut read_buf);
-	if let Ok(msg) = core::str::from_utf8(&read_buf) {
-		serial_println!("VFS Readback: {}", msg);
-	}
-	/* Initialize global task scheduler */
-	Scheduler::init_global();
-	Scheduler::global().lock().add_task(TaskCB::running_task());
-	serial_println!("Kernel task registered");
-
-	/* Display welcome message */
-	fb_println!("Welcome to Serix OS!");
-	fb_println!("Memory map entries: {}", mmap_response.entries().len());
-
-	unsafe {
-		/* Initialize timer hardware */
-		apic::timer::init_hardware();
-	}
-
-	// IPC Initialization
-	serial_println!("Testing IPC initialization");
-	let test_port_id = 100;
-	let port = ipc::IPC_GLOBAL.create_port(test_port_id);
-
-	//Create test msg
-	let msg = ipc::Message {
-		sender_id: 1,
-		id: 0xBEEF,
-		len: 11,
-		data: {
-			let mut d = [0u8; ipc::MAX_MSG_SIZE]; // [u8; 128]
-			let payload = b"Hello World!";
-			d[0..payload.len()].copy_from_slice(payload);
-			d
-		},
-	};
-
-	port.send(msg);
-	serial_println!("IPC: Sent test message to port {}", test_port_id);
-	if let Some(recv_msg) = port.receive() {
-		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
-	}
-
-	// --- PHASE 4: Loading & Execution ---
-	serial_println!("--- Phase 4: User Mode Transition ---");
-
-	// Init VFS Root
-	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
-
-	// Create /dev directory
-	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
-	root.insert("dev", dev_dir.clone())
-		.expect("Failed to create /dev");
-
-	// Mount /dev/console
-	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
-	dev_dir
-		.insert("console", console)
-		.expect("Failed to mount console");
-
-	// Crate /init (shellcode)
-	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
-	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
-	init_file.write(0, shellcode_elf);
-	root.insert("init", init_file.clone())
-		.expect("Failed to create /init");
-
-	//Test the VFS by writing to /dev/console via lookup
-	if let Some(node) = root.lookup("dev").and_then(|d| d.lookup("console")) {
-		node.write(0, b"Hello from /dev/console!\n");
-	}
-
-	//Continue with loader::load_elf using init_file
-	serial_println!("Crated /init (Size: {} bytes)", init_file.size());
-
-	//  Read back from VFS (simulating loading from disk)
-	let mut file_buffer = alloc::vec::Vec::new();
-	file_buffer.resize(init_file.size(), 0);
-	init_file.read(0, &mut file_buffer);
-
-	//  Parse ELF
-	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
-	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
-
-	// Create User Address Space
-	let new_pml4_frame =
-		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
-			.expect("Failed to create user page table");
-
-	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
-
-	// Map Segments
-	for segment in image.segments {
-		unsafe {
-			map_segment(
-				&mut user_mapper,
-				&mut frame_alloc,
-				&segment,
-				phys_mem_offset,
-			);
-		}
-	}
-	serial_println!("Segments mapped.");
-
-	// 7. Allocate User Stack
-	let user_stack =
-		unsafe { allocate_user_stack(&mut user_mapper, &mut frame_alloc, phys_mem_offset) };
-	serial_println!("User Stack allocated at {:#x}", user_stack.as_u64());
-
-	// 8. Switch Page Table (CR3)
-	unsafe {
-		use x86_64::registers::control::{Cr3, Cr3Flags};
-		Cr3::write(new_pml4_frame, Cr3Flags::empty());
-	}
-	serial_println!("Switched CR3 to User Table.");
-
-	let current_rsp: u64;
-	unsafe {
-		core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-	}
-	let stack_addr = VirtAddr::new(current_rsp);
-
-	// Set BOTH TSS (interrupts) and GS (syscalls)
-	gdt::set_kernel_stack(stack_addr);
-	gdt::set_syscall_stack(stack_addr);
-
-	serial_println!("Jumping to Ring 3...");
-	unsafe {
-		enter_user_mode(image.entry_point, user_stack, new_pml4_frame);
-	}
-
-	/* Main kernel loop: poll executor and halt CPU until next interrupt */
-	loop {
-		poll_executor();
-		hlt();
+		init_cpu();
+		let (mut mapper, mut frame_alloc) = init_memory(phys_mem_offset);
+		let fb_response = FRAMEBUFFER_REQ.get_response().expect("No framebuffer reply");
+		let mmap_response = MMAP_REQ.get_response().expect("No memory map response");
+		init_graphics(fb_response, mmap_response);
+		init_devices(&mut mapper, &mut frame_alloc, phys_mem_offset);
+		let root = init_vfs();
+		init_userspace(root, &mut mapper, &mut frame_alloc, phys_mem_offset);
 	}
 }

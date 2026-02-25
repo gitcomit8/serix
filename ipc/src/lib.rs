@@ -52,11 +52,12 @@ impl Default for Message {
  * struct Port - Communication port
  * @id: Port identifier
  * @queue: Message queue
+ * @waiting_tasks: Task IDs waiting to receive a message
  */
 pub struct Port {
 	id: u64,
 	queue: Mutex<VecDeque<Message>>,
-	// TODO: waiting_tasks: Mutex<Vec<TaskId>>,
+	waiting_tasks: Mutex<VecDeque<u64>>,
 }
 
 impl Port {
@@ -70,6 +71,7 @@ impl Port {
 		Self {
 			id,
 			queue: Mutex::new(VecDeque::with_capacity(PORT_QUEUE_LEN)),
+			waiting_tasks: Mutex::new(VecDeque::new()),
 		}
 	}
 
@@ -85,18 +87,39 @@ impl Port {
 			return false;
 		}
 		q.push_back(msg);
-		// TODO: Wake up waiting tasks
+		/* Wake up the first waiting task by removing it from the list */
+		let _ = self.waiting_tasks.lock().pop_front();
 		true
 	}
 
 	/*
-	 * receive - Pop a message from the port
+	 * receive - Pop a message from the port (non-blocking)
 	 *
 	 * Return: Some(msg) or None if empty
 	 */
 	pub fn receive(&self) -> Option<Message> {
 		let mut q = self.queue.lock();
 		q.pop_front()
+	}
+
+	/*
+	 * receive_blocking - Block until a message is available
+	 * @task_id: ID of the calling task (registered as a waiter)
+	 *
+	 * Spins until a message arrives in the port queue.
+	 * Return: The received message
+	 */
+	pub fn receive_blocking(&self, task_id: u64) -> Message {
+		/* Register this task as waiting */
+		self.waiting_tasks.lock().push_back(task_id);
+
+		/* Spin until a message is available */
+		loop {
+			if let Some(msg) = self.receive() {
+				return msg;
+			}
+			core::hint::spin_loop();
+		}
 	}
 }
 

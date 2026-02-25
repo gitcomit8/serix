@@ -123,23 +123,7 @@ pub enum TaskState {
 	Running,
 	Blocked,
 	Terminated,
-}
-
-/*
- * enum SchedClass - Scheduling class
- */
-#[derive(Debug, Copy, Clone)]
-pub enum SchedClass {
-	Realtime(u8), // 0-99 RT FIFO
-	Fair(u8),     // 100-139 CFS
-	Batch,        // 140 Batch
-	Iso,          // Isochronous
-}
-
-impl Default for SchedClass {
-	fn default() -> Self {
-		SchedClass::Fair(120) // Default normal priority
-	}
+	Dead,
 }
 
 /*
@@ -222,7 +206,7 @@ impl Default for CPUContext {
  * struct TaskCB - Task Control Block
  * @id: Unique task identifier
  * @state: Current task state
- * @sched_class: Scheduling class/priority
+ * @priority: Scheduling priority (0 = highest, 255 = lowest)
  * @context: Saved CPU context
  * @kstack: Kernel stack pointer
  * @ustack: Optional user stack pointer
@@ -232,7 +216,7 @@ impl Default for CPUContext {
 pub struct TaskCB {
 	pub id: TaskId,
 	pub state: TaskState,
-	pub sched_class: SchedClass,
+	pub priority: u8,
 	pub context: CPUContext,
 	pub kstack: VirtAddr,
 	pub ustack: Option<VirtAddr>,
@@ -258,7 +242,7 @@ impl TaskCB {
 	 * @name: Task name
 	 * @entry_point: Entry point function
 	 * @stack: Stack top address
-	 * @sched_class: Scheduling class
+	 * @priority: Scheduling priority (0 = highest, 255 = lowest)
 	 *
 	 * Return: New TaskCB instance
 	 */
@@ -266,7 +250,7 @@ impl TaskCB {
 		name: &'static str,
 		entry_point: unsafe extern "C" fn() -> !,
 		stack: VirtAddr,
-		sched_class: SchedClass,
+		priority: u8,
 	) -> Self {
 		let mut context = CPUContext::default();
 		// Align the stack pointer down to 16-byte boundary (required ABI)
@@ -294,7 +278,7 @@ impl TaskCB {
 		Self {
 			id: TaskId::new(),
 			state: TaskState::Ready,
-			sched_class,
+			priority,
 			context,
 			kstack: stack,
 			ustack: None,
@@ -311,7 +295,7 @@ impl TaskCB {
 		Self {
 			id: TaskId::new(),
 			state: TaskState::Running,
-			sched_class: SchedClass::default(),
+			priority: 128, // Default normal priority
 			context: CPUContext::default(),
 			kstack: VirtAddr::zero(),
 			ustack: None,
@@ -333,24 +317,19 @@ impl TaskCB {
 	 * Return: Numeric priority (lower is higher priority)
 	 */
 	pub fn priority(&self) -> u8 {
-		match self.sched_class {
-			SchedClass::Realtime(p) => p,
-			SchedClass::Fair(p) => p,
-			SchedClass::Batch => 140,
-			SchedClass::Iso => 50,
-		}
+		self.priority
 	}
 }
 
 /*
  * struct TaskBuilder - Task creation parameters
  * @name: Task name
- * @sched_class: Scheduling class
+ * @priority: Scheduling priority (0 = highest, 255 = lowest)
  * @stack_size: Stack size in bytes
  */
 pub struct TaskBuilder {
 	name: &'static str,
-	sched_class: SchedClass,
+	priority: u8,
 	stack_size: usize,
 }
 
@@ -364,19 +343,19 @@ impl TaskBuilder {
 	pub fn new(name: &'static str) -> Self {
 		Self {
 			name,
-			sched_class: SchedClass::default(),
+			priority: 128, // Default normal priority
 			stack_size: 8192,
 		}
 	}
 
 	/*
-	 * sched_class - Set scheduling class
-	 * @sched_class: Scheduling class
+	 * priority - Set task priority
+	 * @priority: Scheduling priority (0 = highest, 255 = lowest)
 	 *
 	 * Return: Self for method chaining
 	 */
-	pub fn sched_class(mut self, sched_class: SchedClass) -> Self {
-		self.sched_class = sched_class;
+	pub fn priority(mut self, priority: u8) -> Self {
+		self.priority = priority;
 		self
 	}
 
@@ -395,14 +374,19 @@ impl TaskBuilder {
 	 * build_kernel_task - Build a kernel task
 	 * @entry_point: Task entry point
 	 *
+	 * Allocates a unique heap stack for the task so each task has its own
+	 * distinct stack region instead of sharing a hardcoded address.
+	 * The stack is leaked (forgotten) so it lives for the kernel's lifetime.
+	 *
 	 * Return: TaskCB for the new task
 	 */
 	pub fn build_kernel_task(self, entry_point: unsafe extern "C" fn() -> !) -> TaskCB {
-		// TODO: Allocate stack memory properly
-		let stack_base = VirtAddr::new(0xFFFF_FF80_0000_0000);
-		let stack_top = stack_base + self.stack_size as u64;
+		let mut stack: Vec<u8> = Vec::with_capacity(self.stack_size);
+		stack.resize(self.stack_size, 0);
+		let stack_top = VirtAddr::new(stack.as_ptr() as u64) + self.stack_size as u64;
+		core::mem::forget(stack); // kernel stack must live forever
 
-		TaskCB::new(self.name, entry_point, stack_top, self.sched_class)
+		TaskCB::new(self.name, entry_point, stack_top, self.priority)
 	}
 }
 
@@ -505,25 +489,10 @@ impl Scheduler {
 	}
 
 	/*
-	 * next_ready_task - Find next ready task
-	 *
-	 * Return: Index of next ready task, or None if none available
-	 */
-	fn next_ready_task(&mut self) -> Option<usize> {
-		let count = self.tasks.len();
-		for i in 1..=count {
-			let idx = (self.current + i) % count;
-			if self.tasks[idx].state == TaskState::Ready {
-				return Some(idx);
-			}
-		}
-		None
-	}
-
-	/*
 	 * pick_next - Pick next task to run
 	 *
-	 * Return: Index of next task, or None if none available
+	 * Selects the highest-priority (lowest numeric value) ready task.
+	 * Returns the index of the selected task, or None if none available.
 	 */
 	pub fn pick_next(&mut self) -> Option<usize> {
 		// If current task is Running, mark it Ready so it can be picked again
@@ -531,7 +500,17 @@ impl Scheduler {
 			self.tasks[self.current].state = TaskState::Ready;
 		}
 
-		if let Some(next_idx) = self.next_ready_task() {
+		// Find the highest-priority (lowest priority value) ready task
+		let mut best_idx: Option<usize> = None;
+		let mut best_priority = u8::MAX;
+		for (i, task) in self.tasks.iter().enumerate() {
+			if task.state == TaskState::Ready && task.priority <= best_priority {
+				best_priority = task.priority;
+				best_idx = Some(i);
+			}
+		}
+
+		if let Some(next_idx) = best_idx {
 			self.tasks[next_idx].state = TaskState::Running;
 			Some(next_idx)
 		} else {
@@ -579,6 +558,32 @@ pub fn schedule() {
  */
 pub fn task_yield() {
 	schedule();
+}
+
+/*
+ * exit_current_task - Terminate the current task and yield to the scheduler
+ *
+ * Marks the current task as Dead so it will never be scheduled again,
+ * then calls schedule() to switch to the next ready task. Does not return.
+ */
+pub fn exit_current_task() -> ! {
+	{
+		let mut scheduler = Scheduler::global().lock();
+		let current = scheduler.current;
+		scheduler.tasks[current].state = TaskState::Dead;
+	}
+	schedule();
+	unreachable!("exit_current_task must not return");
+}
+
+/*
+ * current_task_id - Get the ID of the currently running task
+ *
+ * Return: Task ID of the current task as u64
+ */
+pub fn current_task_id() -> u64 {
+	let scheduler = Scheduler::global().lock();
+	scheduler.tasks[scheduler.current].id.0
 }
 
 // Global executor instance

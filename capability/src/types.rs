@@ -13,9 +13,24 @@ use core::fmt;
  *
  * Represents an unforgeable token that grants specific access rights.
  */
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Eq, Hash)]
 pub struct CapabilityHandle {
-	pub key: [u8; 16],
+	key: [u8; 16],
+}
+
+impl PartialEq for CapabilityHandle {
+	/*
+	 * Constant-time comparison to prevent timing side channels.
+	 * Uses fold with | instead of early-return == to ensure all bytes
+	 * are always compared regardless of where a difference is found.
+	 */
+	fn eq(&self, other: &Self) -> bool {
+		let mut diff: u8 = 0;
+		for i in 0..16 {
+			diff |= self.key[i] ^ other.key[i];
+		}
+		diff == 0
+	}
 }
 
 impl CapabilityHandle {
@@ -28,31 +43,48 @@ impl CapabilityHandle {
 	}
 
 	/*
+	 * as_bytes - Return the raw key bytes
+	 *
+	 * Return: Reference to the 128-bit key
+	 */
+	pub fn as_bytes(&self) -> &[u8; 16] {
+		&self.key
+	}
+
+	/*
 	 * generate - Generate a new random capability handle
 	 *
-	 * Uses RDTSC and Xorshift64 PRNG to generate a random 128-bit handle.
+	 * Uses the RDRAND hardware instruction to fill all 16 bytes of the key
+	 * with cryptographically random data. Retries on transient RDRAND
+	 * failures (carry flag = 0) until success.
 	 * Returns a new CapabilityHandle with a unique key.
 	 */
 	pub fn generate() -> Self {
-		/* Seed using CPU timestamp counter */
-		let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
-
-		/* Simple Xorshift64 PRNG */
-		let rng = |s: &mut u64| {
-			*s ^= *s << 13;
-			*s ^= *s >> 17;
-			*s ^= *s << 5;
-			*s
-		};
-
 		let mut key = [0u8; 16];
-		/* Generate 128 bits (2 x 64-bit values) */
-		for i in 0..2 {
-			let rand = rng(&mut seed);
-			let bytes = rand.to_ne_bytes();
-			for j in 0..8 {
-				key[i * 8 + j] = bytes[j];
+		let mut i = 0;
+		while i < 16 {
+			let mut val: u64;
+			let mut success: u8;
+			/* Retry loop: RDRAND may fail transiently (carry flag = 0) */
+			loop {
+				unsafe {
+					core::arch::asm!(
+						"rdrand {val}",
+						"setc {success}",
+						val = out(reg) val,
+						success = out(reg_byte) success,
+					);
+				}
+				if success != 0 {
+					break;
+				}
 			}
+			let bytes = val.to_ne_bytes();
+			let to_copy = (16 - i).min(8);
+			for j in 0..to_copy {
+				key[i + j] = bytes[j];
+			}
+			i += to_copy;
 		}
 		CapabilityHandle { key }
 	}

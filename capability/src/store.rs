@@ -34,10 +34,10 @@ impl CapabilityStore {
 	 */
 	pub fn add_capability(&self, cap: Capability) -> bool {
 		let mut caps = self.capabilities.lock();
-		if caps.contains_key(&cap.handle.key) {
+		if caps.contains_key(cap.handle.as_bytes()) {
 			false
 		} else {
-			caps.insert(cap.handle.key, cap);
+			caps.insert(*cap.handle.as_bytes(), cap);
 			true
 		}
 	}

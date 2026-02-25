@@ -275,9 +275,9 @@ extern "C" fn syscall_dispatcher(
 		SYS_EXIT => {
 			/* Exit system call: terminate current task */
 			hal::serial_println!("[SYSCALL] Process exited with status {}", arg1);
-			loop {
-				hal::cpu::halt();
-			}
+			/* Mark current task dead and yield to scheduler */
+			task::exit_current_task();
+			unreachable!("exit_current_task must not return");
 		}
 
 		SYS_YIELD => {
@@ -312,7 +312,7 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			let msg = ipc::Message {
-				sender_id: 0, // TODO: Get current task ID
+				sender_id: task::current_task_id(),
 				id: msg_type,
 				len: len as u64,
 				data,
