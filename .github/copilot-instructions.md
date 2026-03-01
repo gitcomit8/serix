@@ -4,9 +4,17 @@
 
 ### Building and Running
 
+`.cargo/config.toml` sets `x86_64-unknown-none` as the default target and enables `build-std` for `core`, `alloc`, and `compiler_builtins`, so `--target` flags are not needed.
+
 ```bash
 # Build kernel only
-cargo build --release --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
+cargo build --release
+
+# Build a specific crate
+cargo build -p apic --release
+
+# Build init binary (userspace) — required before `make iso`
+make init
 
 # Build bootable ISO (includes kernel + init binary + Limine bootloader)
 make iso
@@ -22,15 +30,26 @@ cargo clean
 ### Code Quality
 
 ```bash
-# Format code (uses tabs, not spaces - Linux kernel style)
+# Format code (uses tabs, not spaces — configured in rustfmt.toml)
 cargo fmt
 
 # Run Clippy linter
-cargo clippy --target x86_64-unknown-none
+cargo clippy
 ```
 
-**Note**: No test suite exists yet. The kernel is validated by booting in QEMU and verifying:
-- Serial console output shows initialization messages
+### Commit Messages
+
+Follow conventional commits: `<type>(<scope>): <subject>`
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`
+Scopes: crate names — `kernel`, `memory`, `apic`, `idt`, `graphics`, `hal`, `task`, etc.
+
+Example: `feat(apic): add LAPIC timer interrupt handler`
+
+### Testing
+
+No automated test suite exists. The kernel is validated by booting in QEMU (`make run`) and verifying:
+- Serial console output shows initialization checkpoints
 - Blue framebuffer appears with memory map visualization
 - Keyboard and timer interrupts work
 
@@ -87,6 +106,7 @@ See `docs/MEMORY_LAYOUT.md` for complete memory map.
 | `graphics/` | Framebuffer console, drawing primitives | `lib.rs`, `console/mod.rs` |
 | `task/` | Async task executor, scheduler skeleton | `lib.rs` |
 | `capability/` | Capability-based security system | `lib.rs`, `store.rs`, `types.rs` |
+| `keyboard/` | PS/2 keyboard driver, scancode translation | `lib.rs` |
 | `drivers/` | Device drivers (VirtIO block, PCI, console) | `virtio.rs`, `pci.rs`, `console.rs` |
 | `vfs/` | Virtual filesystem (ramdisk, INode abstraction) | `lib.rs` |
 | `ipc/` | Inter-process communication | `lib.rs` |
@@ -102,6 +122,21 @@ See `docs/MEMORY_LAYOUT.md` for complete memory map.
   - 49: LAPIC timer (periodic, ~625 Hz)
 - **Handlers**: Defined in `idt/src/lib.rs`
 - **APIC required**: Legacy PIC is disabled in `apic::enable()`
+
+### Syscall Interface
+
+System calls use `SYSCALL`/`SYSRET` instructions with Linux-style register ABI (`rax`=nr, `rdi`=arg1, `rsi`=arg2, `rdx`=arg3, `r10`=arg4, `r8`=arg5).
+
+| Number | Name | Description |
+|--------|------|-------------|
+| 0 | `SYS_READ` | Read from fd (only fd 0 / STDIN) |
+| 1 | `SYS_WRITE` | Write to fd (only fd 1 / STDOUT) |
+| 20 | `SYS_SEND` | Send IPC message to port |
+| 21 | `SYS_RECV` | Receive IPC message from port |
+| 24 | `SYS_YIELD` | Yield CPU voluntarily |
+| 60 | `SYS_EXIT` | Terminate process |
+
+Kernel-side dispatch: `kernel/src/syscall.rs`. Userspace wrappers: `ulib/src/lib.rs`.
 
 ### Task Model
 
@@ -171,12 +206,13 @@ Limine documentation: https://github.com/limine-bootloader/limine/blob/trunk/PRO
 
 ## Workspace Structure
 
-This is a **Cargo workspace** with 15+ member crates. Key implications:
+This is a **Cargo workspace** with 16 member crates. Key implications:
 
+- **Default target**: `.cargo/config.toml` sets `x86_64-unknown-none` as default target and enables `build-std` — no `--target` flag needed
 - **Shared dependencies**: Managed in root `Cargo.toml` `[workspace]` section
-- **Build commands**: Use `--manifest-path` to build specific crates (e.g., `cargo build --manifest-path kernel/Cargo.toml`)
 - **Dependency paths**: Internal crates use `{ path = "../crate_name" }` syntax
 - **Unified `Cargo.lock`**: All crates share the same lock file at workspace root
+- **Linker script**: Kernel uses `kernel/linker.ld` (configured via rustflags in `.cargo/config.toml`)
 
 ## Building Init Binary
 
