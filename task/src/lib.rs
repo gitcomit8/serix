@@ -13,6 +13,7 @@ pub mod context_switch;
 pub mod executor;
 pub mod waker;
 pub mod yield_now;
+pub mod scheduler;
 
 use crate::async_task::AsyncTask;
 use alloc::collections::VecDeque;
@@ -22,6 +23,16 @@ use core::task::{Context, Poll};
 use spin::Mutex;
 use x86_64::VirtAddr;
 
+
+/*
+ * CURRENT_TASK - Task ID of the currently running task
+ *
+ * 0 means no task is running (idle / early boot)
+ * Updated atomically before each context switch
+ *
+ * TODO(SMP): Per-CPU current-task tracking via GS_BASE
+ */
+pub static CURRENT_TASK: AtomicU64 = AtomicU64::new(0);
 /*
  * struct Executor - Round-robin async task executor
  * @tasks: Queue of pending tasks
@@ -115,13 +126,21 @@ impl TaskId {
 }
 
 /*
- * enum TaskState - Task states
+ * enum TaskState - Task execution states
+ * @Ready:      Task is runnable, waiting for CPU time
+ * @Running:    Task is currently executing on CPU
+ * @Blocked:    Task is waiting for an event
+ * @Sleeping:   Task is sleeping for a fixed duration
+ * @Zombie:     Task has exited but resources not yet reaped
+ * @Terminated: Task has fully cleaned up (resources freed)
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
 	Ready,
 	Running,
 	Blocked,
+	Sleeping,
+	Zombie,
 	Terminated,
 }
 
@@ -339,6 +358,18 @@ impl TaskCB {
 			SchedClass::Batch => 140,
 			SchedClass::Iso => 50,
 		}
+	}
+
+	/*
+	 * is_runable - Check if task can be selected for execution
+	 *
+	 * Return: true if task is in Ready state
+	 *
+	 * Only Ready tasks may be dequeued and switched to by the scheduler.
+	 * Running, Blocked, Sleeping, and Zombie tasks are not eligible.
+	 */
+	pub fn is_runable(&self)->bool{
+		self.state == TaskState::Ready
 	}
 }
 
