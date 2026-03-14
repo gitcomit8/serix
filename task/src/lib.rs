@@ -22,8 +22,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
 use x86_64::VirtAddr;
-
-
+use crate::context_switch::context_switch;
 /*
  * CURRENT_TASK - Task ID of the currently running task
  *
@@ -572,37 +571,71 @@ impl Scheduler {
 }
 
 /*
- * schedule - Public API for tasks (and timer) to yield CPU
- *
- * Performs context switch to the next ready task.
+	schedule - Preempt the current task and switch to the next runnable tak
+
+	Called from the timer interrupt handler every TIME_SLICE_TICKS ticks
+
+	Flow:
+		1. Ask scheduler to re-enqueue current task and pick next
+		2. If no next task, return early (only one task, continues running)
+		3. Extract raw pointers to both tasks' CPUContext
+		4. Keep both Arcs alive on the stack so heap addresses stay valid
+		5. Call context_switch - execution resumes here when task is rescheduled
+
+	Safety:
+		- Must be called with interrupts disable (timer IRQ context)
+		- Single-CPU only: no concurrent RunQueue access possible
+		- Arc guarantees TaskCB heap stability; raw pointers remain valid
+		  across the switch because no reallocation occurs between extraction
+		  and use, and no other CPU can touch the queue
  */
 pub fn schedule() {
-	unsafe {
-		let (old_ctx, new_ctx) = {
-			let mut scheduler = Scheduler::global().lock();
-			let current_idx = scheduler.current;
+	use crate::scheduler::{global_or_none, reschedule_current, pick_next_task};
+	use alloc::sync::Arc;
+	use spin::Mutex;
 
-			if let Some(next_idx) = scheduler.pick_next() {
-				// Don't switch if it's the same task
-				if current_idx == next_idx {
-					return;
-				}
+	let rq_ref = match global_or_none() {
+		Some(r) => r,
+		None => return, // not yet initialized
+	};
 
-				scheduler.current = next_idx;
+	// Grab the old (current) task BEFORE re-enqueuing it
+	let old_arc: Option<Arc<Mutex<TaskCB>>> = rq_ref.lock().current.clone();
 
-				// Get raw pointers
-				let old_ctx = &mut scheduler.tasks[current_idx].context as *mut CPUContext;
-				let new_ctx = &scheduler.tasks[next_idx].context as *const CPUContext;
+	// Round-robin: re-enqueue current at tail, dequeue next from front
+	reschedule_current();
+	let new_arc = match pick_next_task() {
+		Some(t) => t,
+		None => return,
+	};
 
-				(old_ctx, new_ctx)
-			} else {
-				return; // No ready tasks
-			}
-		}; // Lock dropped here
-
-		// Perform context switch
-		context_switch::context_switch(old_ctx, new_ctx);
+	// If there's only one task, pick_next_task gave us back the same task.
+	// No point switching — just return.
+	if let Some(ref old) = old_arc {
+		if Arc::ptr_eq(old, &new_arc) {
+			return;
+		}
 	}
+
+	// Extract raw pointers to CPUContext.
+	// Safety: Arc keeps the TaskCB heap-allocated and stable.
+	// We drop the MutexGuards before the switch but keep the Arcs alive,
+	// so the pointers remain valid for the duration of context_switch.
+	let old_ctx_ptr: *mut CPUContext = match old_arc {
+		Some(ref arc) => &mut arc.lock().context as *mut CPUContext,
+		None => return, // no task was running (early boot edge case)
+	};
+
+	let new_ctx_ptr: *const CPUContext = &new_arc.lock().context as *const CPUContext;
+
+	// Both Arcs are live on the stack here — TaskCBs won't be dropped.
+	// context_switch saves old RSP/RIP into old_ctx_ptr and loads from new_ctx_ptr.
+	unsafe {
+		context_switch(old_ctx_ptr, new_ctx_ptr);
+	}
+
+	// Execution resumes here when this task is next scheduled.
+	// old_arc and new_arc go out of scope normally.
 }
 
 /*

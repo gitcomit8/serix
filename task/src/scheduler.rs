@@ -38,7 +38,7 @@ pub const TIME_SLICE_TICKS: u64 = 10;
  */
 pub struct RunQueue {
 	queue: VecDeque<Arc<Mutex<TaskCB>>>,
-	current: Option<Arc<Mutex<TaskCB>>>,
+	pub current: Option<Arc<Mutex<TaskCB>>>,
 }
 
 /* Global single-CPU run queue */
@@ -219,4 +219,13 @@ pub fn reschedule_current(){
 pub fn schedule()->Option<Arc<Mutex<TaskCB>>>{
 	reschedule_current();
 	pick_next_task()
+}
+
+/*
+	global_or_none - Get global RunQueue reference without panicking
+
+	Return: Some(&Mutex<RunQueue>) if initialized, None if init() not yet called
+ */
+pub fn global_or_none() -> Option<&'static Mutex<RunQueue>>{
+	RUN_QUEUE.get()
 }
