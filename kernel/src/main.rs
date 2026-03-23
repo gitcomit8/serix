@@ -503,17 +503,12 @@ pub extern "C" fn _start() -> ! {
 	}
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
-	Scheduler::global().lock().add_task(TaskCB::running_task());
+	task::scheduler::init();
 	serial_println!("Kernel task registered");
 
 	/* Display welcome message */
 	fb_println!("Welcome to Serix OS!");
 	fb_println!("Memory map entries: {}", mmap_response.entries().len());
-
-	unsafe {
-		/* Initialize timer hardware */
-		apic::timer::init_hardware();
-	}
 
 	// IPC Initialization
 	serial_println!("Testing IPC initialization");
@@ -539,97 +534,86 @@ pub extern "C" fn _start() -> ! {
 		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
 	}
 
-	// --- PHASE 4: Loading & Execution ---
-	serial_println!("--- Phase 4: User Mode Transition ---");
+	/* --- Sprint 1.3: Multi-task validation --- */
+	const STACK_SIZE: usize = 64 * 1024;
 
-	// Init VFS Root
-	let root = alloc::sync::Arc::new(vfs::RamDir::new("root"));
-
-	// Create /dev directory
-	let dev_dir = alloc::sync::Arc::new(vfs::RamDir::new("dev"));
-	root.insert("dev", dev_dir.clone())
-		.expect("Failed to create /dev");
-
-	// Mount /dev/console
-	let console = alloc::sync::Arc::new(drivers::console::ConsoleDevice::new());
-	dev_dir
-		.insert("console", console)
-		.expect("Failed to mount console");
-
-	// Crate /init (shellcode)
-	let shellcode_elf = include_bytes!("../../target/x86_64-unknown-none/release/examples/init");
-	let init_file = alloc::sync::Arc::new(vfs::RamFile::new("init"));
-	init_file.write(0, shellcode_elf);
-	root.insert("init", init_file.clone())
-		.expect("Failed to create /init");
-
-	//Test the VFS by writing to /dev/console via lookup
-	if let Some(node) = root.lookup("dev").and_then(|d| d.lookup("console")) {
-		node.write(0, b"Hello from /dev/console!\n");
-	}
-
-	//Continue with loader::load_elf using init_file
-	serial_println!("Crated /init (Size: {} bytes)", init_file.size());
-
-	//  Read back from VFS (simulating loading from disk)
-	let mut file_buffer = alloc::vec::Vec::new();
-	file_buffer.resize(init_file.size(), 0);
-	init_file.read(0, &mut file_buffer);
-
-	//  Parse ELF
-	let image = loader::load_elf(&file_buffer).expect("Failed to parse init ELF");
-	serial_println!("ELF Entry Point: {:#x}", image.entry_point.as_u64());
-
-	// Create User Address Space
-	let new_pml4_frame =
-		unsafe { memory::create_user_page_table(&mut frame_alloc, phys_mem_offset) }
-			.expect("Failed to create user page table");
-
-	let mut user_mapper = unsafe { memory::create_mapper(new_pml4_frame, phys_mem_offset) };
-
-	// Map Segments
-	for segment in image.segments {
-		unsafe {
-			map_segment(
-				&mut user_mapper,
-				&mut frame_alloc,
-				&segment,
-				phys_mem_offset,
-			);
+	unsafe extern "C" fn test_task_a() -> ! {
+		let mut i: u64 = 0;
+		loop {
+			serial_println!("[TASK A] iteration {}", i);
+			i += 1;
+			task::task_yield();
 		}
 	}
-	serial_println!("Segments mapped.");
 
-	// 7. Allocate User Stack
-	let user_stack =
-		unsafe { allocate_user_stack(&mut user_mapper, &mut frame_alloc, phys_mem_offset) };
-	serial_println!("User Stack allocated at {:#x}", user_stack.as_u64());
-
-	// 8. Switch Page Table (CR3)
-	unsafe {
-		use x86_64::registers::control::{Cr3, Cr3Flags};
-		Cr3::write(new_pml4_frame, Cr3Flags::empty());
-	}
-	serial_println!("Switched CR3 to User Table.");
-
-	let current_rsp: u64;
-	unsafe {
-		core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-	}
-	let stack_addr = VirtAddr::new(current_rsp);
-
-	// Set BOTH TSS (interrupts) and GS (syscalls)
-	gdt::set_kernel_stack(stack_addr);
-	gdt::set_syscall_stack(stack_addr);
-
-	serial_println!("Jumping to Ring 3...");
-	unsafe {
-		enter_user_mode(image.entry_point, user_stack, new_pml4_frame);
+	unsafe extern "C" fn test_task_b() -> ! {
+		let mut i: u64 = 0;
+		loop {
+			serial_println!("[TASK B] iteration {}", i);
+			i += 1;
+			task::task_yield();
+		}
 	}
 
-	/* Main kernel loop: poll executor and halt CPU until next interrupt */
+	unsafe extern "C" fn test_task_c() -> ! {
+		let mut i: u64 = 0;
+		loop {
+			serial_println!("[TASK C] iteration {}", i);
+			i += 1;
+			task::task_yield();
+		}
+	}
+
+	/* Allocate stacks for test tasks */
+	let stack_a = alloc::vec![0u8; STACK_SIZE];
+	let stack_top_a = VirtAddr::new(stack_a.as_ptr() as u64 + STACK_SIZE as u64);
+	core::mem::forget(stack_a);
+
+	let stack_b = alloc::vec![0u8; STACK_SIZE];
+	let stack_top_b = VirtAddr::new(stack_b.as_ptr() as u64 + STACK_SIZE as u64);
+	core::mem::forget(stack_b);
+
+	let stack_c = alloc::vec![0u8; STACK_SIZE];
+	let stack_top_c = VirtAddr::new(stack_c.as_ptr() as u64 + STACK_SIZE as u64);
+	core::mem::forget(stack_c);
+
+	let task_a = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::new("task_a", test_task_a, stack_top_a, task::SchedClass::Fair(120)),
+	));
+	let task_b = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::new("task_b", test_task_b, stack_top_b, task::SchedClass::Fair(120)),
+	));
+	let task_c = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::new("task_c", test_task_c, stack_top_c, task::SchedClass::Fair(120)),
+	));
+
+	/*
+	 * Seed RunQueue with a boot placeholder as "current".
+	 * The first context switch saves _start's context into boot_task
+	 * (which is never re-enqueued), then jumps to task_a.
+	 * This keeps all three test tasks' entry points intact.
+	 */
+	let boot_task = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::running_task(),
+	));
+	task::scheduler::global().lock().current = Some(boot_task);
+
+	/* Enqueue A, B, C — all will run their real entry points */
+	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_a));
+	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_b));
+	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_c));
+
+	serial_println!("RunQueue seeded: boot=current, A/B/C enqueued");
+
+	unsafe {
+		/* Initialize timer hardware — starts preemptive scheduling */
+		apic::timer::init_hardware();
+	}
+
+	/* Phase 4 user mode disabled during Sprint 1.3 validation */
+
+	/* Idle loop — timer interrupts drive preemptive scheduling */
 	loop {
-		poll_executor();
 		hlt();
 	}
 }
