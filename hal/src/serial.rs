@@ -112,10 +112,12 @@ pub fn init_serial() {
  * @s: String slice to write
  */
 pub fn serial_print(s: &str) {
-	if let Some(serial) = SERIAL_PORT.get() {
-		let port = serial.lock();
-		port.write_str(s);
-	}
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		if let Some(serial) = SERIAL_PORT.get() {
+			let port = serial.lock();
+			port.write_str(s);
+		}
+	});
 }
 
 /*
