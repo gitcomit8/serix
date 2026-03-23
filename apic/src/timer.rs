@@ -66,7 +66,7 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
  * Must be called before IDT is loaded.
  */
 pub unsafe fn register_handler() {
-	idt::register_interrupt_handler(TIMER_VECTOR, timer_interrupt);
+	idt::register_interrupt_handler(TIMER_VECTOR, timer_interrupt_handler);
 }
 
 /*
