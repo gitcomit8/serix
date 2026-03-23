@@ -596,7 +596,7 @@ pub fn schedule() {
 
 	let rq_ref = match global_or_none() {
 		Some(r) => r,
-		None => return, // not yet initialized
+		None => return,
 	};
 
 	// Grab the old (current) task BEFORE re-enqueuing it
@@ -609,8 +609,7 @@ pub fn schedule() {
 		None => return,
 	};
 
-	// If there's only one task, pick_next_task gave us back the same task.
-	// No point switching — just return.
+	// If pick_next gave us back the same task, no switch needed
 	if let Some(ref old) = old_arc {
 		if Arc::ptr_eq(old, &new_arc) {
 			return;
@@ -618,31 +617,39 @@ pub fn schedule() {
 	}
 
 	// Extract raw pointers to CPUContext.
-	// Safety: Arc keeps the TaskCB heap-allocated and stable.
-	// We drop the MutexGuards before the switch but keep the Arcs alive,
-	// so the pointers remain valid for the duration of context_switch.
+	// NOTE: Explicit guard scope + drop required — edition 2024 may extend
+	// MutexGuard temporaries past the statement in match arms.
 	let old_ctx_ptr: *mut CPUContext = match old_arc {
-		Some(ref arc) => &mut arc.lock().context as *mut CPUContext,
-		None => return, // no task was running (early boot edge case)
+		Some(ref arc) => {
+			let guard = arc.lock();
+			let ptr = &guard.context as *const CPUContext as *mut CPUContext;
+			drop(guard);
+			ptr
+		}
+		None => return,
 	};
 
-	let new_ctx_ptr: *const CPUContext = &new_arc.lock().context as *const CPUContext;
+	let new_ctx_ptr: *const CPUContext = {
+		let guard = new_arc.lock();
+		let ptr = &guard.context as *const CPUContext;
+		drop(guard);
+		ptr
+	};
 
-	// Both Arcs are live on the stack here — TaskCBs won't be dropped.
-	// context_switch saves old RSP/RIP into old_ctx_ptr and loads from new_ctx_ptr.
 	unsafe {
 		context_switch(old_ctx_ptr, new_ctx_ptr);
 	}
 
 	// Execution resumes here when this task is next scheduled.
-	// old_arc and new_arc go out of scope normally.
 }
 
 /*
  * task_yield - Public API for tasks to yield CPU
  */
 pub fn task_yield() {
-	schedule();
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		schedule();
+	});
 }
 
 // Global executor instance

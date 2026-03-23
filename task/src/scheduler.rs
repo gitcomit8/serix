@@ -191,13 +191,13 @@ pub fn pick_next_task()-> Option<Arc<Mutex<TaskCB>>> {
 			Must be called with interrupts disabled
  */
 pub fn reschedule_current(){
-	let current={
-		let mut rq=global().lock();
-		rq.current.take()
-	};
-
-	if let Some(task)=current{
-		global().lock().enqueue(task);
+	let mut rq = global().lock();
+	if let Some(task) = rq.current.take() {
+		/* Skip re-enqueue for the boot placeholder (kstack == 0) */
+		let dominated = task.lock().kstack.as_u64() == 0;
+		if !dominated {
+			rq.enqueue(task);
+		}
 	}
 }
 
