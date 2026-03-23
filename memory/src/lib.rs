@@ -7,12 +7,47 @@
 #![no_std]
 extern crate alloc;
 pub mod heap;
+pub mod slub;
 
 use alloc::boxed::Box;
 use limine::memory_map::Entry;
+use spin::{Mutex, Once};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
+
+use crate::heap::StaticBootFrameAllocator;
+
+/*
+ * struct PageAllocator - Global page mapping resources
+ * @mapper:     Active page table mapper
+ * @frame_alloc: Physical frame allocator
+ *
+ * Stored globally so the SLUB allocator (and future subsystems)
+ * can map new virtual pages without threading the mapper through
+ * every call site.
+ */
+pub struct PageAllocator {
+	pub mapper: OffsetPageTable<'static>,
+	pub frame_alloc: StaticBootFrameAllocator,
+}
+
+static PAGE_ALLOC: Once<Mutex<PageAllocator>> = Once::new();
+
+/*
+ * init_page_allocator - Store mapper and frame allocator globally
+ * @mapper:     OffsetPageTable for the active address space
+ * @frame_alloc: Boot frame allocator with remaining frames
+ *
+ * Call after all early MMIO mappings are done. Transfers ownership
+ * so the SLUB and other subsystems can allocate pages on demand.
+ */
+pub fn init_page_allocator(
+	mapper: OffsetPageTable<'static>,
+	frame_alloc: StaticBootFrameAllocator,
+) {
+	PAGE_ALLOC.call_once(|| Mutex::new(PageAllocator { mapper, frame_alloc }));
+}
 
 /*
  * active_level_table - Get mutable reference to active level-4 page table
