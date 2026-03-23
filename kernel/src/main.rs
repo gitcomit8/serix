@@ -539,7 +539,7 @@ pub extern "C" fn _start() -> ! {
 	}
 
 	/* --- Sprint 1.3: Multi-task validation --- */
-	const STACK_SIZE: usize = 64 * 1024;
+	const STACK_SIZE: usize = 1024 * 1024; /* 1 MiB SLUB-allocated stacks */
 
 	unsafe extern "C" fn test_task_a() -> ! {
 		let mut i: u64 = 0;
@@ -568,18 +568,13 @@ pub extern "C" fn _start() -> ! {
 		}
 	}
 
-	/* Allocate stacks for test tasks */
-	let stack_a = alloc::vec![0u8; STACK_SIZE];
-	let stack_top_a = VirtAddr::new(stack_a.as_ptr() as u64 + STACK_SIZE as u64);
-	core::mem::forget(stack_a);
-
-	let stack_b = alloc::vec![0u8; STACK_SIZE];
-	let stack_top_b = VirtAddr::new(stack_b.as_ptr() as u64 + STACK_SIZE as u64);
-	core::mem::forget(stack_b);
-
-	let stack_c = alloc::vec![0u8; STACK_SIZE];
-	let stack_top_c = VirtAddr::new(stack_c.as_ptr() as u64 + STACK_SIZE as u64);
-	core::mem::forget(stack_c);
+	/* Allocate 1MiB SLUB stacks with guard pages */
+	let stack_top_a = memory::slub::alloc_kernel_stack(STACK_SIZE)
+		.expect("Failed to allocate stack for task A");
+	let stack_top_b = memory::slub::alloc_kernel_stack(STACK_SIZE)
+		.expect("Failed to allocate stack for task B");
+	let stack_top_c = memory::slub::alloc_kernel_stack(STACK_SIZE)
+		.expect("Failed to allocate stack for task C");
 
 	let task_a = alloc::sync::Arc::new(spin::Mutex::new(
 		TaskCB::new("task_a", test_task_a, stack_top_a, task::SchedClass::Fair(120)),

@@ -229,6 +229,29 @@ pub fn alloc_kernel_object(size: usize) -> Option<*mut u8> {
  *
  * Routes to SLUB or heap deallocator based on size.
  */
+/*
+ * alloc_kernel_stack - Allocate a kernel stack with a guard page
+ * @size: Total size in bytes (must be a SLUB size class, e.g. 1MiB)
+ *
+ * Allocates a contiguous region via SLUB, then unmaps the bottom
+ * page to create a guard page. Stack overflow will hit the unmapped
+ * guard and trigger a page fault instead of silent corruption.
+ *
+ * Return: Stack top VirtAddr (caller passes this to TaskCB::new),
+ *         or None on OOM
+ */
+pub fn alloc_kernel_stack(size: usize) -> Option<VirtAddr> {
+	let base = alloc_kernel_object(size)? as u64;
+	let mut pa = crate::PAGE_ALLOC.get()?.lock();
+	let guard_page = Page::<Size4KiB>::containing_address(VirtAddr::new(base));
+	unsafe {
+		if let Ok((_frame, flush)) = pa.mapper.unmap(guard_page) {
+			flush.flush();
+		}
+	}
+	Some(VirtAddr::new(base + size as u64))
+}
+
 pub fn free_kernel_object(ptr: *mut u8, size: usize) {
 	if size < 4096 {
 		if let Ok(layout) = core::alloc::Layout::from_size_align(size, 8) {
