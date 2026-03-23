@@ -493,6 +493,10 @@ pub extern "C" fn _start() -> ! {
 		}
 	}
 
+	/* Transfer mapper + frame allocator to global PageAllocator for SLUB */
+	memory::init_page_allocator(mapper, frame_alloc);
+	memory::slub::init();
+
 	let file = RamFile::new("system.log");
 	file.write(0, b"Serix Kernel Phase 3 OK");
 
