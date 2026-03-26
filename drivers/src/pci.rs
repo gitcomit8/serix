@@ -167,6 +167,24 @@ impl PciDevice {
 	}
 
 	/*
+	 * interrupt_line - Read PCI interrupt line register
+	 *
+	 * Return: IRQ number assigned by firmware (config offset 0x3C)
+	 */
+	pub unsafe fn interrupt_line(&self) -> u8 {
+		self.read_u8(0x3C)
+	}
+
+	/*
+	 * interrupt_pin - Read PCI interrupt pin register
+	 *
+	 * Return: Interrupt pin (1=INTA, 2=INTB, etc., 0=none)
+	 */
+	pub unsafe fn interrupt_pin(&self) -> u8 {
+		self.read_u8(0x3D)
+	}
+
+	/*
 	 * find_capability - Find a specific PCI capability
 	 * @cap_id: Capability ID to find (e.g., 0x09 for Vendor Specific)
 	 *
