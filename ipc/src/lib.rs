@@ -12,6 +12,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use spin::Mutex;
 use spin::lock_api::RwLock;
+use task::TaskCB;
 
 /*
  * IPC Constants
@@ -56,7 +57,7 @@ impl Default for Message {
 pub struct Port {
 	id: u64,
 	queue: Mutex<VecDeque<Message>>,
-	// TODO: waiting_tasks: Mutex<Vec<TaskId>>,
+	waiting_receivers: Mutex<VecDeque<Arc<Mutex<TaskCB>>>>,
 }
 
 impl Port {
@@ -70,12 +71,16 @@ impl Port {
 		Self {
 			id,
 			queue: Mutex::new(VecDeque::with_capacity(PORT_QUEUE_LEN)),
+			waiting_receivers: Mutex::new(VecDeque::new()),
 		}
 	}
 
 	/*
-	 * send - Push a message to the port
+	 * send - Push a message to the port and wake a blocked receiver
 	 * @msg: Message to send
+	 *
+	 * If any tasks are blocked waiting for messages on this port,
+	 * the first waiter is woken and re-enqueued on the RunQueue.
 	 *
 	 * Return: true if successful, false if queue full
 	 */
@@ -85,7 +90,13 @@ impl Port {
 			return false;
 		}
 		q.push_back(msg);
-		// TODO: Wake up waiting tasks
+		drop(q);
+
+		/* Wake first waiting receiver, if any */
+		let waiter = self.waiting_receivers.lock().pop_front();
+		if let Some(t) = waiter {
+			task::wake_task(t);
+		}
 		true
 	}
 
@@ -97,6 +108,46 @@ impl Port {
 	pub fn receive(&self) -> Option<Message> {
 		let mut q = self.queue.lock();
 		q.pop_front()
+	}
+
+	/*
+	 * receive_blocking - Block until a message is available
+	 *
+	 * If the queue is empty, places the current task on the wait queue,
+	 * blocks it, and retries upon waking. Handles spurious wakes by
+	 * looping until a message is actually available.
+	 *
+	 * Return: The received Message
+	 *
+	 * Safety: Must be called with interrupts disabled.
+	 *         Must not be called from interrupt context.
+	 */
+	pub fn receive_blocking(&self) -> Message {
+		loop {
+			/* Fast path: message already available */
+			if let Some(msg) = self.queue.lock().pop_front() {
+				return msg;
+			}
+
+			/* Queue empty — block current task */
+			let current = match task::current_task_arc() {
+				Some(arc) => arc,
+				None => {
+					core::hint::spin_loop();
+					continue;
+				}
+			};
+
+			/* Place on wait queue BEFORE removing from RunQueue */
+			self.waiting_receivers.lock().push_back(
+				Arc::clone(&current),
+			);
+
+			/* Block and context-switch away */
+			task::block_current_and_switch();
+
+			/* Woken up — loop back to retry receive */
+		}
 	}
 }
 
