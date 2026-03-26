@@ -538,71 +538,88 @@ pub extern "C" fn _start() -> ! {
 		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
 	}
 
-	/* --- Sprint 1.3: Multi-task validation --- */
+	/* --- Sprint 3.2: IPC producer/consumer validation --- */
 	const STACK_SIZE: usize = 1024 * 1024; /* 1 MiB SLUB-allocated stacks */
+	const IPC_TEST_PORT: u64 = 42;
 
-	unsafe extern "C" fn test_task_a() -> ! {
-		let mut i: u64 = 0;
+	/* Create IPC test port before spawning tasks */
+	ipc::IPC_GLOBAL.create_port(IPC_TEST_PORT);
+	serial_println!("IPC: Created port {} for blocking test", IPC_TEST_PORT);
+
+	unsafe extern "C" fn ipc_producer() -> ! {
+		let mut seq: u64 = 0;
 		loop {
-			serial_println!("[TASK A] iteration {}", i);
-			i += 1;
+			let port = ipc::IPC_GLOBAL.get_port(42).unwrap();
+			let mut data = [0u8; ipc::MAX_MSG_SIZE];
+			let bytes = seq.to_le_bytes();
+			data[..8].copy_from_slice(&bytes);
+
+			let msg = ipc::Message {
+				sender_id: task::scheduler::current_task_id(),
+				id: seq,
+				len: 8,
+				data,
+			};
+
+			x86_64::instructions::interrupts::without_interrupts(|| {
+				if port.send(msg) {
+					hal::serial_println!("[PRODUCER] sent seq={}", seq);
+				} else {
+					hal::serial_println!("[PRODUCER] port full, yielding");
+				}
+			});
+			seq += 1;
 			task::task_yield();
 		}
 	}
 
-	unsafe extern "C" fn test_task_b() -> ! {
-		let mut i: u64 = 0;
+	unsafe extern "C" fn ipc_consumer() -> ! {
 		loop {
-			serial_println!("[TASK B] iteration {}", i);
-			i += 1;
-			task::task_yield();
-		}
-	}
+			let port = ipc::IPC_GLOBAL.get_port(42).unwrap();
+			hal::serial_println!("[CONSUMER] blocking on port 42...");
 
-	unsafe extern "C" fn test_task_c() -> ! {
-		let mut i: u64 = 0;
-		loop {
-			serial_println!("[TASK C] iteration {}", i);
-			i += 1;
-			task::task_yield();
+			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
+				port.receive_blocking()
+			});
+
+			let seq = u64::from_le_bytes(msg.data[..8].try_into().unwrap());
+			hal::serial_println!(
+				"[CONSUMER] received seq={} from sender={}",
+				seq, msg.sender_id,
+			);
 		}
 	}
 
 	/* Allocate 1MiB SLUB stacks with guard pages */
-	let stack_top_a = memory::slub::alloc_kernel_stack(STACK_SIZE)
-		.expect("Failed to allocate stack for task A");
-	let stack_top_b = memory::slub::alloc_kernel_stack(STACK_SIZE)
-		.expect("Failed to allocate stack for task B");
-	let stack_top_c = memory::slub::alloc_kernel_stack(STACK_SIZE)
-		.expect("Failed to allocate stack for task C");
+	let stack_top_producer = memory::slub::alloc_kernel_stack(STACK_SIZE)
+		.expect("Failed to allocate stack for producer");
+	let stack_top_consumer = memory::slub::alloc_kernel_stack(STACK_SIZE)
+		.expect("Failed to allocate stack for consumer");
 
-	let task_a = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::new("task_a", test_task_a, stack_top_a, task::SchedClass::Fair(120)),
+	let producer = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::new("ipc_producer", ipc_producer, stack_top_producer,
+			task::SchedClass::Fair(120)),
 	));
-	let task_b = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::new("task_b", test_task_b, stack_top_b, task::SchedClass::Fair(120)),
-	));
-	let task_c = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::new("task_c", test_task_c, stack_top_c, task::SchedClass::Fair(120)),
+	let consumer = alloc::sync::Arc::new(spin::Mutex::new(
+		TaskCB::new("ipc_consumer", ipc_consumer, stack_top_consumer,
+			task::SchedClass::Fair(120)),
 	));
 
 	/*
 	 * Seed RunQueue with a boot placeholder as "current".
 	 * The first context switch saves _start's context into boot_task
-	 * (which is never re-enqueued), then jumps to task_a.
-	 * This keeps all three test tasks' entry points intact.
+	 * (which is never re-enqueued), then jumps to the first task.
 	 */
 	let boot_task = alloc::sync::Arc::new(spin::Mutex::new(
 		TaskCB::running_task(),
 	));
 	task::scheduler::global().lock().current = Some(boot_task);
 
-	/* Enqueue A, B, C — all will run their real entry points */
-	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_a));
-	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_b));
-	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&task_c));
+	/* Enqueue consumer first so it blocks, then producer wakes it */
+	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&consumer));
+	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&producer));
 
-	serial_println!("RunQueue seeded: boot=current, A/B/C enqueued");
+	serial_println!("RunQueue seeded: boot=current, consumer/producer enqueued");
 
 	unsafe {
 		/* Initialize timer hardware — starts preemptive scheduling */

@@ -17,10 +17,13 @@ pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
 pub const SYS_SEND: u64 = 20;
 pub const SYS_RECV: u64 = 21;
+pub const SYS_RECV_BLOCK: u64 = 22;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
+pub const ERRNO_EAGAIN: u64 = u64::MAX - 11; /* Resource temporarily unavailable */
 pub const ERRNO_EFAULT: u64 = u64::MAX - 13; /* Bad address (errno 14) */
+pub const ERRNO_ENOENT: u64 = u64::MAX - 2; /* No such port */
 pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
 
 /* Userspace memory validation constants */
@@ -286,7 +289,8 @@ extern "C" fn syscall_dispatcher(
 			0 /* Success */
 		}
 		SYS_SEND => {
-			/* * Send IPC Message
+			/*
+			 * Send IPC Message
 			 * arg1: Target Port ID
 			 * arg2: Message ID/Type
 			 * arg3: Pointer to data buffer (userspace)
@@ -305,63 +309,88 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EFAULT;
 			}
 
-			// Copy data from user
 			let mut data = [0u8; ipc::MAX_MSG_SIZE];
 			unsafe {
 				core::ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
 			}
 
 			let msg = ipc::Message {
-				sender_id: 0, // TODO: Get current task ID
+				sender_id: task::scheduler::current_task_id(),
 				id: msg_type,
 				len: len as u64,
 				data,
 			};
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
-				if port.send(msg) {
-					0
-				} else {
-					// Queue full (EAGAIN)
-					u64::MAX - 11
-				}
+				x86_64::instructions::interrupts::without_interrupts(|| {
+					if port.send(msg) { 0 } else { ERRNO_EAGAIN }
+				})
 			} else {
-				// Port not found (ENOENT)
-				u64::MAX - 2
+				ERRNO_ENOENT
 			}
 		}
 
 		SYS_RECV => {
 			/*
-			 * Receive IPC Message
+			 * Receive IPC Message (non-blocking)
 			 * arg1: Local Port ID
 			 * arg2: Pointer to buffer to write data
-			 * Returns: Message Type (id) in RAX, Length in RDX (needs custom return handling)
-			 * For simplicity now: Returns 0 on success, fills buffer.
+			 * Returns: Message ID in RAX, or EAGAIN if empty
 			 */
 			let port_id = arg1;
 			let out_ptr = arg2 as *mut u8;
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
 				if let Some(msg) = port.receive() {
-					// Validate output buffer
 					let len = msg.len as usize;
 					if !is_user_accessible(out_ptr, len) {
 						return ERRNO_EFAULT;
 					}
-
 					unsafe {
-						core::ptr::copy_nonoverlapping(msg.data.as_ptr(), out_ptr, len);
+						core::ptr::copy_nonoverlapping(
+							msg.data.as_ptr(), out_ptr, len,
+						);
 					}
-					// Return Message ID (User needs to know what they got)
 					msg.id
 				} else {
-					// No message (EAGAIN)
-					u64::MAX - 11
+					ERRNO_EAGAIN
 				}
 			} else {
-				ERRNO_EINVAL
+				ERRNO_ENOENT
 			}
+		}
+
+		SYS_RECV_BLOCK => {
+			/*
+			 * Blocking Receive IPC Message
+			 * arg1: Local Port ID
+			 * arg2: Pointer to buffer to write message data
+			 * Returns: Message ID in RAX
+			 *
+			 * Blocks the calling task until a message is available.
+			 */
+			let port_id = arg1;
+			let out_ptr = arg2 as *mut u8;
+
+			let port = match ipc::IPC_GLOBAL.get_port(port_id) {
+				Some(p) => p,
+				None => return ERRNO_ENOENT,
+			};
+
+			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
+				port.receive_blocking()
+			});
+
+			let len = msg.len as usize;
+			if !is_user_accessible(out_ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			unsafe {
+				core::ptr::copy_nonoverlapping(
+					msg.data.as_ptr(), out_ptr, len,
+				);
+			}
+			msg.id
 		}
 		_ => {
 			/* Unknown system call */
