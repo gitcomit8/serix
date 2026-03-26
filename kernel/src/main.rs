@@ -487,15 +487,41 @@ pub extern "C" fn _start() -> ! {
 	};
 
 	for dev in devices {
-		// Initialize VirtIO Block Device with the mapper
-		if let Some(_blk) = unsafe { VirtioBlock::init(dev, &mut mmio_mapper) } {
-			serial_println!("VirtIO Block Device Initialized!");
+		/* Phase 1: PCI discovery + feature negotiation (no DMA alloc) */
+		if let Some(blk) = unsafe {
+			VirtioBlock::init(
+				dev, &mut mmio_mapper, phys_mem_offset.as_u64(),
+			)
+		} {
+			drivers::virtio::store_global(blk);
+			serial_println!("VirtIO: Phase 1 init complete");
 		}
 	}
 
 	/* Transfer mapper + frame allocator to global PageAllocator for SLUB */
 	memory::init_page_allocator(mapper, frame_alloc);
 	memory::slub::init();
+
+	/* Phase 2: Allocate virtqueues now that SLUB is available */
+	drivers::virtio::setup_queues_global();
+	drivers::virtio::register_interrupt();
+
+	/* Register block device in VFS and validate */
+	if drivers::virtio::virtio_blk().is_some() {
+		let blk_dev = alloc::sync::Arc::new(drivers::block::BlockDevice::new());
+		serial_println!("VFS: /dev/vda size = {} bytes", blk_dev.size());
+
+		/* Write "SerixFS" at byte 0 via VFS, read back */
+		let tag = b"SerixFS";
+		blk_dev.write(0, tag);
+		let mut readback = [0u8; 7];
+		blk_dev.read(0, &mut readback);
+		if &readback == tag {
+			serial_println!("VFS: /dev/vda write→read OK");
+		} else {
+			serial_println!("VFS: /dev/vda verify MISMATCH: {:02x?}", readback);
+		}
+	}
 
 	let file = RamFile::new("system.log");
 	file.write(0, b"Serix Kernel Phase 3 OK");

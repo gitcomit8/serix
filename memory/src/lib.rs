@@ -32,7 +32,7 @@ pub struct PageAllocator {
 	pub frame_alloc: StaticBootFrameAllocator,
 }
 
-static PAGE_ALLOC: Once<Mutex<PageAllocator>> = Once::new();
+pub static PAGE_ALLOC: Once<Mutex<PageAllocator>> = Once::new();
 
 /*
  * init_page_allocator - Store mapper and frame allocator globally
