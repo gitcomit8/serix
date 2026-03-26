@@ -23,6 +23,7 @@ use core::task::{Context, Poll};
 use spin::Mutex;
 use x86_64::VirtAddr;
 use crate::context_switch::context_switch;
+pub use scheduler::{current_task_arc, wake_task};
 /*
  * CURRENT_TASK - Task ID of the currently running task
  *
@@ -650,6 +651,63 @@ pub fn task_yield() {
 	x86_64::instructions::interrupts::without_interrupts(|| {
 		schedule();
 	});
+}
+
+/*
+ * block_current_and_switch - Block the current task and switch to next
+ *
+ * Removes the current task from the RunQueue (without re-enqueuing),
+ * sets its state to Blocked, picks the next runnable task, and performs
+ * a context switch. The caller must have already placed the task Arc
+ * on a wait queue so it can be woken later.
+ *
+ * Must be called with interrupts disabled.
+ *
+ * Safety: Single-CPU only. If no next task is available, puts the task
+ *         back as current and returns without switching.
+ */
+pub fn block_current_and_switch() {
+	use crate::scheduler::{take_current, pick_next_task};
+
+	/* Remove current task from RunQueue without re-enqueuing */
+	let old_arc = match take_current() {
+		Some(t) => t,
+		None => return,
+	};
+
+	/* Mark task as blocked */
+	old_arc.lock().set_state(TaskState::Blocked);
+
+	/* Pick next runnable task */
+	let new_arc = match pick_next_task() {
+		Some(t) => t,
+		None => {
+			/* No other task — put ourselves back as current */
+			crate::scheduler::global().lock().current = Some(old_arc);
+			return;
+		}
+	};
+
+	/* Extract raw CPUContext pointers (same pattern as schedule()) */
+	let old_ctx_ptr: *mut CPUContext = {
+		let guard = old_arc.lock();
+		let ptr = &guard.context as *const CPUContext as *mut CPUContext;
+		drop(guard);
+		ptr
+	};
+
+	let new_ctx_ptr: *const CPUContext = {
+		let guard = new_arc.lock();
+		let ptr = &guard.context as *const CPUContext;
+		drop(guard);
+		ptr
+	};
+
+	unsafe {
+		context_switch(old_ctx_ptr, new_ctx_ptr);
+	}
+
+	/* Execution resumes here when the task is woken and rescheduled */
 }
 
 // Global executor instance

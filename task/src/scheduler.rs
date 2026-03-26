@@ -148,12 +148,54 @@ pub fn enqueue_task(task: Arc<Mutex<TaskCB>>) {
 }
 
 /*
+ * wake_task - Wake a blocked task by setting it Ready and enqueuing it
+ * @task: Arc-wrapped task to wake
+ *
+ * Used by subsystems (IPC, timers) to unblock a waiting task.
+ * The task's state is set to Ready by enqueue().
+ *
+ * Safety: Acquires RunQueue lock. Must not be called while RunQueue
+ *         lock is already held.
+ */
+pub fn wake_task(task: Arc<Mutex<TaskCB>>) {
+	global().lock().enqueue(task);
+}
+
+/*
  * current_task_id - Get the task ID of the currently running task
  *
  * Return: TaskId value, or 0 if no task is running
  */
 pub fn current_task_id() -> u64 {
 	CURRENT_TASK.load(Ordering::Acquire)
+}
+
+/*
+ * current_task_arc - Get Arc reference to the currently running task
+ *
+ * Return: Some(Arc<Mutex<TaskCB>>) if a task is running, None otherwise
+ *
+ * Safety: Acquires RunQueue lock briefly. Must not be called while
+ *         RunQueue lock is already held.
+ */
+pub fn current_task_arc() -> Option<Arc<Mutex<TaskCB>>> {
+	global().lock().current.clone()
+}
+
+/*
+ * take_current - Remove the current task without re-enqueuing
+ *
+ * Unlike reschedule_current(), this removes the current task from the
+ * RunQueue entirely. The caller is responsible for holding onto the
+ * returned Arc (e.g., placing it on a wait queue).
+ *
+ * Return: Some(Arc<Mutex<TaskCB>>) if a task was running, None otherwise
+ *
+ * Safety: Must be called with interrupts disabled.
+ *         Caller must ensure the task is eventually re-enqueued or destroyed.
+ */
+pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
+	global().lock().current.take()
 }
 
 /*
