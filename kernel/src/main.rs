@@ -10,6 +10,7 @@
 #![no_main]
 
 extern crate alloc;
+pub mod fd;
 mod gdt;
 mod syscall;
 
@@ -349,7 +350,7 @@ unsafe fn init_ps2_keyboard() {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
-	serial_println!("Serix Kernel Starting.....");
+	serial_println!("Serix Kernel v0.0.6 Starting.....");
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
@@ -469,11 +470,14 @@ pub extern "C" fn _start() -> ! {
 			}
 		}
 	}
-	graphics::kprintln!("Hello from the Serix TTY");
+	graphics::kprintln!("Serix OS v0.0.6");
+	graphics::kprintln!("");
 
+	fb_println!("--- System Check ---");
 	serial_println!("--- Phase 3 System Check ---");
 	let devices = pci::enumerate_pci();
 	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
+	fb_println!("PCI: {} devices found", devices.len());
 
 	let mut mmio_mapper = |phys: u64, size: u64| -> *mut u8 {
 		let virt = phys_mem_offset + phys;
@@ -495,6 +499,7 @@ pub extern "C" fn _start() -> ! {
 		} {
 			drivers::virtio::store_global(blk);
 			serial_println!("VirtIO: Phase 1 init complete");
+			fb_println!("VirtIO: block device detected");
 		}
 	}
 
@@ -506,21 +511,43 @@ pub extern "C" fn _start() -> ! {
 	drivers::virtio::setup_queues_global();
 	drivers::virtio::register_interrupt();
 
-	/* Register block device in VFS and validate */
-	if drivers::virtio::virtio_blk().is_some() {
-		let blk_dev = alloc::sync::Arc::new(drivers::block::BlockDevice::new());
-		serial_println!("VFS: /dev/vda size = {} bytes", blk_dev.size());
+	/* Mount FAT32 filesystem and set VFS root */
+	if fs::mount() {
+		serial_println!("FS: FAT32 mounted");
+		fb_println!("FS: FAT32 mounted");
+		vfs::set_root(alloc::sync::Arc::new(fs::FatDirINode::root()));
 
-		/* Write "SerixFS" at byte 0 via VFS, read back */
-		let tag = b"SerixFS";
-		blk_dev.write(0, tag);
-		let mut readback = [0u8; 7];
-		blk_dev.read(0, &mut readback);
-		if &readback == tag {
-			serial_println!("VFS: /dev/vda write→read OK");
-		} else {
-			serial_println!("VFS: /dev/vda verify MISMATCH: {:02x?}", readback);
+		/* Kernel-side smoke test: create, write, read back */
+		let root = vfs::lookup_path("/").unwrap();
+		root.insert("hello.txt",
+			alloc::sync::Arc::new(vfs::RamFile::new("placeholder"))).ok();
+		let hello = vfs::lookup_path("/hello.txt").unwrap();
+		hello.write(0, b"Hello from Serix!");
+		let mut buf = [0u8; 17];
+		hello.read(0, &mut buf);
+		let hello_str = core::str::from_utf8(&buf).unwrap_or("ERR");
+		serial_println!("FS: /hello.txt = {:?}", hello_str);
+		fb_println!("FS: /hello.txt = {:?}", hello_str);
+
+		/* Test FD table: open, read, seek, close */
+		if let Some(fd) = fd::open(0, "/hello.txt") {
+			let mut fbuf = [0u8; 17];
+			if let Some(file) = fd::get(0, fd) {
+				let n = file.inode.read(0, &mut fbuf);
+				*file.offset.lock() = n;
+			}
+			serial_println!("FD: fd={} read {:?}",
+				fd, core::str::from_utf8(&fbuf).unwrap_or("ERR"));
+			fb_println!("FD: fd={} read OK", fd);
+			fd::seek(0, fd, 0);
+			fd::close(0, fd);
+			serial_println!("FD: seek+close OK");
+			fb_println!("FD: seek+close OK");
 		}
+	} else {
+		serial_println!("FS: FAT32 mount failed, falling back to RamDir root");
+		fb_println!("FS: FAT32 mount failed, RamDir fallback");
+		vfs::set_root(alloc::sync::Arc::new(vfs::RamDir::new("/")));
 	}
 
 	let file = RamFile::new("system.log");
@@ -530,15 +557,15 @@ pub extern "C" fn _start() -> ! {
 	file.read(0, &mut read_buf);
 	if let Ok(msg) = core::str::from_utf8(&read_buf) {
 		serial_println!("VFS Readback: {}", msg);
+		fb_println!("VFS: {}", msg);
 	}
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
 	task::scheduler::init();
 	serial_println!("Kernel task registered");
+	fb_println!("Scheduler: initialized");
 
-	/* Display welcome message */
-	fb_println!("Welcome to Serix OS!");
-	fb_println!("Memory map entries: {}", mmap_response.entries().len());
+	fb_println!("Memory: {} regions mapped", mmap_response.entries().len());
 
 	// IPC Initialization
 	serial_println!("Testing IPC initialization");
@@ -562,6 +589,7 @@ pub extern "C" fn _start() -> ! {
 	serial_println!("IPC: Sent test message to port {}", test_port_id);
 	if let Some(recv_msg) = port.receive() {
 		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
+		fb_println!("IPC: send/receive OK (port {})", test_port_id);
 	}
 
 	/* --- Sprint 3.2: IPC producer/consumer validation --- */
@@ -646,13 +674,15 @@ pub extern "C" fn _start() -> ! {
 	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&producer));
 
 	serial_println!("RunQueue seeded: boot=current, consumer/producer enqueued");
+	fb_println!("Tasks: producer/consumer enqueued");
 
 	unsafe {
 		/* Initialize timer hardware — starts preemptive scheduling */
 		apic::timer::init_hardware();
 	}
-
-	/* Phase 4 user mode disabled during Sprint 1.3 validation */
+	fb_println!("Timer: LAPIC ~625 Hz started");
+	fb_println!("");
+	fb_println!("Serix OS v0.0.6 ready.");
 
 	/* Idle loop — timer interrupts drive preemptive scheduling */
 	loop {

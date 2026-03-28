@@ -20,3 +20,4 @@ vfs = { path = "../vfs" }
 ipc = { path = "../ipc" }
 loader = { path = "../loader" }
 keyboard = { path = "../keyboard" }
+fs = { path = "../fs" }
