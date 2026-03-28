@@ -6,7 +6,7 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run iso clean limine kernel
+.PHONY: all run iso disk clean limine kernel
 
 all: iso
 
@@ -48,10 +48,28 @@ iso: init $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/b
 	  $(ISO_ROOT) -o $(ISO)
 	./limine/limine bios-install $(ISO)
 
-run: iso
-	qemu-system-x86_64 -cdrom $(ISO) -m 4G -serial stdio \
-		-drive file=disk.img,if=none,format=raw,id=x0 \
-		-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off
+disk:
+	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c FAT)" -eq 0 ]; then \
+		dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null; \
+		mkfs.vfat -F 32 -n SERIX disk.img; \
+		echo "Formatted disk.img as FAT32 (SERIX)"; \
+	else \
+		echo "disk.img already FAT32, skipping format"; \
+	fi
+
+QEMU_COMMON = -m 4G -boot d -cdrom $(ISO) \
+	-drive file=disk.img,if=none,format=raw,id=x0 \
+	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off
+
+run: iso disk
+	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio
+
+run-nographic: iso disk
+	qemu-system-x86_64 $(QEMU_COMMON) -nographic
+
+run-debug: iso disk
+	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
+		-d int,cpu_reset -no-reboot
 
 clean:
 	rm -rf $(ISO_ROOT) $(ISO)
