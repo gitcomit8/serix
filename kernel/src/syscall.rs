@@ -17,6 +17,9 @@ pub const SYS_EXIT: u64 = 60;
 pub const SYS_YIELD: u64 = 24;
 pub const SYS_SEND: u64 = 20;
 pub const SYS_RECV: u64 = 21;
+pub const SYS_OPEN: u64 = 2;
+pub const SYS_CLOSE: u64 = 3;
+pub const SYS_SEEK: u64 = 8;
 pub const SYS_RECV_BLOCK: u64 = 22;
 
 /* Error codes (negative errno values represented as u64) */
@@ -213,12 +216,8 @@ extern "C" fn syscall_dispatcher(
 ) -> u64 {
 	match nr {
 		SYS_READ => {
-			/* Read system call: fd, buffer pointer, length
-			 * Only supports STDIN (fd 0)
-			 */
-			if arg1 != 0 {
-				return ERRNO_EBADF;
-			}
+			/* Read system call: fd, buffer pointer, length */
+			let fd = arg1;
 			let ptr = arg2 as *mut u8;
 			let len = arg3 as usize;
 
@@ -229,49 +228,66 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EFAULT;
 			}
 
-			// Blocking READ
-			// Loop until we get at least one character
-			loop {
-				if let Some(k) = keyboard::pop_key() {
-					unsafe { *ptr = k };
-					return 1;
+			if fd == 0 {
+				/* STDIN: blocking keyboard read */
+				loop {
+					if let Some(k) = keyboard::pop_key() {
+						unsafe { *ptr = k };
+						return 1;
+					}
+					x86_64::instructions::interrupts::enable();
+					core::hint::spin_loop();
+					x86_64::instructions::interrupts::disable();
 				}
-				// Enable interrupts briefly so keyboard ISR can fire
-				x86_64::instructions::interrupts::enable();
-				core::hint::spin_loop();
-				x86_64::instructions::interrupts::disable();
+			}
+
+			/* fd >= 3: file descriptor read */
+			let task_id = task::scheduler::current_task_id();
+			if let Some(file) = crate::fd::get(task_id, fd) {
+				let mut off = file.offset.lock();
+				let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+				let n = file.inode.read(*off, buf);
+				*off += n;
+				n as u64
+			} else {
+				ERRNO_EBADF
 			}
 		}
 		SYS_WRITE => {
 			/* Write system call: fd, buffer pointer, length */
-			if arg1 != 1 {
-				/* Only stdout (fd 1) is supported for now */
-				return ERRNO_EBADF;
-			}
-
+			let fd = arg1;
 			let ptr = arg2 as *const u8;
 			let len = arg3 as usize;
 
-			/* Validate pointer is in userspace range */
 			if !is_user_accessible(ptr, len) {
-				hal::serial_println!("[SYSCALL] SYS_WRITE: Invalid pointer 0x{:x}", arg2);
 				return ERRNO_EFAULT;
 			}
 
-			/* Safely create slice from validated pointer */
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-
-			/* Validate UTF-8 encoding */
-			match core::str::from_utf8(slice) {
-				Ok(s) => {
-					hal::serial_print!("{}", s);
-					graphics::console::_print(format_args!("{}", s));
-					len as u64 /* Return bytes written */
+			if fd == 1 || fd == 2 {
+				/* stdout / stderr: console output */
+				let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+				match core::str::from_utf8(slice) {
+					Ok(s) => {
+						hal::serial_print!("{}", s);
+						graphics::console::_print(format_args!("{}", s));
+						len as u64
+					}
+					Err(_) => ERRNO_EINVAL,
 				}
-				Err(_) => {
-					hal::serial_println!("[SYSCALL] SYS_WRITE: Invalid UTF-8 data");
-					ERRNO_EINVAL
+			} else if fd >= 3 {
+				/* File descriptor write */
+				let task_id = task::scheduler::current_task_id();
+				if let Some(file) = crate::fd::get(task_id, fd) {
+					let mut off = file.offset.lock();
+					let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
+					let n = file.inode.write(*off, buf);
+					*off += n;
+					n as u64
+				} else {
+					ERRNO_EBADF
 				}
+			} else {
+				ERRNO_EBADF
 			}
 		}
 
@@ -280,6 +296,60 @@ extern "C" fn syscall_dispatcher(
 			hal::serial_println!("[SYSCALL] Process exited with status {}", arg1);
 			loop {
 				hal::cpu::halt();
+			}
+		}
+
+		SYS_OPEN => {
+			/*
+			 * Open system call: path_ptr, path_len
+			 * Returns: fd on success, ENOENT if path not found
+			 */
+			let ptr = arg1 as *const u8;
+			let len = arg2 as usize;
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+			let path = match core::str::from_utf8(slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let task_id = task::scheduler::current_task_id();
+			match crate::fd::open(task_id, path) {
+				Some(fd) => fd,
+				None => ERRNO_ENOENT,
+			}
+		}
+
+		SYS_CLOSE => {
+			/*
+			 * Close system call: fd
+			 * Returns: 0 on success, EBADF if fd not found
+			 */
+			let fd = arg1;
+			let task_id = task::scheduler::current_task_id();
+			if crate::fd::close(task_id, fd) {
+				0
+			} else {
+				ERRNO_EBADF
+			}
+		}
+
+		SYS_SEEK => {
+			/*
+			 * Seek system call: fd, offset
+			 * Returns: 0 on success, EBADF if fd not found
+			 */
+			let fd = arg1;
+			let offset = arg2 as usize;
+			let task_id = task::scheduler::current_task_id();
+			if crate::fd::seek(task_id, fd, offset) {
+				0
+			} else {
+				ERRNO_EBADF
 			}
 		}
 
