@@ -9,8 +9,9 @@ use core::fmt;
 use core::fmt::Write;
 use core::ptr::write_volatile;
 
+use spin::Mutex;
 #[cfg(feature = "global-console")]
-use spin::{Mutex, MutexGuard};
+use spin::MutexGuard;
 
 /*
  * 8x16 bitmap font for ASCII characters 32-127
