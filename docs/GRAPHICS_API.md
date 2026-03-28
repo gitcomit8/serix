@@ -15,7 +15,7 @@ This document describes the graphics driver implementation, programming
 interfaces, and usage guidelines. It follows Linux kernel documentation
 conventions and is organized for kernel developers.
 
-## Status (v0.0.5)
+## Status (v0.0.6)
 
 Working Features:
 
@@ -1375,7 +1375,7 @@ graphics::console::init_console(
 );
 
 // Simple text output:
-fb_println!("Serix Kernel v0.0.5");
+fb_println!("Serix Kernel v0.0.6");
 fb_println!("Memory: {} MB", total_memory / 1024 / 1024);
 fb_println!();
 

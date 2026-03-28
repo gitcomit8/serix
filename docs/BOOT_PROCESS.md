@@ -185,7 +185,7 @@ Serix configuration
 
 TIMEOUT=3
 
-:Serix OS v0.0.5
+:Serix OS v0.0.6
 
 ```
 
@@ -421,7 +421,7 @@ Serial output
 
 ```
 
-Serix Kernel v0.0.5 Starting...
+Serix Kernel v0.0.6 Starting...
 Serial console initialized
 
 ```
@@ -776,7 +776,7 @@ Test output
 
 ```
 
-graphics::fb_println!("Welcome to Serix OS v0.0.5!");
+graphics::fb_println!("Welcome to Serix OS v0.0.6!");
 graphics::fb_println!("Framebuffer: {}x{}", fb.width(), fb.height());
 graphics::fb_println!("Memory: {} MB usable", total_mb);
 
@@ -927,7 +927,7 @@ Serial console output
 
 ```
 
-Serix Kernel v0.0.5 Starting...
+Serix Kernel v0.0.6 Starting...
 Serial console initialized
 Legacy PIC disabled
 APIC enabled
@@ -940,7 +940,7 @@ Framebuffer display:
 
 - Blue screen background
 - Memory map bars at bottom (colored)
-- Text: "Welcome to Serix OS v0.0.5!"
+- Text: "Welcome to Serix OS v0.0.6!"
 - Text: System information (memory, framebuffer resolution)
 
 Interrupt functionality:

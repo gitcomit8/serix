@@ -30,7 +30,7 @@ devices while maintaining zero-cost performance characteristics.
 - Minimal Unsafe Surface - Unsafe operations clearly marked and isolated
 - Direct Hardware Control - No buffering or indirection layers
 
-## 1.2 Current Features (v0.0.5)
+## 1.2 Current Features (v0.0.6)
 
 Serial Console (WORKING)
 
@@ -524,7 +524,7 @@ Detects number of CPUs, cores, and threads in the system using CPUID and ACPI
 tables. Currently this module is a stub returning 1 CPU.
 
 
-## 6.1 Current Implementation (v0.0.5)
+## 6.1 Current Implementation (v0.0.6)
 
 Function
 

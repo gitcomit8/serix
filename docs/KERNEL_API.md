@@ -44,22 +44,29 @@ task/           Async executor, scheduler, task control blocks
 capability/     Capability-based security system
 drivers/        Device drivers (VirtIO, PCI, console)
 vfs/            Virtual filesystem (ramdisk, INode abstraction)
+fs/             FAT32 filesystem driver
 ipc/            Inter-process communication
 loader/         ELF userspace binary loader
 ulib/           Userspace library (syscall wrappers)
 
 ```
 
-## Current Status (v0.0.5)
+## Current Status (v0.0.6)
 
 System Calls
-    Basic syscalls implemented: serix_write, serix_read, serix_exit, serix_yield
+    10 syscalls implemented: serix_write, serix_read, serix_open, serix_close, serix_seek, serix_exit, serix_yield, serix_send, serix_recv, serix_recv_block
 
 VFS
-    Initialized with ramdisk support, basic file operations
+    Path resolution via lookup_path(), global VFS root, FAT32 filesystem mounted from VirtIO block device
 
 Task Scheduler
-    Minimal skeletal implementation, no preemptive scheduling yet
+    Preemptive round-robin scheduling with LAPIC timer at ~625 Hz
+
+Filesystem
+    FAT32 driver with BPB parsing, cluster chains, directory entries (8.3+LFN), file read/write
+
+File Descriptors
+    Global FD table keyed by (task_id, fd); open/close/seek operations
 
 Userspace
     Init binary loads and executes from ramdisk
@@ -288,7 +295,7 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
 
 
 The task subsystem provides async-based task execution, scheduling primitives,
-and context switching. Current implementation is minimal (v0.0.5) with no
+and context switching. Current implementation is minimal (v0.0.6) with no
 preemptive scheduling.
 
 
@@ -567,7 +574,7 @@ extern "C" fn cooperative_task() -> ! {
 
 
 The syscall subsystem provides the interface between userspace programs and
-the kernel. Currently implements 4 basic syscalls (v0.0.5).
+the kernel. Currently implements 10 syscalls.
 
 
 ## Syscall Numbers
@@ -576,10 +583,16 @@ Syscall vector assignments
 
 ```
 
-const SYS_READ:  u64 = 0;
-const SYS_WRITE: u64 = 1;
-const SYS_YIELD: u64 = 24;
-const SYS_EXIT:  u64 = 60;
+const SYS_READ:       u64 = 0;
+const SYS_WRITE:      u64 = 1;
+const SYS_OPEN:       u64 = 2;
+const SYS_CLOSE:      u64 = 3;
+const SYS_SEEK:       u64 = 8;
+const SYS_SEND:       u64 = 20;
+const SYS_RECV:       u64 = 21;
+const SYS_RECV_BLOCK: u64 = 22;
+const SYS_YIELD:      u64 = 24;
+const SYS_EXIT:       u64 = 60;
 
 ```
 
@@ -720,6 +733,94 @@ use ulib::serix_yield;
 
 loop {
 }
+
+```
+
+## serix_open()
+
+Open a file by path
+
+```
+
+pub fn serix_open(path: &str) -> isize
+
+```
+Parameters:
+    path
+        Absolute path (e.g. "/hello.txt")
+
+Returns:
+    File descriptor (>= 3) on success, or negative errno on error
+
+Error Codes:
+    ENOENT (-2): Path not found
+    EFAULT (-14): Invalid pointer
+    EINVAL (-22): Invalid UTF-8 path
+
+Example (userspace)
+
+```
+
+use ulib::serix_open;
+
+let fd = serix_open("/hello.txt");
+if fd >= 3 {
+    // fd is valid, use with read/write/close
+}
+
+```
+
+## serix_close()
+
+Close a file descriptor
+
+```
+
+pub fn serix_close(fd: usize) -> isize
+
+```
+Parameters:
+    fd
+        File descriptor to close
+
+Returns:
+    0 on success, EBADF if fd not found
+
+Example (userspace)
+
+```
+
+use ulib::serix_close;
+
+serix_close(fd);
+
+```
+
+## serix_seek()
+
+Set file read/write cursor position
+
+```
+
+pub fn serix_seek(fd: usize, offset: usize) -> isize
+
+```
+Parameters:
+    fd
+        File descriptor
+    offset
+        New byte offset from start of file
+
+Returns:
+    0 on success, EBADF if fd not found
+
+Example (userspace)
+
+```
+
+use ulib::serix_seek;
+
+serix_seek(fd, 0);  // Seek back to start
 
 ```
 
@@ -1206,14 +1307,91 @@ halt_loop();
 
 ## Virtual Filesystem
 
+The VFS subsystem provides filesystem abstraction with a trait-based INode
+interface, global root directory, path resolution, and FAT32 backend.
 
-The VFS subsystem provides filesystem abstraction with ramdisk support (v0.0.5).
+## VFS Root and Path Resolution
 
+set_root()
+```
 
-## INode Operations (basic, v0.0.5)
+Set the global VFS root inode
 
-File operations through INode interface, ramdisk backend initialized during
-boot. Full API under development.
+```
+
+pub fn set_root(root: Arc<dyn INode>)
+
+```
+Parameters:
+    root
+        Root directory inode (typically FatDirINode::root() or RamDir)
+
+Must be called once during boot after filesystem mount.
+
+lookup_path()
+```
+
+Resolve an absolute path to an inode
+
+```
+
+pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>>
+
+```
+Parameters:
+    path
+        Absolute path (e.g. "/hello.txt", "/subdir/file.txt", or "/")
+
+Returns:
+    Some(inode) if path resolves successfully, None otherwise
+
+Algorithm:
+    Splits path by '/' and iteratively calls INode::lookup() on each component
+    starting from VFS_ROOT.
+
+## INode Trait
+
+```
+
+pub trait INode: Send + Sync {
+    fn read(&self, offset: usize, buf: &mut [u8]) -> usize;
+    fn write(&self, offset: usize, buf: &[u8]) -> usize;
+    fn metadata(&self) -> FileType;
+    fn lookup(&self, name: &str) -> Option<Arc<dyn INode>>;
+    fn insert(&self, name: &str, node: Arc<dyn INode>) -> Result<(), &'static str>;
+    fn size(&self) -> usize;
+}
+
+```
+
+Implementations:
+    RamFile — In-memory file with Mutex<Vec<u8>> storage
+    RamDir — In-memory directory with Vec<(String, Arc<dyn INode>)> children
+    FatDirINode — FAT32 directory backed by cluster chain on disk
+    FatFileINode — FAT32 file backed by cluster chain on disk
+
+## File Descriptor Table
+
+```
+
+// kernel/src/fd.rs
+pub fn open(task_id: u64, path: &str) -> Option<u64>
+pub fn close(task_id: u64, fd: u64) -> bool
+pub fn get(task_id: u64, fd: u64) -> Option<Arc<OpenFile>>
+pub fn seek(task_id: u64, fd: u64, offset: usize) -> bool
+
+```
+
+Storage:
+    Global BTreeMap<(task_id, fd), Arc<OpenFile>> protected by spin::Mutex
+
+OpenFile:
+    inode: Arc<dyn INode> — backing VFS node
+    offset: Mutex<usize> — current read/write cursor
+
+FD Allocation:
+    FDs 0-2 reserved (stdin/stdout/stderr)
+    User files start at fd 3 (monotonically increasing)
 
 
 ## Boot Sequence
@@ -1397,6 +1575,7 @@ const DOUBLE_FAULT_VECTOR: u8 = 8;
 // Hardware interrupts: 32-255
 const PIT_TIMER_VECTOR: u8 = 32;    // Legacy (disabled)
 const KEYBOARD_VECTOR: u8 = 33;     // PS/2 keyboard
+const VIRTIO_BLK_VECTOR: u8 = 34;   // VirtIO block device
 const TIMER_VECTOR: u8 = 49;        // LAPIC timer
 
 ```
@@ -1526,15 +1705,14 @@ Interrupt Management
 Device Management
 ```
 
-- PCI enumeration and configuration space access
 - Device driver registration framework
-- DMA buffer allocation with IOMMU support
+- IOMMU support
 - Power management (ACPI)
 
 System Calls
 ```
 
-- File I/O: open, close, read, write, seek, stat
+- File I/O: stat
 - Process management: fork, exec, wait, kill
 - Memory: mmap, munmap, mprotect, brk
 - IPC: pipe, socket, sendmsg, recvmsg
@@ -1544,7 +1722,7 @@ System Calls
 ## API Stability
 
 Current Status:
-    Pre-alpha (v0.0.5), APIs subject to change without notice
+    Pre-alpha (v0.0.6), APIs subject to change without notice
 
 Versioning:
     Not yet established, will follow semantic versioning post-v1.0

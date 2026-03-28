@@ -7,7 +7,7 @@ preemptive scheduling.
 
 ## Status
 
-Current release: v0.0.5
+Current release: v0.0.6
 
 The kernel successfully boots to a graphical console, initializes core
 subsystems (APIC, IDT, heap, VFS), loads and executes a userspace init
@@ -33,8 +33,13 @@ Alt text: "Terminal recording showing QEMU boot of Serix kernel with serial cons
 - Framebuffer graphics with text console
 - VFS with ramdisk support
 - ELF loader for userspace binaries
-- Basic syscalls: write, read, exit, yield
+- Syscalls: read, write, open, close, seek, exit, yield, send, recv, recv_block
 - Async task executor with cooperative scheduling
+- FAT32 filesystem with file create/read/write (Linux-compatible disk image)
+- VirtIO block device driver with PCI enumeration
+- Preemptive scheduling with LAPIC timer at ~625 Hz
+- IPC port-based message passing with blocking receive
+- File descriptor table with open/close/seek syscalls
 
 ## Building
 
@@ -101,12 +106,14 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
   ipc/            Inter-process communication
   loader/         ELF userspace binary loader
   ulib/           Userspace library with syscall wrappers
+  fs/             FAT32 filesystem driver
+  keyboard/       PS/2 keyboard driver
   util/           Utility functions (panic handler, etc.)
   docs/           Technical documentation
   limine/         Limine bootloader (git submodule)
 ```
 
-**Module Documentation**: [kernel](kernel/README.md) | [memory](memory/README.md) | [hal](hal/README.md) | [apic](apic/README.md) | [idt](idt/README.md) | [graphics](graphics/README.md) | [task](task/README.md) | [util](util/README.md) | [keyboard](keyboard/README.md)
+**Module Documentation**: [kernel](kernel/README.md) | [memory](memory/README.md) | [hal](hal/README.md) | [apic](apic/README.md) | [idt](idt/README.md) | [graphics](graphics/README.md) | [task](task/README.md) | [util](util/README.md) | [keyboard](keyboard/README.md) | [vfs](vfs/README.md) | [ipc](ipc/README.md) | [drivers](drivers/README.md) | [fs](fs/README.md)
 
 ## Documentation
 
@@ -130,7 +137,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - Build and test procedures
 - Commit message format
 - Pull request process
-- Areas needing work (see [Phase 3 of roadmap](docs/ROADMAP.md#phase-3-hardware-integration-in-progress))
+- Areas needing work (see [Phase 4 of roadmap](docs/ROADMAP.md))
 
 Bug reports and feature requests should use GitHub issue templates in
 [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/).
