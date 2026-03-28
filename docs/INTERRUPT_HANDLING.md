@@ -11,7 +11,7 @@ Interrupt Descriptor Table (IDT) and Advanced Programmable Interrupt Controller
 (APIC). This document describes the complete interrupt handling mechanism from
 hardware signal to software handler execution.
 
-## Current Status (v0.0.5)
+## Current Status (v0.0.6)
 
 Working features
 
@@ -40,7 +40,7 @@ Legacy PIC   Disabled, not used                   Ports 0x20/0x21, 0xA0/0xA1
 
 ## Interrupt Vector Allocation
 
-Current vector assignments in v0.0.5
+Current vector assignments in v0.0.6
 
 ```
 
@@ -471,7 +471,7 @@ fault.
 
 ## Keyboard Interrupt (Vector 33)
 
-Status: **WORKING IN v0.0.5**
+Status: **WORKING IN v0.0.6**
 
 Implementation in idt/src/lib.rs
 
@@ -488,7 +488,7 @@ Implementation in idt/src/lib.rs
 
 ## Timer Interrupt (Vector 49)
 
-Status: **WORKING IN v0.0.5** (~625 Hz)
+Status: **WORKING IN v0.0.6** (~625 Hz)
 
 Implementation in apic/src/timer.rs
 
@@ -516,7 +516,7 @@ Complete routing from hardware IRQ to handler
 
 ## I/O APIC Redirection Table
 
-Current configuration in v0.0.5
+Current configuration in v0.0.6
 
 ```
 
@@ -728,7 +728,7 @@ I/O APIC Redirection Dump
 
 ## Interrupt Vector Summary
 
-Active vectors in v0.0.5
+Active vectors in v0.0.6
 
 ```
 

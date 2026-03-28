@@ -1,6 +1,6 @@
 # Serix Kernel Architecture
 
-> **Target ISA:** x86_64 (AMD64) · **Privilege Model:** Ring 0 / Ring 3 Hybrid · **Current Release:** v0.0.5
+> **Target ISA:** x86_64 (AMD64) · **Privilege Model:** Ring 0 / Ring 3 Hybrid · **Current Release:** v0.0.6
 
 ## Table of Contents
 
@@ -44,6 +44,7 @@ These modules execute in supervisor mode with direct access to CR3, MSRs, and MM
 | **Interrupt Dispatcher** | `idt/`, `apic/` | IDT vectors, LAPIC/I/O APIC programming, EOI signaling |
 | **Capability Store** | `capability/` | `BTreeMap`-backed capability validation on every syscall/IPC boundary |
 | **Syscall Entry** | `kernel/` | `SYSCALL`/`SYSRET` trampoline; MSR configuration (`LSTAR`, `STAR`, `SFMASK`, `EFER.SCE`) |
+| **FAT32 Filesystem** | `fs/` | Synchronous sector I/O via VirtIO-blk; cluster chain operations must be atomic |
 
 ### 2.2 Ring 3 — Userspace Server Processes
 
@@ -53,7 +54,7 @@ These subsystems run as isolated processes in their own address spaces. Faults i
 |---|---|---|
 | **Ext4 Filesystem Daemon** | Synchronous IPC | Parses extent trees, manages journal, serves VFS `read`/`write` dispatches |
 | **Network Stack** | Zero-copy shared buffers | TCP/IP processing on VirtIO-net ring buffers mapped into application address space |
-| **Block Driver (VirtIO-blk)** | Asynchronous IPC | Submits I/O descriptors to VirtIO virtqueues; interrupt-driven completion |
+| **Block Driver (VirtIO-blk)** | Polled I/O | Currently Ring 0; submits I/O descriptors to VirtIO virtqueues; polled completion |
 | **USB/Input Driver (XHCI)** | Asynchronous IPC | Manages XHCI host controller rings; delivers HID events via IPC ports |
 | **Display Server (GOP)** | Shared framebuffer | Composites client surfaces onto UEFI GOP linear framebuffer |
 | **POSIX-to-Capability Bridge** | Synchronous IPC | Translates `UID`/`GID`/`mode` DAC checks into `CapabilityHandle` tickets |
@@ -157,6 +158,7 @@ The LES enables execution of unmodified Linux ELF binaries by translating Linux 
 - **Messages:** Fixed 128-byte payload (`Message { sender_id, id, len, data: [u8; 128] }`).
 - **IPC Space:** A global `BTreeMap<PortId, Port>` registry (`IPC_GLOBAL`) for port lookup.
 - **Operations:** `send(port_id, msg)` enqueues; `receive(port_id)` dequeues (currently non-blocking; blocking semantics planned via scheduler integration).
+- **Blocking Receive:** `receive_blocking()` suspends the calling task (sets `TaskState::Blocked`) until a message arrives; `send()` wakes the first blocked receiver.
 
 ### 5.2 IPC Fastpath
 
@@ -315,6 +317,7 @@ serix/
 ├── capability/    # CapabilityStore, CapabilityHandle, grant/revoke/validate
 ├── ipc/           # Port-based IPC, Message, IpcSpace, fastpath
 ├── vfs/           # INode trait, RamFile, RamDir, mount table, page cache
+├── fs/            # FAT32 filesystem driver (BPB, cluster chains, directory entries, file I/O)
 ├── loader/        # ELF64 parser, PT_LOAD/PT_INTERP, auxv construction
 ├── drivers/       # PCI enumeration, VirtIO-blk, ConsoleDevice
 ├── keyboard/      # PS/2 scancode translation, key event queue

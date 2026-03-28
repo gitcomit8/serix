@@ -49,6 +49,18 @@ The `_start()` function is the kernel's entry point, called by the Limine bootlo
    ↓
 10. Heap Initialization
     ↓
+10a. MMIO Mapping (LAPIC, IOAPIC)
+    ↓
+10b. PCI Enumeration + VirtIO Init
+    ↓
+10c. SLUB Allocator Init
+    ↓
+10d. VirtIO Queue Setup + Interrupt Registration
+    ↓
+10e. FAT32 Mount + VFS Root
+    ↓
+10f. FD Table Smoke Test
+    ↓
 11. Graphics Console Initialization
     ↓
 12. Scheduler Initialization
@@ -256,17 +268,18 @@ init_console(fb.addr(), fb.width() as usize, fb.height() as usize, fb.pitch() as
 - Scrolling support
 - Global `fb_println!` macro support
 
-#### Phase 13: Scheduler Initialization
+#### Phase 13: Scheduler Initialization, FAT32 Mount, and Validation
 
 ```rust
 Scheduler::init_global();
 ```
 
-**Purpose**: Initializes the global task scheduler (currently minimal):
+**Purpose**: Initializes the global task scheduler and validates subsystems:
 
-- Creates global scheduler instance
-- Prepares task management infrastructure
-- Future: will support preemptive multitasking
+- Creates global scheduler instance with preemptive round-robin scheduling
+- Mounts FAT32 filesystem from VirtIO-blk disk image
+- Initializes file descriptor table and validates open/close/seek operations
+- Spawns IPC producer/consumer test tasks to validate blocking message passing
 
 #### Phase 14: Main Loop
 
@@ -338,6 +351,13 @@ pub fn panic(info: &PanicInfo) -> ! {
 - **memory**: Page tables, heap, frame allocation
 - **util**: Panic handling and utility functions
 - **task**: Task management and scheduling (proto)
+- **drivers**: VirtIO block device, PCI enumeration
+- **vfs**: Virtual filesystem INode abstraction
+- **ipc**: Inter-process communication ports
+- **loader**: ELF binary loader
+- **keyboard**: PS/2 keyboard driver
+- **fs**: FAT32 filesystem driver
+- **capability**: Capability-based security
 
 ### External Crates
 
@@ -494,13 +514,12 @@ gdb target/x86_64-unknown-none/debug/kernel
 
 ### Planned Features
 
-1. **Full Task Scheduler**: Preemptive multitasking with round-robin or CFS
-2. **SMP Support**: Multi-processor initialization and coordination
-3. **User Mode**: Ring 3 execution with syscall interface
-4. **Virtual File System**: Abstract filesystem layer
-5. **Device Drivers**: PCI, USB, SATA, NVMe
-6. **Network Stack**: TCP/IP implementation
-7. **Shell**: Interactive command-line interface
+1. **SMP Support**: Multi-processor initialization and coordination
+2. **Network Stack**: TCP/IP implementation via VirtIO-net
+3. **Shell**: Interactive command-line interface
+4. **USB/Input Driver**: XHCI host controller for HID devices
+5. **NVMe Driver**: Persistent block storage on real hardware
+6. **Dynamic Module Loading**: Loadable kernel modules
 
 ### Architectural Improvements
 

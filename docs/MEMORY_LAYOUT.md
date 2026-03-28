@@ -149,7 +149,7 @@ Flags:   Present, Writable, NX
 Allocator: linked_list_allocator (buddy allocator planned)
 
 ```
-**Current Status (v0.0.5)**: 1 MB heap is sufficient for current kernel needs.
+**Current Status (v0.0.6)**: 1 MB heap is sufficient for current kernel needs.
 Future expansion planned for:
 
 - Larger VFS caches
@@ -560,7 +560,7 @@ SMEP (Supervisor Mode Execution Prevention)
 
 
 
-## Memory Statistics (v0.0.5)
+## Memory Statistics (v0.0.6)
 
 
 ## Kernel Memory Usage

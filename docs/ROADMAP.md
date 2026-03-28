@@ -1,20 +1,25 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-03-01 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.5
+> **Last Updated:** 2026-03-28 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.6
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
 
 For architectural context on the subsystems referenced below, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Current Status (v0.0.5)
+## Current Status (v0.0.6)
 
-The kernel has completed foundational bring-up (Phases 1–2) and is partially through hardware integration (Phase 3). Current operational capabilities:
+The kernel has completed Phases 1–2 and the four core features of Phase 3. Current operational capabilities:
 
 - **Boot:** Limine v10.x (BIOS + UEFI), higher-half kernel with HHDM at `0xFFFF_8000_0000_0000`
-- **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33)
-- **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`)
-- **Syscalls:** `SYSCALL`/`SYSRET` via MSR configuration; `SYS_WRITE(1)`, `SYS_READ(0)`, `SYS_EXIT(60)`, `SYS_YIELD(24)`, `SYS_SEND(20)`, `SYS_RECV(21)`
-- **Subsystems:** VFS (ramdisk + RamDir/RamFile INodes), ELF loader, IPC (port-based message passing), async task executor, capability store infrastructure (not yet enforced), PCI enumeration, VirtIO-blk detection (incomplete), serial + framebuffer console
+- **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vector 34, IRQ 11)
+- **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects and 1 MiB task stacks (`0xFFFF_D000_0000_0000` VA range)
+- **Scheduling:** Preemptive round-robin; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with SLUB-allocated stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
+- **Syscalls:** `SYSCALL`/`SYSRET` via MSR; `SYS_READ(0)`, `SYS_WRITE(1)`, `SYS_OPEN(2)`, `SYS_CLOSE(3)`, `SYS_SEEK(8)`, `SYS_SEND(20)`, `SYS_RECV(21)`, `SYS_RECV_BLOCK(22)`, `SYS_YIELD(24)`, `SYS_EXIT(60)`
+- **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
+- **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; interrupt-driven sector read/write (IRQ via IOAPIC); `BlockDevice` VFS INode for byte-oriented access; 32 MiB disk, write→read verified
+- **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
+- **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 reserved (stdin/stdout/stderr), user files start at fd 3
+- **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes), ELF loader, IPC, async executor, capability store (not yet enforced), PCI enumeration, serial + framebuffer console, fs (FAT32)
 
 ---
 
@@ -81,12 +86,14 @@ The kernel has completed foundational bring-up (Phases 1–2) and is partially t
 
 ## Phase 3: Preemptive Scheduling & IPC Hardening 🔄
 
-**Status:** In progress (~40%)
+**Status:** Core features complete; SMP and advanced scheduler features deferred to Phase 7
 
 ### Preemptive SMP Scheduler
 
 - [x] `SchedClass` enum (`Realtime`, `Fair`, `Batch`, `Iso`)
-- [ ] LAPIC timer-driven preemption tick (repurpose vector 49 handler to invoke `schedule()`)
+- [x] LAPIC timer-driven preemption at ~625 Hz invoking `schedule()` (vector 49)
+- [x] SLUB-allocated 1 MiB per-task kernel stacks with guard pages
+- [x] Callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking
 - [ ] Per-CPU run queues with `GS_BASE` MSR pointing to per-CPU data area
 - [ ] `TSS.RSP0` swap on context switch for per-task kernel stacks
 - [ ] Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
@@ -102,31 +109,48 @@ The kernel has completed foundational bring-up (Phases 1–2) and is partially t
 ### IPC Router Hardening
 
 - [x] Port-based message passing (`send`/`receive` via `IPC_GLOBAL`)
-- [ ] Blocking `receive()` with task state transition (`Running` → `Blocked`) and scheduler re-entry
+- [x] Blocking `receive_blocking()` with `TaskState::Blocked`, per-port wait queues, and scheduler re-entry
+- [x] `SYS_RECV_BLOCK (22)` syscall for userspace blocking receive
+- [x] `send()` wakes first blocked receiver; producer/consumer validated in QEMU
 - [ ] IPC fastpath: direct register transfer when receiver is blocked at `receive()` call site
 - [ ] Capability validation on every `send()` — enforce `CapabilityHandle` ownership for target port
 - [ ] Asynchronous notification ports (bitmask-based, non-queuing) for interrupt forwarding to Ring 3 servers
 
 ### VirtIO Block Driver
 
-- [x] PCI BAR enumeration and VirtIO capability structure parsing
-- [ ] Virtqueue setup (descriptor table, available ring, used ring) with DMA-safe allocations
-- [ ] `virtio_blk_read()` / `virtio_blk_write()` request submission and interrupt-driven completion
+- [x] PCI BAR enumeration and VirtIO 1.0 capability structure parsing (COMMON_CFG, NOTIFY_CFG, ISR_CFG, DEVICE_CFG)
+- [x] Two-phase init: PCI/feature negotiation before SLUB; virtqueue setup + DRIVER_OK after SLUB
+- [x] Virtqueue (descriptor table, available ring, used ring) with DMA-safe HHDM frame allocation
+- [x] `read_sector()` / `write_sector()` with polled completion (spin_loop) (IRQ 11 → vector 34, IOAPIC)
+- [x] `BlockDevice` VFS INode: byte-oriented read/write with sector-aligned translation and read-modify-write
+- [x] 32 MiB disk (65536 sectors), write→read verified via VFS interface
 - [ ] Ring 3 driver server process with MMIO BAR mapped into userspace
 
 ---
 
 ## Phase 4: Storage & Filesystem Stack
 
-**Status:** Planned
+**Status:** Core complete; Ext4/page cache deferred
 
 ### VFS Core Enhancements
 
-- [ ] Path resolution engine (iterative component lookup through `INode::lookup()` chain)
+- [x] Path resolution engine (iterative component lookup through `INode::lookup()` chain)
 - [ ] Mount table (`BTreeMap<VirtAddr, MountPoint>`) for overlaying filesystems on directory INodes
-- [ ] File descriptor table per `TaskCB` (array of `Option<FileDescriptor>` with capability handle)
+- [x] File descriptor table (global table keyed by `(task_id, fd)`, not per-TaskCB)
 - [ ] Standard fd allocation: fd 0 (stdin/PS/2 keyboard), fd 1 (stdout/console), fd 2 (stderr/serial)
-- [ ] `openat()`, `close()`, `lseek()`, `fstat()` syscall implementations
+- [x] `SYS_OPEN`, `SYS_CLOSE`, `SYS_SEEK` syscall implementations
+
+### FAT32 Filesystem (Ring 0)
+
+- [x] BPB (BIOS Parameter Block) parsing from sector 0 (bytes_per_sector, sectors_per_cluster, reserved_sectors, fat_count, sectors_per_fat, root_cluster)
+- [x] FAT cluster chain traversal (`fat_read_entry`) and allocation (`fat_alloc_cluster` with `fat_write_entry`)
+- [x] Directory entry parsing with 8.3 SFN and Long File Name (LFN) support
+- [x] Directory entry creation (LFN + 8.3 pair with correct checksum and sequence numbers)
+- [x] File read path: cluster chain → sector read → byte-offset copy
+- [x] File write path: cluster chain extension, data write, directory entry size update
+- [x] VFS integration: `FatDirINode` and `FatFileINode` implementing `vfs::INode` trait
+- [x] `mount()` function parsing BPB from VirtIO block device sector 0
+- [x] Linux interop: `disk.img` mountable on Linux via `mount -o loop` to inspect files created by Serix
 
 ### Ext4 Filesystem Daemon (Ring 3)
 
@@ -363,8 +387,8 @@ This phase targets a **Minimum Viable Product (MVP)** demonstrating the full ker
 |---|---|---|
 | **1** | Core Foundation (boot, memory, HAL) | ✅ Complete |
 | **2** | System Infrastructure (tasks, capabilities, syscalls) | ✅ Complete |
-| **3** | Preemptive Scheduling & IPC Hardening | 🔄 In Progress |
-| **4** | Storage & Filesystem Stack (Ext4, page cache) | 📋 Planned |
+| **3** | Preemptive Scheduling & IPC Hardening | 🔄 Core complete; SMP/WFQ deferred |
+| **4** | Storage & Filesystem Stack (Ext4, page cache) | 🔄 Core complete; Ext4/page cache deferred |
 | **5** | Linux ABI Translation Layer (LES) | 📋 Planned |
 | **6** | Security Bridge & Capability Enforcement | 📋 Planned |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 📋 Planned |
@@ -376,10 +400,9 @@ This phase targets a **Minimum Viable Product (MVP)** demonstrating the full ker
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-priority items for contributors:
 
-1. **Preemptive scheduler** — LAPIC timer preemption + per-CPU run queues (Phase 3)
-2. **VirtIO-blk driver completion** — virtqueue setup and block I/O (Phase 3)
-3. **Blocking IPC** — `receive()` with scheduler integration (Phase 3)
-4. **Ext4 read path** — superblock + extent tree parsing (Phase 4)
-5. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap (Phase 7)
+1. **Ext4 read path** — superblock + extent tree parsing (Phase 4)
+2. **Capability enforcement** — gate syscalls/IPC on `CapabilityHandle` (Phase 6)
+3. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap + per-CPU run queues (Phase 7)
+4. **Shell (`serix-sh`)** — PS/2 keyboard input, VFS-backed `ls`/`cat` (Phase 8)
 
 File issues or open draft PRs on [GitHub](https://github.com/gitcomit8/serix) to claim a task.
