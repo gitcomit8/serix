@@ -2,6 +2,7 @@
 /ovmf
 *.iso
 *.hdd
+*.img
 /target
 .idea/
 Cargo.lock
