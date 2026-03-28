@@ -8,7 +8,7 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use ulib::{STDIN, STDOUT, exit, read, write};
+use ulib::{STDIN, STDOUT, exit, read, serix_close, serix_open, serix_seek, write};
 
 /*
  * panic - User panic handler
@@ -30,20 +30,40 @@ fn panic(_info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	write(STDOUT, b"\n--- Serix User Shell ---\n");
+
+	/* File I/O test: open /hello.txt, read contents, print */
+	let fd = serix_open("/hello.txt");
+	if fd >= 3 {
+		let fd = fd as usize;
+		let mut rbuf = [0u8; 64];
+		let n = read(fd, &mut rbuf);
+		write(STDOUT, b"[init] /hello.txt: ");
+		write(STDOUT, &rbuf[..n]);
+		write(STDOUT, b"\n");
+
+		/* Seek back to start and re-read */
+		serix_seek(fd, 0);
+		let n2 = read(fd, &mut rbuf);
+		write(STDOUT, b"[init] seek(0)+read: ");
+		write(STDOUT, &rbuf[..n2]);
+		write(STDOUT, b"\n");
+
+		serix_close(fd);
+	} else {
+		write(STDOUT, b"[init] open /hello.txt failed\n");
+	}
+
 	write(STDOUT, b"$ ");
 
 	let mut buf = [0u8; 1];
 
 	loop {
-		// Block until a key is pressed
 		let n = read(STDIN, &mut buf);
 
 		if n > 0 {
 			let c = buf[0];
-			// Echo character back to screen
 			write(STDOUT, &buf);
 
-			// Print prompt after newline
 			if c == b'\r' || c == b'\n' {
 				write(STDOUT, b"$ ");
 			}
