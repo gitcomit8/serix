@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
+use spin::Once;
 
 /*
  * enum FileType - Type of VFS node
@@ -83,6 +84,40 @@ pub trait INode: Send + Sync {
 	fn size(&self) -> usize {
 		0
 	}
+}
+
+/*
+ * VFS_ROOT - Global root inode
+ */
+static VFS_ROOT: Once<Arc<dyn INode>> = Once::new();
+
+/*
+ * set_root - Set the global VFS root inode
+ * @root: Root directory inode
+ */
+pub fn set_root(root: Arc<dyn INode>) {
+	VFS_ROOT.call_once(|| root);
+}
+
+/*
+ * lookup_path - Resolve an absolute path to an inode
+ * @path: Absolute path (e.g. "/hello.txt" or "/")
+ *
+ * Return: Some(inode) if found, None otherwise
+ */
+pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
+	let root = VFS_ROOT.get()?;
+	if path == "/" || path.is_empty() {
+		return Some(Arc::clone(root));
+	}
+	let mut node: Arc<dyn INode> = Arc::clone(root);
+	for component in path.trim_start_matches('/').split('/') {
+		if component.is_empty() {
+			continue;
+		}
+		node = node.lookup(component)?;
+	}
+	Some(node)
 }
 
 /*
