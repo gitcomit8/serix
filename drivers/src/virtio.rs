@@ -470,14 +470,12 @@ impl VirtioBlock {
 				self.notify_off_multiplier,
 			);
 
-			/* Wait for interrupt-driven completion */
-			VIRTIO_BLK_COMPLETE.store(false, Ordering::Release);
+			/* Wait for completion (polled) */
 			loop {
 				if let Some(_) = vq.pop_used() {
 					break;
 				}
-				x86_64::instructions::interrupts::enable_and_hlt();
-				x86_64::instructions::interrupts::disable();
+				core::hint::spin_loop();
 			}
 
 			/* Check status */
