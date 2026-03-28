@@ -152,6 +152,14 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] `mount()` function parsing BPB from VirtIO block device sector 0
 - [x] Linux interop: `disk.img` mountable on Linux via `mount -o loop` to inspect files created by Serix
 
+### FAT32 Known Issues
+
+- [ ] Duplicate file detection: `insert()` creates a new directory entry without checking if name already exists
+- [ ] No subdirectory creation (only root-level files)
+- [ ] No file deletion / `unlink()`
+- [ ] No timestamps on directory entries
+- [ ] DMA page leak: `alloc_dma_page()` frames are never freed after I/O completion
+
 ### Ext4 Filesystem Daemon (Ring 3)
 
 - [ ] Superblock parsing at device offset `0x400` (magic `0xEF53`, block size, inode count, feature flags)
@@ -288,22 +296,42 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 This phase targets a **Minimum Viable Product (MVP)** demonstrating the full kernel stack end-to-end.
 
-### Shell (`serix-sh`)
+### Shell (`rsh` — [github.com/gitcomit8/rsh](https://github.com/gitcomit8/rsh))
 
-- [ ] Text-based CLI with standard I/O mapped to PS/2 keyboard input (fd 0) and console output (fd 1)
-- [ ] Line editor: cursor movement, backspace, history (ring buffer, up/down arrow recall)
-- [ ] Command parsing: tokenization, argument splitting, quoting
-- [ ] Internal (built-in) commands:
-	- `ls` — list directory entries via `getdents64` on VFS
-	- `cat` — read and display file contents
-	- `echo` — write arguments to stdout
-	- `mkdir` — create directory via `mkdir` syscall
-	- `rmdir` — remove empty directory via `rmdir` syscall
-	- `rm` — unlink file via `unlink` syscall
-	- `ps` — list tasks (read `/proc/[pid]/stat`)
-	- `shutdown` — trigger ACPI S5 via `reboot` syscall
-	- `reboot` — trigger ACPI reset via `reboot` syscall
+Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix userspace.
+
+**Port from std to no_std:**
+
+- [ ] Replace `std::io` stdin/stdout with `ulib::read(STDIN)` / `ulib::write(STDOUT)` syscall wrappers
+- [ ] Replace `HashMap` → `BTreeMap` (from `alloc`), keep `Vec`/`String` via `alloc`
+- [ ] Replace `std::process::exit()` → `ulib::exit()`
+- [ ] Add userspace heap allocator (bump allocator or `linked_list_allocator` over `brk`/fixed region)
+- [ ] Remove ANSI escape sequences that depend on terminal emulation (adapt for framebuffer console)
+- [ ] Build as `#![no_std]` `#![no_main]` binary linked with `user.ld`
+
+**Filesystem builtins (require working VFS syscalls):**
+
+- [ ] `ls` — list directory entries via `SYS_GETDENTS` or VFS directory read
+- [ ] `cat` — `serix_open()` + `read()` + `write(STDOUT)` + `serix_close()`
+- [ ] `mkdir` — create directory via `SYS_MKDIR`
+- [ ] `rm` — unlink file via `SYS_UNLINK`
+- [ ] `touch` — create empty file via `serix_open()` + `serix_close()`
+- [ ] `pwd` / `cd` — working directory tracking (requires `SYS_CHDIR`/`SYS_GETCWD` or client-side state)
+
+**Process builtins (require clone/execve/waitpid syscalls):**
+
+- [ ] `ps` — list tasks (read `/proc/[pid]/stat` or dedicated `SYS_TASKINFO`)
+- [ ] `shutdown` / `reboot` — trigger ACPI S5/reset via `SYS_REBOOT`
 - [ ] External command execution via `fork()` + `execve()` with `PATH` resolution
+
+**Existing features to preserve:**
+
+- [x] REPL loop with prompt
+- [x] Tokenizer with quoted strings, escape sequences, variable substitution
+- [x] Shell variables (`set`/`get`)
+- [x] Control flow (`if`, `repeat`)
+- [x] Command history
+- [ ] Line editor: cursor movement, backspace, arrow-key history recall
 
 ### Synthetic `/proc` Pseudo-Filesystem
 
@@ -400,9 +428,9 @@ This phase targets a **Minimum Viable Product (MVP)** demonstrating the full ker
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-priority items for contributors:
 
-1. **Ext4 read path** — superblock + extent tree parsing (Phase 4)
-2. **Capability enforcement** — gate syscalls/IPC on `CapabilityHandle` (Phase 6)
-3. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap + per-CPU run queues (Phase 7)
-4. **Shell (`serix-sh`)** — PS/2 keyboard input, VFS-backed `ls`/`cat` (Phase 8)
+1. **Shell (`rsh`) no_std port** — port [rsh](https://github.com/gitcomit8/rsh) to `#![no_std]` + `ulib` (Phase 8)
+2. **Ext4 read path** — superblock + extent tree parsing (Phase 4)
+3. **Capability enforcement** — gate syscalls/IPC on `CapabilityHandle` (Phase 6)
+4. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap + per-CPU run queues (Phase 7)
 
 File issues or open draft PRs on [GitHub](https://github.com/gitcomit8/serix) to claim a task.
