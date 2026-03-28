@@ -5,8 +5,6 @@
  * Useful for hybrid architectures like Intel Alder Lake and later.
  */
 
-#![no_std]
-
 use core::arch::asm;
 
 /*

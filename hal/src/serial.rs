@@ -6,7 +6,6 @@
  */
 
 use crate::io::*;
-use core::fmt::Write;
 
 /* COM1 serial port base address */
 const COM1: u16 = 0x3F8;
