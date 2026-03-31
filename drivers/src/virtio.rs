@@ -80,6 +80,7 @@ pub struct VirtioBlock {
 	pub pci_dev: PciDevice,
 	queue: Option<Virtqueue>,
 	hhdm_offset: u64,
+	dma_buf: *mut BlkDmaBuffer,
 }
 
 /* Raw pointers are MMIO addresses, only accessed under Mutex */
@@ -312,6 +313,7 @@ impl VirtioBlock {
 			pci_dev: dev,
 			queue: None,
 			hhdm_offset,
+			dma_buf: core::ptr::null_mut(),
 		})
 	}
 
@@ -387,6 +389,15 @@ impl VirtioBlock {
 
 		self.queue = Some(vq);
 
+		/* Allocate single reusable DMA buffer for all block I/O */
+		self.dma_buf = match alloc_dma_page(self.hhdm_offset) {
+			Some(ptr) => ptr as *mut BlkDmaBuffer,
+			None => {
+				hal::serial_println!("VirtIO: DMA buf alloc failed");
+				return false;
+			}
+		};
+
 		/* Set DRIVER_OK — device is now live */
 		let s = read_volatile(&raw const (*cfg).device_status);
 		write_volatile(
@@ -432,9 +443,11 @@ impl VirtioBlock {
 	) -> Result<(), BlockError> {
 		let vq = self.queue.as_mut().ok_or(BlockError::IoError)?;
 
-		/* Allocate DMA buffer via physical frame (HHDM-mapped) */
-		let dma = alloc_dma_page(self.hhdm_offset)
-			.ok_or(BlockError::IoError)? as *mut BlkDmaBuffer;
+		let dma = if self.dma_buf.is_null() {
+			return Err(BlockError::IoError);
+		} else {
+			self.dma_buf
+		};
 
 		unsafe {
 			(*dma).header.type_ = VIRTIO_BLK_T_IN;
@@ -510,9 +523,11 @@ impl VirtioBlock {
 	) -> Result<(), BlockError> {
 		let vq = self.queue.as_mut().ok_or(BlockError::IoError)?;
 
-		/* Allocate DMA buffer via physical frame (HHDM-mapped) */
-		let dma = alloc_dma_page(self.hhdm_offset)
-			.ok_or(BlockError::IoError)? as *mut BlkDmaBuffer;
+		let dma = if self.dma_buf.is_null() {
+			return Err(BlockError::IoError);
+		} else {
+			self.dma_buf
+		};
 
 		unsafe {
 			(*dma).header.type_ = VIRTIO_BLK_T_OUT;
