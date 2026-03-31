@@ -93,3 +93,27 @@ pub fn seek(task_id: u64, fd: u64, offset: usize) -> bool {
 		false
 	}
 }
+
+/*
+ * init_stdio - Insert fd 0/1/2 into the FD table for a task
+ * @task_id: Target task ID
+ *
+ * Must be called before the task uses read()/write() on stdio fds.
+ */
+pub fn init_stdio(task_id: u64) {
+	use crate::stdio::{StdinINode, StderrINode, StdoutINode};
+
+	let mut table = FD_TABLE.lock();
+	table.insert((task_id, 0), Arc::new(OpenFile {
+		inode: Arc::new(StdinINode),
+		offset: Mutex::new(0),
+	}));
+	table.insert((task_id, 1), Arc::new(OpenFile {
+		inode: Arc::new(StdoutINode),
+		offset: Mutex::new(0),
+	}));
+	table.insert((task_id, 2), Arc::new(OpenFile {
+		inode: Arc::new(StderrINode),
+		offset: Mutex::new(0),
+	}));
+}

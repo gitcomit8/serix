@@ -12,6 +12,7 @@
 extern crate alloc;
 pub mod fd;
 mod gdt;
+pub mod stdio;
 mod syscall;
 
 use capability::CapabilityStore;
@@ -559,6 +560,10 @@ pub extern "C" fn _start() -> ! {
 		serial_println!("VFS Readback: {}", msg);
 		fb_println!("VFS: {}", msg);
 	}
+	/* Wire up fd 0/1/2 for the init task */
+	fd::init_stdio(0);
+	serial_println!("FD: stdio initialized for task 0");
+
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
 	task::scheduler::init();
