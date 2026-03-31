@@ -290,6 +290,10 @@ struct DirEntry {
 	/* Offset of the 8.3 entry within its sector, for updates */
 	entry_sector: u64,
 	entry_offset: usize,
+	/* Start of the LFN chain preceding this entry (equals entry_sector/
+	 * entry_offset when no LFN is present) */
+	lfn_start_sector: u64,
+	lfn_start_offset: usize,
 }
 
 impl DirEntry {
@@ -388,6 +392,7 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 	let cluster_size = bpb.cluster_size_bytes();
 	let mut lfn_buf: Vec<u16> = Vec::new();
 	let mut lfn_seq: u8 = 0;
+	let mut lfn_start: Option<(u64, usize)> = None;
 
 	for cluster in chain {
 		let start_sector = bpb.cluster_to_sector(cluster);
@@ -409,6 +414,7 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 				/* 0xE5 = deleted entry */
 				if raw[0] == 0xE5 {
 					lfn_buf.clear();
+					lfn_start = None;
 					continue;
 				}
 				/* LFN entry */
@@ -418,6 +424,7 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 					if is_last {
 						lfn_buf.clear();
 						lfn_seq = seq;
+						lfn_start = Some((sector, offset));
 					}
 					/* Prepend chars (LFN entries come in reverse order) */
 					let chars = read_lfn_chars(raw);
@@ -437,6 +444,7 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 					&& raw[11] & ATTR_DIRECTORY == 0
 				{
 					lfn_buf.clear();
+					lfn_start = None;
 					continue;
 				}
 
@@ -468,9 +476,11 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 
 				/* Skip dot entries */
 				if name == "." || name == ".." {
+					lfn_start = None;
 					continue;
 				}
 
+				let (ls, lo) = lfn_start.unwrap_or((sector, offset));
 				entries.push(DirEntry {
 					name,
 					attr,
@@ -478,7 +488,10 @@ fn read_dir_entries(bpb: &Bpb, first_cluster: u32) -> Vec<DirEntry> {
 					size,
 					entry_sector: sector,
 					entry_offset: offset,
+					lfn_start_sector: ls,
+					lfn_start_offset: lo,
 				});
+				lfn_start = None;
 			}
 		}
 	}
@@ -988,6 +1001,35 @@ impl INode for FatDirINode {
 		/* Create the directory entry in the parent */
 		create_dir_entry(bpb, self.cluster, name, ATTR_DIRECTORY, new_cluster)
 			.ok_or("dir entry creation failed")?;
+
+		Ok(())
+	}
+
+	fn unlink(&self, name: &str) -> Result<(), &'static str> {
+		let guard = FAT32.get().ok_or("fs not mounted")?;
+		let bpb = &guard.lock().bpb;
+
+		let entry = find_entry_in_dir(bpb, self.cluster, name)
+			.ok_or("not found")?;
+
+		/* Free every cluster in the file's chain */
+		for cl in cluster_chain(bpb, entry.first_cluster) {
+			fat_write_entry(bpb, cl, FAT32_FREE);
+		}
+
+		/* Mark LFN entries and 8.3 entry as deleted (0xE5) */
+		let mut sector = entry.lfn_start_sector;
+		let mut offset = entry.lfn_start_offset;
+		loop {
+			let mut buf = [0u8; SECTOR_SIZE];
+			read_sector(sector, &mut buf);
+			buf[offset] = 0xE5;
+			write_sector(sector, &buf);
+			if sector == entry.entry_sector && offset == entry.entry_offset {
+				break;
+			}
+			advance_dir_slot(bpb, &mut sector, &mut offset);
+		}
 
 		Ok(())
 	}
