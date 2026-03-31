@@ -8,6 +8,8 @@ const SYS_OPEN: usize = 2;
 const SYS_CLOSE: usize = 3;
 const SYS_SEEK: usize = 8;
 const SYS_EXIT: usize = 60;
+const SYS_MKDIR: usize = 83;
+const SYS_UNLINK: usize = 87;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -152,6 +154,30 @@ pub fn serix_seek(fd: usize, offset: usize) -> isize {
  *
  * Does not return.
  */
+/*
+ * serix_mkdir - Create a directory
+ * @path: Absolute path of directory to create
+ *
+ * Return: 0 on success, negative errno on error
+ */
+pub fn serix_mkdir(path: &str) -> isize {
+	unsafe {
+		syscall2(SYS_MKDIR, path.as_ptr() as usize, path.len()) as isize
+	}
+}
+
+/*
+ * serix_unlink - Delete a file
+ * @path: Absolute path of file to delete
+ *
+ * Return: 0 on success, negative errno on error
+ */
+pub fn serix_unlink(path: &str) -> isize {
+	unsafe {
+		syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize
+	}
+}
+
 pub fn exit(code: i32) -> ! {
 	unsafe {
 		syscall1(SYS_EXIT, code as usize);

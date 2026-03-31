@@ -935,6 +935,62 @@ impl INode for FatDirINode {
 		.ok_or("dir entry creation failed")?;
 		Ok(())
 	}
+
+	fn mkdir(&self, name: &str) -> Result<(), &'static str> {
+		let guard = FAT32.get().ok_or("fs not mounted")?;
+		let bpb = &guard.lock().bpb;
+
+		/* Reject duplicate names */
+		if find_entry_in_dir(bpb, self.cluster, name).is_some() {
+			return Err("file exists");
+		}
+
+		/* Allocate cluster for the new directory */
+		let new_cluster = fat_alloc_cluster(bpb).ok_or("disk full")?;
+
+		/* Zero out the new cluster */
+		let start_sector = bpb.cluster_to_sector(new_cluster);
+		let zero = [0u8; SECTOR_SIZE];
+		for s in 0..bpb.sectors_per_cluster as u64 {
+			write_sector(start_sector + s, &zero);
+		}
+
+		let (time_word, date_word) = fat32_timestamp();
+		let t = time_word.to_le_bytes();
+		let d = date_word.to_le_bytes();
+
+		/* Write '.' entry at offset 0 */
+		let mut dot_entry = [0u8; 32];
+		dot_entry[0..8].copy_from_slice(b".       ");
+		dot_entry[8..11].copy_from_slice(b"   ");
+		dot_entry[11] = ATTR_DIRECTORY;
+		dot_entry[14] = t[0]; dot_entry[15] = t[1];
+		dot_entry[16] = d[0]; dot_entry[17] = d[1];
+		dot_entry[20] = ((new_cluster >> 16) & 0xFF) as u8;
+		dot_entry[21] = ((new_cluster >> 24) & 0xFF) as u8;
+		dot_entry[26] = (new_cluster & 0xFF) as u8;
+		dot_entry[27] = ((new_cluster >> 8) & 0xFF) as u8;
+		write_dir_entry(bpb, start_sector, 0, &dot_entry);
+
+		/* Write '..' entry at offset 32 */
+		let mut dotdot_entry = [0u8; 32];
+		dotdot_entry[0..8].copy_from_slice(b"..      ");
+		dotdot_entry[8..11].copy_from_slice(b"   ");
+		dotdot_entry[11] = ATTR_DIRECTORY;
+		dotdot_entry[14] = t[0]; dotdot_entry[15] = t[1];
+		dotdot_entry[16] = d[0]; dotdot_entry[17] = d[1];
+		dotdot_entry[20] = ((self.cluster >> 16) & 0xFF) as u8;
+		dotdot_entry[21] = ((self.cluster >> 24) & 0xFF) as u8;
+		dotdot_entry[26] = (self.cluster & 0xFF) as u8;
+		dotdot_entry[27] = ((self.cluster >> 8) & 0xFF) as u8;
+		write_dir_entry(bpb, start_sector, 32, &dotdot_entry);
+
+		/* Create the directory entry in the parent */
+		create_dir_entry(bpb, self.cluster, name, ATTR_DIRECTORY, new_cluster)
+			.ok_or("dir entry creation failed")?;
+
+		Ok(())
+	}
 }
 
 /*
