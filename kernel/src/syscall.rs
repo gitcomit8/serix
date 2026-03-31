@@ -228,20 +228,6 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EFAULT;
 			}
 
-			if fd == 0 {
-				/* STDIN: blocking keyboard read */
-				loop {
-					if let Some(k) = keyboard::pop_key() {
-						unsafe { *ptr = k };
-						return 1;
-					}
-					x86_64::instructions::interrupts::enable();
-					core::hint::spin_loop();
-					x86_64::instructions::interrupts::disable();
-				}
-			}
-
-			/* fd >= 3: file descriptor read */
 			let task_id = task::scheduler::current_task_id();
 			if let Some(file) = crate::fd::get(task_id, fd) {
 				let mut off = file.offset.lock();
@@ -263,29 +249,13 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EFAULT;
 			}
 
-			if fd == 1 || fd == 2 {
-				/* stdout / stderr: console output */
-				let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-				match core::str::from_utf8(slice) {
-					Ok(s) => {
-						hal::serial_print!("{}", s);
-						graphics::console::_print(format_args!("{}", s));
-						len as u64
-					}
-					Err(_) => ERRNO_EINVAL,
-				}
-			} else if fd >= 3 {
-				/* File descriptor write */
-				let task_id = task::scheduler::current_task_id();
-				if let Some(file) = crate::fd::get(task_id, fd) {
-					let mut off = file.offset.lock();
-					let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
-					let n = file.inode.write(*off, buf);
-					*off += n;
-					n as u64
-				} else {
-					ERRNO_EBADF
-				}
+			let task_id = task::scheduler::current_task_id();
+			if let Some(file) = crate::fd::get(task_id, fd) {
+				let mut off = file.offset.lock();
+				let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
+				let n = file.inode.write(*off, buf);
+				*off += n;
+				n as u64
 			} else {
 				ERRNO_EBADF
 			}
