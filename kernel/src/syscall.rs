@@ -21,6 +21,8 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_SEEK: u64 = 8;
 pub const SYS_RECV_BLOCK: u64 = 22;
+pub const SYS_MKDIR: u64 = 83;
+pub const SYS_UNLINK: u64 = 87;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
@@ -432,6 +434,62 @@ extern "C" fn syscall_dispatcher(
 			}
 			msg.id
 		}
+		SYS_MKDIR => {
+			let ptr = arg1 as *const u8;
+			let len = arg2 as usize;
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+			let path = match core::str::from_utf8(slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let (parent_path, name) = match path.rfind('/') {
+				Some(0) => ("/", &path[1..]),
+				Some(pos) => (&path[..pos], &path[pos + 1..]),
+				None => ("/", path),
+			};
+
+			match vfs::lookup_path(parent_path) {
+				Some(dir) => match dir.mkdir(name) {
+					Ok(()) => 0,
+					Err(_) => ERRNO_EINVAL,
+				},
+				None => ERRNO_ENOENT,
+			}
+		}
+
+		SYS_UNLINK => {
+			let ptr = arg1 as *const u8;
+			let len = arg2 as usize;
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+			let path = match core::str::from_utf8(slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let (parent_path, name) = match path.rfind('/') {
+				Some(0) => ("/", &path[1..]),
+				Some(pos) => (&path[..pos], &path[pos + 1..]),
+				None => ("/", path),
+			};
+
+			match vfs::lookup_path(parent_path) {
+				Some(dir) => match dir.unlink(name) {
+					Ok(()) => 0,
+					Err(_) => ERRNO_ENOENT,
+				},
+				None => ERRNO_ENOENT,
+			}
+		}
+
 		_ => {
 			/* Unknown system call */
 			hal::serial_println!("[SYSCALL] Unknown syscall: {}", nr);

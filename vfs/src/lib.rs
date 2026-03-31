@@ -77,6 +77,26 @@ pub trait INode: Send + Sync {
 	}
 
 	/*
+	 * mkdir - Create a subdirectory (directories only)
+	 * @_name: Name of the new directory
+	 *
+	 * Return: Ok(()) on success, Err on failure
+	 */
+	fn mkdir(&self, _name: &str) -> Result<(), &'static str> {
+		Err("not a directory")
+	}
+
+	/*
+	 * unlink - Remove a child entry (directories only)
+	 * @_name: Name of child to remove
+	 *
+	 * Return: Ok(()) on success, Err on failure
+	 */
+	fn unlink(&self, _name: &str) -> Result<(), &'static str> {
+		Err("not a directory")
+	}
+
+	/*
 	 * size - Get node size in bytes
 	 *
 	 * Return: Size in bytes
