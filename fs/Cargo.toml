@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+apic = { path = "../apic" }
 drivers = { path = "../drivers" }
 vfs = { path = "../vfs" }
 hal = { path = "../hal" }

@@ -40,6 +40,28 @@ const ATTR_ARCHIVE: u8 = 0x20;
 const ATTR_LFN: u8 = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
 
 /* ------------------------------------------------------------------ */
+/*  Timestamps                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * fat32_timestamp - Encode current LAPIC ticks as FAT32 time/date words
+ *
+ * Returns (time_word, date_word) for use in directory entries.
+ * Date is fixed at 1980-01-01 (no RTC); time is derived from boot ticks.
+ */
+fn fat32_timestamp() -> (u16, u16) {
+	let ticks = apic::timer::ticks();
+	let secs = ticks / 625;
+	let hours = (secs / 3600) % 24;
+	let minutes = (secs / 60) % 60;
+	let two_secs = (secs % 60) / 2;
+	let time_word = ((hours << 11) | (minutes << 5) | two_secs) as u16;
+	/* Date: year=0 (1980), month=1, day=1 */
+	let date_word: u16 = (0 << 9) | (1 << 5) | 1;
+	(time_word, date_word)
+}
+
+/* ------------------------------------------------------------------ */
 /*  BPB — BIOS Parameter Block                                         */
 /* ------------------------------------------------------------------ */
 
@@ -739,7 +761,13 @@ fn create_dir_entry(
 	let mut sfn_entry = [0u8; 32];
 	sfn_entry[0..11].copy_from_slice(&sfn);
 	sfn_entry[11] = attr;
-	/* Times: zero */
+	let (time_word, date_word) = fat32_timestamp();
+	let t = time_word.to_le_bytes();
+	let d = date_word.to_le_bytes();
+	sfn_entry[14] = t[0]; sfn_entry[15] = t[1]; /* creation time */
+	sfn_entry[16] = d[0]; sfn_entry[17] = d[1]; /* creation date */
+	sfn_entry[22] = t[0]; sfn_entry[23] = t[1]; /* modified time */
+	sfn_entry[24] = d[0]; sfn_entry[25] = d[1]; /* modified date */
 	sfn_entry[20] = ((first_cluster >> 16) & 0xFF) as u8;
 	sfn_entry[21] = ((first_cluster >> 24) & 0xFF) as u8;
 	sfn_entry[26] = (first_cluster & 0xFF) as u8;
