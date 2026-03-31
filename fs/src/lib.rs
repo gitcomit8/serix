@@ -888,6 +888,11 @@ impl INode for FatDirINode {
 		let guard = FAT32.get().ok_or("fs not mounted")?;
 		let bpb = &guard.lock().bpb;
 
+		/* Reject duplicate names */
+		if find_entry_in_dir(bpb, self.cluster, name).is_some() {
+			return Err("file exists");
+		}
+
 		/* Allocate a cluster for the new file */
 		let new_cluster =
 			fat_alloc_cluster(bpb).ok_or("disk full")?;
