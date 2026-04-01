@@ -355,6 +355,10 @@ pub extern "C" fn _start() -> ! {
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
+	task::register_switch_hook(|kstack| {
+		gdt::set_kernel_stack(kstack);
+		gdt::set_syscall_stack(kstack);
+	});
 
 	unsafe {
 		gdt::init_per_cpu();

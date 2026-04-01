@@ -20,7 +20,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use spin::Mutex;
+use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 use x86_64::structures::paging::PhysFrame;
 use crate::context_switch::context_switch;
@@ -34,6 +34,18 @@ pub use scheduler::{current_task_arc, wake_task};
  * TODO(SMP): Per-CPU current-task tracking via GS_BASE
  */
 pub static CURRENT_TASK: AtomicU64 = AtomicU64::new(0);
+
+static SWITCH_HOOK: Once<fn(VirtAddr)> = Once::new();
+
+/* register_switch_hook - Set callback invoked before every context switch
+ *
+ * The kernel uses this to update TSS.RSP0 and PER_CPU_DATA.kernel_stack
+ * so that syscall/interrupt entry always uses the correct kernel stack.
+ * Must be registered before any user tasks are scheduled.
+ */
+pub fn register_switch_hook(f: fn(VirtAddr)) {
+	SWITCH_HOOK.call_once(|| f);
+}
 /*
  * struct Executor - Round-robin async task executor
  * @tasks: Queue of pending tasks
@@ -653,6 +665,13 @@ pub fn schedule() {
 
 	let new_ctx_ptr: *const CPUContext = {
 		let guard = new_arc.lock();
+		/* Update kernel stack pointers before switching to the new task */
+		if let Some(hook) = SWITCH_HOOK.get() {
+			let kstack = guard.kstack;
+			if kstack.as_u64() != 0 {
+				hook(kstack);
+			}
+		}
 		let ptr = &guard.context as *const CPUContext;
 		drop(guard);
 		ptr
@@ -719,6 +738,12 @@ pub fn block_current_and_switch() {
 
 	let new_ctx_ptr: *const CPUContext = {
 		let guard = new_arc.lock();
+		if let Some(hook) = SWITCH_HOOK.get() {
+			let kstack = guard.kstack;
+			if kstack.as_u64() != 0 {
+				hook(kstack);
+			}
+		}
 		let ptr = &guard.context as *const CPUContext;
 		drop(guard);
 		ptr
