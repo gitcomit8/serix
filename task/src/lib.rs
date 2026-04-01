@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
 use x86_64::VirtAddr;
+use x86_64::structures::paging::PhysFrame;
 use crate::context_switch::context_switch;
 pub use scheduler::{current_task_arc, wake_task};
 /*
@@ -246,6 +247,11 @@ impl Default for CPUContext {
  * @kstack: Kernel stack pointer
  * @ustack: Optional user stack pointer
  * @name: Task name (static string)
+ * @parent_id: ID of creating task (0 = kernel/boot task)
+ * @exit_status: Exit code set by SYS_EXIT; None while alive
+ * @pml4_frame: User address space PML4 frame (None for kernel tasks)
+ * @children: Task IDs of spawned child processes
+ * @waiting_for_child: True when task is blocked in SYS_WAIT4
  */
 #[derive(Debug, Clone)]
 pub struct TaskCB {
@@ -256,6 +262,11 @@ pub struct TaskCB {
 	pub kstack: VirtAddr,
 	pub ustack: Option<VirtAddr>,
 	pub name: &'static str,
+	pub parent_id: u64,
+	pub exit_status: Option<i32>,
+	pub pml4_frame: Option<PhysFrame>,
+	pub children: Vec<u64>,
+	pub waiting_for_child: bool,
 }
 
 /*
@@ -318,6 +329,11 @@ impl TaskCB {
 			kstack: stack,
 			ustack: None,
 			name,
+			parent_id: 0,
+			exit_status: None,
+			pml4_frame: None,
+			children: Vec::new(),
+			waiting_for_child: false,
 		}
 	}
 
@@ -335,6 +351,11 @@ impl TaskCB {
 			kstack: VirtAddr::zero(),
 			ustack: None,
 			name: "kernel_main",
+			parent_id: 0,
+			exit_status: None,
+			pml4_frame: None,
+			children: Vec::new(),
+			waiting_for_child: false,
 		}
 	}
 
