@@ -104,6 +104,15 @@ pub trait INode: Send + Sync {
 	fn size(&self) -> usize {
 		0
 	}
+
+	/*
+	 * readdir - List directory entries (directories only)
+	 *
+	 * Return: Some(Vec of (name, FileType)) if this is a directory, None otherwise
+	 */
+	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
+		None
+	}
 }
 
 /*
@@ -247,5 +256,10 @@ impl INode for RamDir {
 		}
 		children.push((String::from(name), node));
 		Ok(())
+	}
+
+	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
+		let children = self.children.lock();
+		Some(children.iter().map(|(name, node)| (name.clone(), node.metadata())).collect())
 	}
 }

@@ -1033,6 +1033,15 @@ impl INode for FatDirINode {
 
 		Ok(())
 	}
+
+	fn readdir(&self) -> Option<alloc::vec::Vec<(alloc::string::String, vfs::FileType)>> {
+		let guard = FAT32.get()?.lock();
+		let entries = read_dir_entries(&guard.bpb, self.cluster);
+		Some(entries.into_iter().map(|e| {
+			let ft = if e.is_dir() { vfs::FileType::Directory } else { vfs::FileType::File };
+			(e.name, ft)
+		}).collect())
+	}
 }
 
 /*
