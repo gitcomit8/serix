@@ -95,6 +95,16 @@ pub fn seek(task_id: u64, fd: u64, offset: usize) -> bool {
 }
 
 /*
+ * cleanup - Remove all file descriptors owned by a task
+ * @task_id: Task whose fds to remove
+ *
+ * Called on task exit to release all open file descriptors.
+ */
+pub fn cleanup(task_id: u64) {
+	FD_TABLE.lock().retain(|&(tid, _), _| tid != task_id);
+}
+
+/*
  * init_stdio - Insert fd 0/1/2 into the FD table for a task
  * @task_id: Target task ID
  *

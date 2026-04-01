@@ -35,7 +35,7 @@ pub use scheduler::{current_task_arc, wake_task};
  */
 pub static CURRENT_TASK: AtomicU64 = AtomicU64::new(0);
 
-static SWITCH_HOOK: Once<fn(VirtAddr)> = Once::new();
+pub static SWITCH_HOOK: Once<fn(VirtAddr)> = Once::new();
 
 /* register_switch_hook - Set callback invoked before every context switch
  *

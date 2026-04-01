@@ -11,6 +11,7 @@
 use super::{CURRENT_TASK, TaskCB, TaskState};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use spin::{Mutex, Once};
 
@@ -39,6 +40,8 @@ pub const TIME_SLICE_TICKS: u64 = 10;
 pub struct RunQueue {
 	queue: VecDeque<Arc<Mutex<TaskCB>>>,
 	pub current: Option<Arc<Mutex<TaskCB>>>,
+	/* zombies - Tasks that have exited but not yet been reaped by wait4 */
+	pub zombies: Vec<Arc<Mutex<TaskCB>>>,
 }
 
 /* Global single-CPU run queue */
@@ -54,6 +57,7 @@ impl RunQueue {
 		RunQueue {
 			queue: VecDeque::new(),
 			current: None,
+			zombies: Vec::new(),
 		}
 	}
 
@@ -270,4 +274,53 @@ pub fn schedule()->Option<Arc<Mutex<TaskCB>>>{
  */
 pub fn global_or_none() -> Option<&'static Mutex<RunQueue>>{
 	RUN_QUEUE.get()
+}
+
+/*
+ * push_zombie - Move a task to the zombie list after exit
+ * @task: Arc to the exited task
+ *
+ * Zombies are held here until a parent calls wait4 to reap them.
+ */
+pub fn push_zombie(task: Arc<Mutex<TaskCB>>) {
+	global().lock().zombies.push(task);
+}
+
+/*
+ * find_task_by_id - Look up any live task by numeric ID
+ * @id: TaskId value to find
+ *
+ * Searches the current task and the run queue. Does not search zombies.
+ * Return: Some(Arc) if found, None otherwise.
+ */
+pub fn find_task_by_id(id: u64) -> Option<Arc<Mutex<TaskCB>>> {
+	let rq = global().lock();
+	if let Some(ref current) = rq.current {
+		if current.lock().id.0 == id {
+			return Some(Arc::clone(current));
+		}
+	}
+	for task in rq.queue.iter() {
+		if task.lock().id.0 == id {
+			return Some(Arc::clone(task));
+		}
+	}
+	None
+}
+
+/*
+ * find_zombie_child - Find and remove a zombie child of the given parent
+ * @parent_id: Task ID of the parent
+ * @child_pid: Specific child to wait for (-1 = any child)
+ *
+ * Return: Some(Arc) of the zombie TaskCB if found and removed, None otherwise.
+ */
+pub fn find_zombie_child(parent_id: u64, child_pid: i64) -> Option<Arc<Mutex<TaskCB>>> {
+	let mut rq = global().lock();
+	let pos = rq.zombies.iter().position(|z| {
+		let task = z.lock();
+		task.parent_id == parent_id
+			&& (child_pid == -1 || task.id.0 == child_pid as u64)
+	})?;
+	Some(rq.zombies.remove(pos))
 }
