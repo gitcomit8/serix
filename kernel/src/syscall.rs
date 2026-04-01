@@ -606,6 +606,40 @@ extern "C" fn syscall_dispatcher(
 			}
 			msg.id
 		}
+		32 /* SYS_DUP */ => {
+			let task_id = task::scheduler::current_task_id();
+			match crate::fd::dup(task_id, arg1) {
+				Some(new_fd) => new_fd,
+				None => ERRNO_EBADF,
+			}
+		}
+
+		33 /* SYS_DUP2 */ => {
+			let task_id = task::scheduler::current_task_id();
+			match crate::fd::dup2(task_id, arg1, arg2) {
+				Some(new_fd) => new_fd,
+				None => ERRNO_EBADF,
+			}
+		}
+
+		293 /* SYS_PIPE2 */ => {
+			/*
+			 * Create a pipe. arg1 points to a [u64; 2] user buffer that
+			 * receives [read_fd, write_fd]. arg2 (flags) is ignored.
+			 */
+			let pipefd_ptr = arg1 as *mut u64;
+			if !is_user_accessible(pipefd_ptr as *const u8, 16) {
+				return ERRNO_EFAULT;
+			}
+			let task_id = task::scheduler::current_task_id();
+			let (rfd, wfd) = crate::pipe::create_pipe(task_id);
+			unsafe {
+				*pipefd_ptr = rfd;
+				*pipefd_ptr.add(1) = wfd;
+			}
+			0
+		}
+
 		217 /* SYS_GETDENTS64 */ => {
 			/*
 			 * List directory entries into a user buffer.

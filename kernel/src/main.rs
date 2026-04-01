@@ -12,6 +12,7 @@
 extern crate alloc;
 pub mod fd;
 mod gdt;
+pub mod pipe;
 pub mod process;
 pub mod stdio;
 mod syscall;
