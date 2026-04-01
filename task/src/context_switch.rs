@@ -42,6 +42,10 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"mov [rdi + 40], r14",
 		"mov [rdi + 48], r15",
 
+		/* Save CR3 — CPUContext.cr3 is at offset 136 */
+		"mov rax, cr3",
+		"mov [rdi + 136], rax",
+
 		/* Load new context from *new (RSI) */
 		"mov rsp, [rsi + 0]",
 		"mov rbp, [rsi + 8]",
@@ -50,6 +54,16 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"mov r13, [rsi + 32]",
 		"mov r14, [rsi + 40]",
 		"mov r15, [rsi + 48]",
+
+		/* Restore CR3 — skip if unchanged to avoid TLB flush */
+		"mov rax, [rsi + 136]",
+		"test rax, rax",           /* cr3=0 means kernel task, keep current */
+		"jz 2f",
+		"mov rcx, cr3",
+		"cmp rax, rcx",
+		"je 2f",
+		"mov cr3, rax",
+		"2:",
 
 		/* Jump to new RIP — push it so `ret` pops it and adjusts RSP */
 		"push qword ptr [rsi + 56]",
