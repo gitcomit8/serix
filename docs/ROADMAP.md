@@ -1,6 +1,6 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-03-28 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.6
+> **Last Updated:** 2026-04-01 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.6
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
 
@@ -14,11 +14,11 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vector 34, IRQ 11)
 - **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects and 1 MiB task stacks (`0xFFFF_D000_0000_0000` VA range)
 - **Scheduling:** Preemptive round-robin; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with SLUB-allocated stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
-- **Syscalls:** `SYSCALL`/`SYSRET` via MSR; `SYS_READ(0)`, `SYS_WRITE(1)`, `SYS_OPEN(2)`, `SYS_CLOSE(3)`, `SYS_SEEK(8)`, `SYS_SEND(20)`, `SYS_RECV(21)`, `SYS_RECV_BLOCK(22)`, `SYS_YIELD(24)`, `SYS_EXIT(60)`
+- **Syscalls:** `SYSCALL`/`SYSRET` via MSR; `SYS_READ(0)`, `SYS_WRITE(1)`, `SYS_OPEN(2)`, `SYS_CLOSE(3)`, `SYS_SEEK(8)`, `SYS_SEND(20)`, `SYS_RECV(21)`, `SYS_RECV_BLOCK(22)`, `SYS_YIELD(24)`, `SYS_EXIT(60)`, `SYS_MKDIR(83)`, `SYS_UNLINK(87)`
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
 - **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; interrupt-driven sector read/write (IRQ via IOAPIC); `BlockDevice` VFS INode for byte-oriented access; 32 MiB disk, write→read verified
-- **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
-- **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 reserved (stdin/stdout/stderr), user files start at fd 3
+- **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write, `mkdir`, `unlink` (with LFN cleanup), duplicate filename rejection, LAPIC-tick timestamps; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
+- **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 backed by stdio INodes (fd 0 → PS/2 keyboard, fd 1 → framebuffer console, fd 2 → serial); user files start at fd 3
 - **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes), ELF loader, IPC, async executor, capability store (not yet enforced), PCI enumeration, serial + framebuffer console, fs (FAT32)
 
 ---
@@ -130,14 +130,14 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 4: Storage & Filesystem Stack
 
-**Status:** Core complete; Ext4/page cache deferred
+**Status:** Complete; Ext4/page cache deferred to Phase 7
 
 ### VFS Core Enhancements
 
 - [x] Path resolution engine (iterative component lookup through `INode::lookup()` chain)
 - [ ] Mount table (`BTreeMap<VirtAddr, MountPoint>`) for overlaying filesystems on directory INodes
 - [x] File descriptor table (global table keyed by `(task_id, fd)`, not per-TaskCB)
-- [ ] Standard fd allocation: fd 0 (stdin/PS/2 keyboard), fd 1 (stdout/console), fd 2 (stderr/serial)
+- [x] Standard fd allocation: fd 0 (stdin/PS/2 keyboard), fd 1 (stdout/console), fd 2 (stderr/serial)
 - [x] `SYS_OPEN`, `SYS_CLOSE`, `SYS_SEEK` syscall implementations
 
 ### FAT32 Filesystem (Ring 0)
@@ -152,13 +152,11 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] `mount()` function parsing BPB from VirtIO block device sector 0
 - [x] Linux interop: `disk.img` mountable on Linux via `mount -o loop` to inspect files created by Serix
 
-### FAT32 Known Issues
-
-- [ ] Duplicate file detection: `insert()` creates a new directory entry without checking if name already exists
-- [ ] No subdirectory creation (only root-level files)
-- [ ] No file deletion / `unlink()`
-- [ ] No timestamps on directory entries
-- [ ] DMA page leak: `alloc_dma_page()` frames are never freed after I/O completion
+- [x] Duplicate filename rejection in `insert()` (returns error if name already exists)
+- [x] `mkdir()` — allocate cluster, write `.`/`..` entries, insert parent directory entry; `SYS_MKDIR(83)`
+- [x] `unlink()` — mark SFN entry deleted (`0xE5`), wipe associated LFN entries; `SYS_UNLINK(87)`
+- [x] Directory entry timestamps encoded from LAPIC tick counter (creation + modified fields)
+- [x] DMA frame reuse: single pre-allocated DMA buffer per `VirtioBlock`; no per-request allocation
 
 ### Ext4 Filesystem Daemon (Ring 3)
 
@@ -416,7 +414,7 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 | **1** | Core Foundation (boot, memory, HAL) | ✅ Complete |
 | **2** | System Infrastructure (tasks, capabilities, syscalls) | ✅ Complete |
 | **3** | Preemptive Scheduling & IPC Hardening | 🔄 Core complete; SMP/WFQ deferred |
-| **4** | Storage & Filesystem Stack (Ext4, page cache) | 🔄 Core complete; Ext4/page cache deferred |
+| **4** | Storage & Filesystem Stack (Ext4, page cache) | ✅ Complete; Ext4/page cache deferred to Phase 7 |
 | **5** | Linux ABI Translation Layer (LES) | 📋 Planned |
 | **6** | Security Bridge & Capability Enforcement | 📋 Planned |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 📋 Planned |
