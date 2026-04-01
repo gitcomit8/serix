@@ -13,23 +13,31 @@ use x86_64::registers::rflags::RFlags;
 /* System call numbers */
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
-pub const SYS_EXIT: u64 = 60;
-pub const SYS_YIELD: u64 = 24;
-pub const SYS_SEND: u64 = 20;
-pub const SYS_RECV: u64 = 21;
 pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_SEEK: u64 = 8;
+pub const SYS_SEND: u64 = 20;
+pub const SYS_RECV: u64 = 21;
 pub const SYS_RECV_BLOCK: u64 = 22;
+pub const SYS_YIELD: u64 = 24;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_WAIT4: u64 = 61;
 pub const SYS_MKDIR: u64 = 83;
 pub const SYS_UNLINK: u64 = 87;
+pub const SYS_GETPID: u64 = 39;
+pub const SYS_GETPPID: u64 = 110;
+pub const SYS_SPAWN: u64 = 400;
 
 /* Error codes (negative errno values represented as u64) */
-pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
+pub const ERRNO_EBADF: u64 = u64::MAX - 8;  /* Bad file descriptor (errno 9) */
+pub const ERRNO_ECHILD: u64 = u64::MAX - 9;  /* No child processes (errno 10) */
 pub const ERRNO_EAGAIN: u64 = u64::MAX - 11; /* Resource temporarily unavailable */
+pub const ERRNO_ENOMEM: u64 = u64::MAX - 11; /* Out of memory (errno 12) */
 pub const ERRNO_EFAULT: u64 = u64::MAX - 13; /* Bad address (errno 14) */
-pub const ERRNO_ENOENT: u64 = u64::MAX - 2; /* No such port */
+pub const ERRNO_ENOENT: u64 = u64::MAX - 2;  /* No such file or entry */
 pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
+pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
+pub const ERRNO_EPIPE: u64 = u64::MAX - 31;  /* Broken pipe (errno 32) */
 
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
@@ -264,10 +272,174 @@ extern "C" fn syscall_dispatcher(
 		}
 
 		SYS_EXIT => {
-			/* Exit system call: terminate current task */
-			hal::serial_println!("[SYSCALL] Process exited with status {}", arg1);
+			/*
+			 * Exit — terminate the calling task.
+			 * Marks the task Zombie, closes all fds, wakes any waiting parent,
+			 * then context-switches away. Never returns to the caller.
+			 */
+			let status = arg1 as i32;
+			hal::serial_println!("[SYSCALL] SYS_EXIT status={}", status);
+
+			x86_64::instructions::interrupts::without_interrupts(|| {
+				let old_arc = match task::scheduler::take_current() {
+					Some(t) => t,
+					None => loop { hal::cpu::halt(); },
+				};
+
+				{
+					let mut t = old_arc.lock();
+					t.exit_status = Some(status);
+					t.set_state(task::TaskState::Zombie);
+				}
+
+				let task_id = old_arc.lock().id.0;
+				crate::fd::cleanup(task_id);
+
+				/* Wake parent if it is blocked in SYS_WAIT4 */
+				let parent_id = old_arc.lock().parent_id;
+				if parent_id != 0 {
+					if let Some(par) = task::scheduler::find_task_by_id(parent_id) {
+						let waiting = par.lock().waiting_for_child;
+						if waiting {
+							par.lock().waiting_for_child = false;
+							task::scheduler::wake_task(par);
+						}
+					}
+				}
+
+				task::scheduler::push_zombie(old_arc);
+
+				/* Switch to next task */
+				if let Some(new_arc) = task::scheduler::pick_next_task() {
+					if let Some(hook) = task::SWITCH_HOOK.get() {
+						let ks = new_arc.lock().kstack;
+						if ks.as_u64() != 0 { hook(ks); }
+					}
+					let new_ctx = {
+						let g = new_arc.lock();
+						&g.context as *const task::CPUContext
+					};
+					/* Use a dummy old context (never resumed) */
+					static mut DUMMY_CTX: task::CPUContext = task::CPUContext {
+						rsp: 0, rbp: 0, rbx: 0, r12: 0, r13: 0,
+						r14: 0, r15: 0, rip: 0, rflags: 0,
+						cs: 0, ss: 0, fs: 0, gs: 0, ds: 0, es: 0,
+						fs_base: 0, gs_base: 0, cr3: 0,
+					};
+					unsafe {
+						task::context_switch::context_switch(
+							core::ptr::addr_of_mut!(DUMMY_CTX),
+							new_ctx,
+						);
+					}
+				}
+			});
+			loop { hal::cpu::halt(); }
+		}
+
+		SYS_GETPID => task::scheduler::current_task_id(),
+
+		SYS_GETPPID => {
+			let id = task::scheduler::current_task_id();
+			if let Some(arc) = task::scheduler::current_task_arc() {
+				arc.lock().parent_id
+			} else {
+				0
+			}
+		}
+
+		SYS_WAIT4 => {
+			/*
+			 * Wait for a child process to exit.
+			 * arg1: pid (-1 = any child)
+			 * arg2: pointer to i32 for exit status (may be null)
+			 * arg3: options (WNOHANG = 1)
+			 */
+			let pid = arg1 as i64;
+			let status_ptr = arg2 as *mut i32;
+			let wnohang = arg3 & 1 != 0;
+
+			let task_id = task::scheduler::current_task_id();
+
+			/* Check if the requested child is actually our child */
+			if pid > 0 {
+				let is_child = task::scheduler::current_task_arc()
+					.map(|a| a.lock().children.contains(&(pid as u64)))
+					.unwrap_or(false);
+				if !is_child {
+					return ERRNO_ECHILD;
+				}
+			} else {
+				/* pid == -1: check we have at least one child */
+				let has_children = task::scheduler::current_task_arc()
+					.map(|a| !a.lock().children.is_empty())
+					.unwrap_or(false);
+				if !has_children {
+					return ERRNO_ECHILD;
+				}
+			}
+
 			loop {
-				hal::cpu::halt();
+				if let Some(zombie) = task::scheduler::find_zombie_child(task_id, pid) {
+					let (child_pid, exit_status) = {
+						let t = zombie.lock();
+						(t.id.0, t.exit_status.unwrap_or(0))
+					};
+
+					/* Remove from parent's children list */
+					if let Some(par) = task::scheduler::current_task_arc() {
+						par.lock().children.retain(|&id| id != child_pid);
+					}
+
+					/* Write status to userspace if pointer is valid */
+					if !status_ptr.is_null()
+						&& is_user_accessible(status_ptr as *const u8, 4)
+					{
+						unsafe { *status_ptr = (exit_status & 0xFF) << 8; }
+					}
+
+					return child_pid;
+				}
+
+				if wnohang {
+					return 0;
+				}
+
+				/* No zombie yet — block until a child exits */
+				x86_64::instructions::interrupts::without_interrupts(|| {
+					if let Some(arc) = task::scheduler::current_task_arc() {
+						arc.lock().waiting_for_child = true;
+					}
+					task::block_current_and_switch();
+				});
+			}
+		}
+
+		SYS_SPAWN => {
+			/*
+			 * Spawn a new user process from an ELF on the VFS.
+			 * arg1: path pointer, arg2: path length
+			 * Returns: child pid on success, errno on failure
+			 */
+			let ptr = arg1 as *const u8;
+			let len = arg2 as usize;
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+			let path = match core::str::from_utf8(slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let parent_id = task::scheduler::current_task_id();
+			match crate::process::spawn_user_process(path, parent_id) {
+				Ok(child_id) => child_id,
+				Err(msg) => {
+					hal::serial_println!("[SPAWN] failed: {}", msg);
+					ERRNO_ENOENT
+				}
 			}
 		}
 
