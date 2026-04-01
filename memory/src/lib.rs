@@ -34,6 +34,16 @@ pub struct PageAllocator {
 
 pub static PAGE_ALLOC: Once<Mutex<PageAllocator>> = Once::new();
 
+static HHDM_OFFSET: Once<VirtAddr> = Once::new();
+
+pub fn set_hhdm_offset(offset: VirtAddr) {
+	HHDM_OFFSET.call_once(|| offset);
+}
+
+pub fn hhdm_offset() -> VirtAddr {
+	*HHDM_OFFSET.get().expect("HHDM offset not set")
+}
+
 /*
  * init_page_allocator - Store mapper and frame allocator globally
  * @mapper:     OffsetPageTable for the active address space

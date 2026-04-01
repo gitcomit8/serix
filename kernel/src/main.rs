@@ -396,6 +396,7 @@ pub extern "C" fn _start() -> ! {
 	/* Get Higher Half Direct Map offset from Limine */
 	let hhdm_response = HHDM_REQ.get_response().expect("No HHDM response");
 	let phys_mem_offset = VirtAddr::new(hhdm_response.offset());
+	memory::set_hhdm_offset(phys_mem_offset);
 	let mut mapper = unsafe { memory::init_offset_page_table(phys_mem_offset) };
 
 	/*
