@@ -606,6 +606,85 @@ extern "C" fn syscall_dispatcher(
 			}
 			msg.id
 		}
+		217 /* SYS_GETDENTS64 */ => {
+			/*
+			 * List directory entries into a user buffer.
+			 * arg1: fd (must be open on a directory)
+			 * arg2: user buffer pointer
+			 * arg3: user buffer length
+			 *
+			 * Each entry is serialised as Linux dirent64:
+			 *   u64 d_ino, u64 d_off, u16 d_reclen, u8 d_type, char d_name[]
+			 * Entries are null-terminated and padded to 8-byte alignment.
+			 * The fd offset tracks the next entry index to emit.
+			 * Returns total bytes written, or 0 when all entries have been read.
+			 */
+			let fd = arg1;
+			let buf_ptr = arg2 as *mut u8;
+			let buf_len = arg3 as usize;
+
+			if buf_len == 0 || !is_user_accessible(buf_ptr, buf_len) {
+				return ERRNO_EFAULT;
+			}
+
+			let task_id = task::scheduler::current_task_id();
+			let file = match crate::fd::get(task_id, fd) {
+				Some(f) => f,
+				None => return ERRNO_EBADF,
+			};
+
+			let entries = match file.inode.readdir() {
+				Some(e) => e,
+				None => return ERRNO_ENOTDIR,
+			};
+
+			let start_index = *file.offset.lock();
+			if start_index >= entries.len() {
+				return 0; /* EOF */
+			}
+
+			let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len) };
+			let mut written = 0usize;
+			let mut index = start_index;
+
+			while index < entries.len() {
+				let (ref name, ref ft) = entries[index];
+				let name_bytes = name.as_bytes();
+				/* reclen = 8+8+2+1 + name + nul, aligned to 8 */
+				let base = 19usize + name_bytes.len();
+				let reclen = (base + 7) & !7;
+
+				if written + reclen > buf_len {
+					break;
+				}
+
+				let d_type: u8 = match ft {
+					vfs::FileType::Directory => 4,
+					_ => 8,
+				};
+
+				let slot = &mut buf[written..written + reclen];
+				slot.fill(0);
+
+				/* d_ino (u64 at offset 0) */
+				slot[0..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
+				/* d_off (u64 at offset 8) — offset to next entry */
+				slot[8..16].copy_from_slice(&((index + 1) as u64).to_le_bytes());
+				/* d_reclen (u16 at offset 16) */
+				slot[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
+				/* d_type (u8 at offset 18) */
+				slot[18] = d_type;
+				/* d_name starting at offset 19, nul-terminated */
+				slot[19..19 + name_bytes.len()].copy_from_slice(name_bytes);
+
+				written += reclen;
+				index += 1;
+			}
+
+			*file.offset.lock() = index;
+			written as u64
+		}
+
 		SYS_MKDIR => {
 			let ptr = arg1 as *const u8;
 			let len = arg2 as usize;
