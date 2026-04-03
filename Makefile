@@ -48,7 +48,7 @@ iso: init $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/b
 	  $(ISO_ROOT) -o $(ISO)
 	./limine/limine bios-install $(ISO)
 
-disk:
+disk: init
 	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c FAT)" -eq 0 ]; then \
 		dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null; \
 		mkfs.vfat -F 32 -n SERIX disk.img; \
@@ -56,6 +56,12 @@ disk:
 	else \
 		echo "disk.img already FAT32, skipping format"; \
 	fi
+	@mkdir -p disk_mount && \
+	sudo mount -o loop disk.img disk_mount && \
+	sudo cp target/x86_64-unknown-none/release/examples/init disk_mount/init && \
+	sudo umount disk_mount && \
+	rmdir disk_mount && \
+	echo "Copied init to disk.img" || echo "Warning: Failed to copy init to disk.img"
 
 QEMU_COMMON = -m 4G -boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
