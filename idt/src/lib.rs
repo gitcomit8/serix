@@ -35,6 +35,10 @@ lazy_static! {
 		idt.divide_error.set_handler_fn(divide_by_zero_handler);
 		idt.page_fault.set_handler_fn(page_fault_handler);
 		idt.double_fault.set_handler_fn(double_fault_handler);
+		idt.general_protection_fault.set_handler_fn(gpf_handler);
+		idt.invalid_tss.set_handler_fn(invalid_tss_handler);
+		idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+		idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
 		/* Keyboard handler (IRQ 1, vector 33) is registered by kernel module */
 		IdtWrapper {
 			idt: UnsafeCell::new(idt),
@@ -88,6 +92,75 @@ extern "x86-interrupt" fn double_fault_handler(_stack: InterruptStackFrame, _err
 		_stack.instruction_pointer.as_u64()
 	);
 	panic!("Double fault exception");
+}
+
+/*
+ * gpf_handler - Handle general protection fault
+ * @stack: Interrupt stack frame
+ * @err: Error code (selector index or 0 for invalid opcode)
+ *
+ * GPF often occurs during ring 3 entry with bad segment selectors.
+ */
+extern "x86-interrupt" fn gpf_handler(stack: InterruptStackFrame, err: u64) {
+	serial_println!(
+		"General Protection Fault at instruction pointer: {:#x}",
+		stack.instruction_pointer.as_u64()
+	);
+	serial_println!("Error code: {:#x}", err);
+	serial_println!("RSP: {:#x}, RBP: {:#x}", stack.stack_pointer.as_u64(), 0u64);
+
+	/* Read segment registers */
+	let cs: u64;
+	let ss: u64;
+	unsafe {
+		core::arch::asm!("mov {}, cs", out(reg) cs);
+		core::arch::asm!("mov {}, ss", out(reg) ss);
+	}
+	serial_println!("CS: {:#x}, SS: {:#x}", cs, ss);
+
+	oops("General Protection Fault");
+}
+
+/*
+ * invalid_tss_handler - Handle invalid TSS fault
+ * @stack: Interrupt stack frame
+ * @err: Error code
+ */
+extern "x86-interrupt" fn invalid_tss_handler(stack: InterruptStackFrame, err: u64) {
+	serial_println!(
+		"Invalid TSS at instruction pointer: {:#x}",
+		stack.instruction_pointer.as_u64()
+	);
+	serial_println!("Error code: {:#x}", err);
+	oops("Invalid TSS");
+}
+
+/*
+ * segment_not_present_handler - Handle segment not present fault
+ * @stack: Interrupt stack frame
+ * @err: Error code
+ */
+extern "x86-interrupt" fn segment_not_present_handler(stack: InterruptStackFrame, err: u64) {
+	serial_println!(
+		"Segment Not Present at instruction pointer: {:#x}",
+		stack.instruction_pointer.as_u64()
+	);
+	serial_println!("Error code: {:#x}", err);
+	oops("Segment Not Present");
+}
+
+/*
+ * stack_segment_fault_handler - Handle stack segment fault
+ * @stack: Interrupt stack frame
+ * @err: Error code
+ */
+extern "x86-interrupt" fn stack_segment_fault_handler(stack: InterruptStackFrame, err: u64) {
+	serial_println!(
+		"Stack Segment Fault at instruction pointer: {:#x}",
+		stack.instruction_pointer.as_u64()
+	);
+	serial_println!("Error code: {:#x}", err);
+	oops("Stack Segment Fault");
 }
 
 /*
