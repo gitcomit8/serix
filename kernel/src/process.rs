@@ -188,9 +188,10 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 			allocate_user_stack(&mut user_mapper, &mut alloc_guard.frame_alloc, phys_offset)
 		};
 
-		drop(alloc_guard); /* release before SLUB alloc */
+		drop(alloc_guard); /* release before kernel stack alloc */
 
-		let ks = memory::slub::alloc_kernel_stack(1024 * 1024)
+		/* Allocate kernel stack from dedicated fixed range (always mapped) */
+		let ks = memory::kstack::alloc_kernel_stack(1024 * 1024)
 			.ok_or("spawn: OOM kernel stack")?;
 
 		(pml4, ust, ks)

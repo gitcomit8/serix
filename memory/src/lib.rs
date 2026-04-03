@@ -8,6 +8,7 @@
 extern crate alloc;
 pub mod heap;
 pub mod slub;
+pub mod kstack;
 
 use alloc::boxed::Box;
 use limine::memory_map::Entry;
