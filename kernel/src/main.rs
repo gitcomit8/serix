@@ -579,6 +579,10 @@ pub extern "C" fn _start() -> ! {
 
 	fb_println!("Memory: {} regions mapped", mmap_response.entries().len());
 
+	/* Initialize kernel stack allocator before creating user page tables */
+	memory::kstack::init_kstack_region().expect("Failed to init kstack region");
+	serial_println!("Kernel stack region initialized");
+
 	/*
 	 * Seed RunQueue with a boot placeholder as "current".
 	 * The first context switch saves _start's context into boot_task
