@@ -244,16 +244,13 @@ pub fn alloc_kernel_stack(size: usize) -> Option<VirtAddr> {
 	let base = alloc_kernel_object(size)? as u64;
 	/* FIXME: Guard page disabled for now (causes page faults during ring 3 entry)
 	 * TODO: Implement stack guards properly without breaking page mapping
+	 *
+	 * Known Issue: Page fault at 0xffffd000000ffff8 during context_switch,
+	 * despite all SLUB pages being allocated. Likely due to:
+	 * - CR3 switching entering different address space before stack is ready
+	 * - Timing issue with how kernel/user page tables are set up
+	 * - Need to verify PML4 entry copying in create_user_page_table
 	 */
-	/*
-	let mut pa = crate::PAGE_ALLOC.get()?.lock();
-	let guard_page = Page::<Size4KiB>::containing_address(VirtAddr::new(base));
-	unsafe {
-		if let Ok((_frame, flush)) = pa.mapper.unmap(guard_page) {
-			flush.flush();
-		}
-	}
-	*/
 	Some(VirtAddr::new(base + size as u64))
 }
 
