@@ -579,98 +579,6 @@ pub extern "C" fn _start() -> ! {
 
 	fb_println!("Memory: {} regions mapped", mmap_response.entries().len());
 
-	// IPC Initialization
-	serial_println!("Testing IPC initialization");
-	let test_port_id = 100;
-	let port = ipc::IPC_GLOBAL.create_port(test_port_id);
-
-	//Create test msg
-	let msg = ipc::Message {
-		sender_id: 1,
-		id: 0xBEEF,
-		len: 11,
-		data: {
-			let mut d = [0u8; ipc::MAX_MSG_SIZE]; // [u8; 128]
-			let payload = b"Hello World!";
-			d[0..payload.len()].copy_from_slice(payload);
-			d
-		},
-	};
-
-	port.send(msg);
-	serial_println!("IPC: Sent test message to port {}", test_port_id);
-	if let Some(recv_msg) = port.receive() {
-		serial_println!("IPC: Received message ID {:#x}", recv_msg.id);
-		fb_println!("IPC: send/receive OK (port {})", test_port_id);
-	}
-
-	/* --- Sprint 3.2: IPC producer/consumer validation --- */
-	const STACK_SIZE: usize = 1024 * 1024; /* 1 MiB SLUB-allocated stacks */
-	const IPC_TEST_PORT: u64 = 42;
-
-	/* Create IPC test port before spawning tasks */
-	ipc::IPC_GLOBAL.create_port(IPC_TEST_PORT);
-	serial_println!("IPC: Created port {} for blocking test", IPC_TEST_PORT);
-
-	unsafe extern "C" fn ipc_producer() -> ! {
-		let mut seq: u64 = 0;
-		loop {
-			let port = ipc::IPC_GLOBAL.get_port(42).unwrap();
-			let mut data = [0u8; ipc::MAX_MSG_SIZE];
-			let bytes = seq.to_le_bytes();
-			data[..8].copy_from_slice(&bytes);
-
-			let msg = ipc::Message {
-				sender_id: task::scheduler::current_task_id(),
-				id: seq,
-				len: 8,
-				data,
-			};
-
-			x86_64::instructions::interrupts::without_interrupts(|| {
-				if port.send(msg) {
-					hal::serial_println!("[PRODUCER] sent seq={}", seq);
-				} else {
-					hal::serial_println!("[PRODUCER] port full, yielding");
-				}
-			});
-			seq += 1;
-			task::task_yield();
-		}
-	}
-
-	unsafe extern "C" fn ipc_consumer() -> ! {
-		loop {
-			let port = ipc::IPC_GLOBAL.get_port(42).unwrap();
-			hal::serial_println!("[CONSUMER] blocking on port 42...");
-
-			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
-				port.receive_blocking()
-			});
-
-			let seq = u64::from_le_bytes(msg.data[..8].try_into().unwrap());
-			hal::serial_println!(
-				"[CONSUMER] received seq={} from sender={}",
-				seq, msg.sender_id,
-			);
-		}
-	}
-
-	/* Allocate 1MiB SLUB stacks with guard pages */
-	let stack_top_producer = memory::slub::alloc_kernel_stack(STACK_SIZE)
-		.expect("Failed to allocate stack for producer");
-	let stack_top_consumer = memory::slub::alloc_kernel_stack(STACK_SIZE)
-		.expect("Failed to allocate stack for consumer");
-
-	let producer = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::new("ipc_producer", ipc_producer, stack_top_producer,
-			task::SchedClass::Fair(120)),
-	));
-	let consumer = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::new("ipc_consumer", ipc_consumer, stack_top_consumer,
-			task::SchedClass::Fair(120)),
-	));
-
 	/*
 	 * Seed RunQueue with a boot placeholder as "current".
 	 * The first context switch saves _start's context into boot_task
@@ -681,12 +589,17 @@ pub extern "C" fn _start() -> ! {
 	));
 	task::scheduler::global().lock().current = Some(boot_task);
 
-	/* Enqueue consumer first so it blocks, then producer wakes it */
-	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&consumer));
-	task::scheduler::enqueue_task(alloc::sync::Arc::clone(&producer));
-
-	serial_println!("RunQueue seeded: boot=current, consumer/producer enqueued");
-	fb_println!("Tasks: producer/consumer enqueued");
+	/* Spawn the init process (PID 1) */
+	match process::spawn_user_process("/init", 0) {
+		Ok(init_pid) => {
+			serial_println!("Spawned init process: PID={}", init_pid);
+			fb_println!("Init: spawned PID={}", init_pid);
+		}
+		Err(e) => {
+			serial_println!("Failed to spawn init: {}", e);
+			fb_println!("Init: spawn failed");
+		}
+	}
 
 	unsafe {
 		/* Initialize timer hardware — starts preemptive scheduling */
