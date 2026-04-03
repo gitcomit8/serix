@@ -242,6 +242,10 @@ pub fn alloc_kernel_object(size: usize) -> Option<*mut u8> {
  */
 pub fn alloc_kernel_stack(size: usize) -> Option<VirtAddr> {
 	let base = alloc_kernel_object(size)? as u64;
+	/* FIXME: Guard page disabled for now (causes page faults during ring 3 entry)
+	 * TODO: Implement stack guards properly without breaking page mapping
+	 */
+	/*
 	let mut pa = crate::PAGE_ALLOC.get()?.lock();
 	let guard_page = Page::<Size4KiB>::containing_address(VirtAddr::new(base));
 	unsafe {
@@ -249,6 +253,7 @@ pub fn alloc_kernel_stack(size: usize) -> Option<VirtAddr> {
 			flush.flush();
 		}
 	}
+	*/
 	Some(VirtAddr::new(base + size as u64))
 }
 
