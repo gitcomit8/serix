@@ -2,22 +2,39 @@
 
 use core::arch::asm;
 
-const SYS_READ: usize = 0;
-const SYS_WRITE: usize = 1;
-const SYS_OPEN: usize = 2;
-const SYS_CLOSE: usize = 3;
-const SYS_SEEK: usize = 8;
-const SYS_GETPID: usize = 39;
-const SYS_EXIT: usize = 60;
-const SYS_WAIT4: usize = 61;
-const SYS_MKDIR: usize = 83;
-const SYS_UNLINK: usize = 87;
-const SYS_GETPPID: usize = 110;
-const SYS_DUP: usize = 32;
-const SYS_DUP2: usize = 33;
-const SYS_GETDENTS64: usize = 217;
-const SYS_PIPE2: usize = 293;
-const SYS_SPAWN: usize = 400;
+pub mod fmt;
+pub mod heap;
+pub mod io;
+
+/*
+ * Serix System Call Numbers
+ *
+ * Must stay in sync with kernel/src/syscall.rs.
+ * See that file for the full table and per-syscall documentation.
+ */
+const SYS_EXIT: usize        =  0;
+const SYS_YIELD: usize       =  1;
+const SYS_GETPID: usize      =  2;
+const SYS_GETPPID: usize     =  3;
+const SYS_SPAWN: usize       =  4;
+const SYS_WAIT: usize        =  5;
+
+const SYS_OPEN: usize        = 10;
+const SYS_CLOSE: usize       = 11;
+const SYS_READ: usize        = 12;
+const SYS_WRITE: usize       = 13;
+const SYS_SEEK: usize        = 14;
+const SYS_DUP: usize         = 15;
+const SYS_DUP2: usize        = 16;
+const SYS_PIPE: usize        = 17;
+const SYS_GETDENTS: usize    = 18;
+
+const SYS_MKDIR: usize       = 20;
+const SYS_UNLINK: usize      = 21;
+
+const SYS_SEND: usize        = 30;
+const SYS_RECV: usize        = 31;
+const SYS_RECV_BLOCK: usize  = 32;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -236,6 +253,11 @@ pub fn exit(code: i32) -> ! {
 	}
 }
 
+/* serix_yield - Voluntarily yield the CPU to the scheduler */
+pub fn serix_yield() {
+	unsafe { syscall0(SYS_YIELD); }
+}
+
 /* serix_getpid - Return the calling task's ID */
 pub fn serix_getpid() -> u64 {
 	unsafe { syscall0(SYS_GETPID) as u64 }
@@ -268,7 +290,7 @@ pub fn serix_wait(pid: i64) -> (i64, i32) {
 	let mut status: i32 = 0;
 	let ret = unsafe {
 		syscall4(
-			SYS_WAIT4,
+			SYS_WAIT,
 			pid as usize,
 			&mut status as *mut i32 as usize,
 			0,
@@ -279,15 +301,15 @@ pub fn serix_wait(pid: i64) -> (i64, i32) {
 }
 
 /*
- * serix_getdents64 - Read directory entries into a buffer.
+ * serix_getdents - Read directory entries into a buffer.
  * @fd: Open directory fd
  * @buf: Buffer to write dirent64 records into
  *
  * Return: bytes written, 0 at EOF, negative errno on error
  */
-pub fn serix_getdents64(fd: usize, buf: &mut [u8]) -> isize {
+pub fn serix_getdents(fd: usize, buf: &mut [u8]) -> isize {
 	unsafe {
-		syscall3(SYS_GETDENTS64, fd, buf.as_mut_ptr() as usize, buf.len()) as isize
+		syscall3(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len()) as isize
 	}
 }
 
@@ -308,5 +330,5 @@ pub fn serix_dup2(old_fd: usize, new_fd: usize) -> isize {
  * Return: 0 on success, negative errno on error
  */
 pub fn serix_pipe(fds: &mut [u64; 2]) -> isize {
-	unsafe { syscall2(SYS_PIPE2, fds.as_mut_ptr() as usize, 0) as isize }
+	unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, 0) as isize }
 }

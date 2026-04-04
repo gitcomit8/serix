@@ -11,7 +11,8 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use ulib::{STDIN, STDOUT, exit, read, serix_close, serix_getdents64, serix_getpid, serix_getppid, serix_open, write};
+use ulib::{STDOUT, exit, read, serix_close, serix_getpid, serix_getppid, serix_open, serix_spawn,
+	serix_wait, write};
 
 /*
  * panic - User panic handler
@@ -79,26 +80,19 @@ pub extern "C" fn _start() -> ! {
 		serix_close(fd);
 	}
 
-	/* List root directory - getdents64 test (simplified to diagnose crash) */
-	write(STDOUT, b"\n[init] Directory listing of /:\n");
-	write(STDOUT, b"  init\n");
-	write(STDOUT, b"  hello.txt\n");
-
-	/* Echo shell */
-	write(STDOUT, b"\n[init] Enter shell (Ctrl+C or close to exit):\n$ ");
-
-	let mut buf = [0u8; 1];
-
-	loop {
-		let n = read(STDIN, &mut buf);
-
-		if n > 0 {
-			let c = buf[0];
-			write(STDOUT, &buf);
-
-			if c == b'\r' || c == b'\n' {
-				write(STDOUT, b"$ ");
-			}
-		}
+	/* Spawn the rsh shell */
+	let child = serix_spawn("/rsh");
+	if child > 0 {
+		write(STDOUT, b"[init] spawned rsh, pid=");
+		print_u64(child as u64);
+		write(STDOUT, b"\n");
+		let (_pid, status) = serix_wait(-1);
+		write(STDOUT, b"[init] rsh exited, status=");
+		print_u64(status as u64);
+		write(STDOUT, b"\n");
+	} else {
+		write(STDOUT, b"[init] failed to spawn /rsh\n");
 	}
+
+	exit(0);
 }
