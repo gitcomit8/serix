@@ -34,13 +34,19 @@ $(ISO_ROOT)/limine.conf:
 	cp ./limine.conf $@
 
 init:
-	RUSTFLAGS="-C link-arg=-Tuser.ld" cargo build \
-        -p ulib \
-        --example init \
-        --release \
-        --target x86_64-unknown-none
+	RUSTFLAGS="-C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	    -p ulib \
+	    --example init \
+	    --release \
+	    --target x86_64-unknown-none
 
-iso: init $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
+rsh:
+	RUSTFLAGS="-C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	    --manifest-path ../rsh/Cargo.toml \
+	    --release \
+	    --target x86_64-unknown-none
+
+iso: init rsh $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
 	xorriso -as mkisofs -b boot/limine-bios-cd.bin \
 	  -no-emul-boot -boot-load-size 4 -boot-info-table \
 	  --efi-boot boot/limine-uefi-cd.bin \
@@ -48,7 +54,7 @@ iso: init $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/b
 	  $(ISO_ROOT) -o $(ISO)
 	./limine/limine bios-install $(ISO)
 
-disk: init
+disk: init rsh
 	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c FAT)" -eq 0 ]; then \
 		dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null; \
 		mkfs.vfat -F 32 -n SERIX disk.img; \
@@ -59,9 +65,10 @@ disk: init
 	@mkdir -p disk_mount && \
 	sudo mount -o loop disk.img disk_mount && \
 	sudo cp target/x86_64-unknown-none/release/examples/init disk_mount/init && \
+	sudo cp ../rsh/target/x86_64-unknown-none/release/rsh disk_mount/rsh && \
 	sudo umount disk_mount && \
 	rmdir disk_mount && \
-	echo "Copied init to disk.img" || echo "Warning: Failed to copy init to disk.img"
+	echo "Copied init and rsh to disk.img" || echo "Warning: Failed to copy to disk.img"
 
 QEMU_COMMON = -m 4G -boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
