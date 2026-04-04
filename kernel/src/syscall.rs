@@ -10,23 +10,63 @@ use hal::serial_println;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
-/* System call numbers */
-pub const SYS_READ: u64 = 0;
-pub const SYS_WRITE: u64 = 1;
-pub const SYS_OPEN: u64 = 2;
-pub const SYS_CLOSE: u64 = 3;
-pub const SYS_SEEK: u64 = 8;
-pub const SYS_SEND: u64 = 20;
-pub const SYS_RECV: u64 = 21;
-pub const SYS_RECV_BLOCK: u64 = 22;
-pub const SYS_YIELD: u64 = 24;
-pub const SYS_EXIT: u64 = 60;
-pub const SYS_WAIT4: u64 = 61;
-pub const SYS_MKDIR: u64 = 83;
-pub const SYS_UNLINK: u64 = 87;
-pub const SYS_GETPID: u64 = 39;
-pub const SYS_GETPPID: u64 = 110;
-pub const SYS_SPAWN: u64 = 400;
+/*
+ * Serix System Call Numbers
+ *
+ * Grouped by subsystem. These are Serix-native numbers — not Linux-compatible.
+ * Both this table and ulib/src/lib.rs must be kept in sync.
+ *
+ * Process group (0–9):
+ *   0  EXIT        Terminate the calling process
+ *   1  YIELD       Voluntarily yield the CPU to the scheduler
+ *   2  GETPID      Return the calling task's ID
+ *   3  GETPPID     Return the parent task's ID
+ *   4  SPAWN       Create a new process from an ELF path on the VFS
+ *   5  WAIT        Wait for a child process to exit
+ *
+ * File I/O group (10–19):
+ *   10 OPEN        Open a VFS path, return an fd
+ *   11 CLOSE       Close an fd
+ *   12 READ        Read bytes from an fd into a user buffer
+ *   13 WRITE       Write bytes from a user buffer to an fd
+ *   14 SEEK        Set the file offset for an fd
+ *   15 DUP         Duplicate an fd to the next available descriptor
+ *   16 DUP2        Duplicate an fd to a specific descriptor number
+ *   17 PIPE        Create a unidirectional pipe, return [read_fd, write_fd]
+ *   18 GETDENTS    Read directory entries in dirent64 format
+ *
+ * Filesystem group (20–29):
+ *   20 MKDIR       Create a directory at the given VFS path
+ *   21 UNLINK      Delete a file at the given VFS path
+ *
+ * IPC group (30–39):
+ *   30 SEND        Send a message to an IPC port
+ *   31 RECV        Receive a message from an IPC port (non-blocking)
+ *   32 RECV_BLOCK  Receive a message from an IPC port (blocking)
+ */
+pub const SYS_EXIT: u64        =  0;
+pub const SYS_YIELD: u64       =  1;
+pub const SYS_GETPID: u64      =  2;
+pub const SYS_GETPPID: u64     =  3;
+pub const SYS_SPAWN: u64       =  4;
+pub const SYS_WAIT: u64        =  5;
+
+pub const SYS_OPEN: u64        = 10;
+pub const SYS_CLOSE: u64       = 11;
+pub const SYS_READ: u64        = 12;
+pub const SYS_WRITE: u64       = 13;
+pub const SYS_SEEK: u64        = 14;
+pub const SYS_DUP: u64         = 15;
+pub const SYS_DUP2: u64        = 16;
+pub const SYS_PIPE: u64        = 17;
+pub const SYS_GETDENTS: u64    = 18;
+
+pub const SYS_MKDIR: u64       = 20;
+pub const SYS_UNLINK: u64      = 21;
+
+pub const SYS_SEND: u64        = 30;
+pub const SYS_RECV: u64        = 31;
+pub const SYS_RECV_BLOCK: u64  = 32;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8;  /* Bad file descriptor (errno 9) */
@@ -348,7 +388,7 @@ extern "C" fn syscall_dispatcher(
 			}
 		}
 
-		SYS_WAIT4 => {
+		SYS_WAIT => {
 			/*
 			 * Wait for a child process to exit.
 			 * arg1: pid (-1 = any child)
@@ -606,7 +646,7 @@ extern "C" fn syscall_dispatcher(
 			}
 			msg.id
 		}
-		32 /* SYS_DUP */ => {
+		SYS_DUP => {
 			let task_id = task::scheduler::current_task_id();
 			match crate::fd::dup(task_id, arg1) {
 				Some(new_fd) => new_fd,
@@ -614,7 +654,7 @@ extern "C" fn syscall_dispatcher(
 			}
 		}
 
-		33 /* SYS_DUP2 */ => {
+		SYS_DUP2 => {
 			let task_id = task::scheduler::current_task_id();
 			match crate::fd::dup2(task_id, arg1, arg2) {
 				Some(new_fd) => new_fd,
@@ -622,10 +662,10 @@ extern "C" fn syscall_dispatcher(
 			}
 		}
 
-		293 /* SYS_PIPE2 */ => {
+		SYS_PIPE => {
 			/*
 			 * Create a pipe. arg1 points to a [u64; 2] user buffer that
-			 * receives [read_fd, write_fd]. arg2 (flags) is ignored.
+			 * receives [read_fd, write_fd].
 			 */
 			let pipefd_ptr = arg1 as *mut u64;
 			if !is_user_accessible(pipefd_ptr as *const u8, 16) {
@@ -640,14 +680,14 @@ extern "C" fn syscall_dispatcher(
 			0
 		}
 
-		217 /* SYS_GETDENTS64 */ => {
+		SYS_GETDENTS => {
 			/*
 			 * List directory entries into a user buffer.
 			 * arg1: fd (must be open on a directory)
 			 * arg2: user buffer pointer
 			 * arg3: user buffer length
 			 *
-			 * Each entry is serialised as Linux dirent64:
+			 * Each entry is serialised as dirent64:
 			 *   u64 d_ino, u64 d_off, u16 d_reclen, u8 d_type, char d_name[]
 			 * Entries are null-terminated and padded to 8-byte alignment.
 			 * The fd offset tracks the next entry index to emit.
