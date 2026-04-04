@@ -73,15 +73,17 @@ pub unsafe fn map_segment(
 
 	for page in Page::range_inclusive(start_page, end_page) {
 		let new_frame = allocator.allocate_frame().expect("OOM during segment load");
-		let frame = match mapper.map_to(page, new_frame, flags, allocator) {
-			Ok(f) => { f.flush(); new_frame }
-			Err(MapToError::PageAlreadyMapped(existing)) => existing,
+		let (frame, freshly_mapped) = match mapper.map_to(page, new_frame, flags, allocator) {
+			Ok(f) => { f.flush(); (new_frame, true) }
+			Err(MapToError::PageAlreadyMapped(existing)) => (existing, false),
 			Err(e) => panic!("map_segment: {:?}", e),
 		};
 
 		let frame_virt = phys_offset + frame.start_address().as_u64();
 		let ptr = frame_virt.as_mut_ptr::<u8>();
-		ptr.write_bytes(0, 4096);
+		if freshly_mapped {
+			ptr.write_bytes(0, 4096);
+		}
 
 		let page_addr = page.start_address().as_u64();
 		let seg_addr = start.as_u64();
