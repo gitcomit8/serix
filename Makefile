@@ -34,14 +34,14 @@ $(ISO_ROOT)/limine.conf:
 	cp ./limine.conf $@
 
 init:
-	RUSTFLAGS="-C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
 	    -p ulib \
 	    --example init \
 	    --release \
 	    --target x86_64-unknown-none
 
 rsh:
-	RUSTFLAGS="-C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
 	    --manifest-path ../rsh/Cargo.toml \
 	    --release \
 	    --target x86_64-unknown-none
