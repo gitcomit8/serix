@@ -12,6 +12,7 @@
 extern crate alloc;
 pub mod fd;
 mod gdt;
+mod kshell;
 pub mod pipe;
 pub mod process;
 pub mod stdio;
@@ -593,15 +594,15 @@ pub extern "C" fn _start() -> ! {
 	));
 	task::scheduler::global().lock().current = Some(boot_task);
 
-	/* Spawn the init process (PID 1) */
-	match process::spawn_user_process("/init", 0) {
-		Ok(init_pid) => {
-			serial_println!("Spawned init process: PID={}", init_pid);
-			fb_println!("Init: spawned PID={}", init_pid);
+	/* Spawn the built-in kernel shell */
+	match kshell::spawn_kshell() {
+		Ok(pid) => {
+			serial_println!("Kernel shell spawned: PID={}", pid);
+			fb_println!("kshell: spawned PID={}", pid);
 		}
 		Err(e) => {
-			serial_println!("Failed to spawn init: {}", e);
-			fb_println!("Init: spawn failed");
+			serial_println!("Failed to spawn kshell: {}", e);
+			fb_println!("kshell: spawn failed");
 		}
 	}
 

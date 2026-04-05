@@ -7,7 +7,12 @@
 
 use vfs::{FileType, INode};
 
-/* stdin_inode - PS/2 keyboard, one byte per keypress */
+/*
+ * stdin_inode - Terminal input via PS/2 keyboard
+ *
+ * Characters are buffered by the PS/2 interrupt handler in keyboard::INPUT_BUF.
+ * We spin-yield until a key is available so other tasks can run while waiting.
+ */
 pub struct StdinINode;
 
 impl INode for StdinINode {
@@ -16,11 +21,11 @@ impl INode for StdinINode {
 			return 0;
 		}
 		loop {
-			if let Some(k) = keyboard::pop_key() {
-				buf[0] = k;
+			if let Some(b) = keyboard::pop_key() {
+				buf[0] = b;
 				return 1;
 			}
-			/* Re-enable interrupts briefly so keyboard ISR can fire */
+			/* Yield to other tasks while waiting for input */
 			x86_64::instructions::interrupts::enable();
 			core::hint::spin_loop();
 			x86_64::instructions::interrupts::disable();
