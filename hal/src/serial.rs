@@ -56,6 +56,24 @@ impl SerialPort {
 	}
 
 	/*
+	 * is_data_ready - Check if a received byte is waiting in the buffer
+	 *
+	 * Returns true when LSR bit 0 (DR) is set.
+	 */
+	pub fn is_data_ready(&self) -> bool {
+		unsafe { inb(self.base + LINE_STATUS_REG) & 0x01 != 0 }
+	}
+
+	/*
+	 * read_byte - Read one byte from the serial receive FIFO
+	 *
+	 * Caller must check is_data_ready() first; returns 0 if no data.
+	 */
+	pub fn read_byte(&self) -> u8 {
+		unsafe { inb(self.base + DATA_REG) }
+	}
+
+	/*
 	 * is_transmit_empty - Check if transmit buffer is empty
 	 *
 	 * Returns true if the transmitter is ready for the next byte.
@@ -140,6 +158,23 @@ macro_rules! serial_println {
 	()=>($crate::serial_print!("\n"));
 	($($arg:tt)*) => {$crate::serial_print!("{}\n", format_args!($($arg)*))
 	};
+}
+
+/*
+ * serial_read_byte - Non-blocking read from serial receive buffer
+ *
+ * Returns Some(byte) if a byte is available, None otherwise.
+ * Used by the stdin INode to read keyboard input from the host terminal
+ * when QEMU is launched with -serial stdio.
+ */
+pub fn serial_read_byte() -> Option<u8> {
+	if let Some(serial) = SERIAL_PORT.get() {
+		let port = serial.lock();
+		if port.is_data_ready() {
+			return Some(port.read_byte());
+		}
+	}
+	None
 }
 
 /*

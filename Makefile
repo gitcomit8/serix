@@ -84,6 +84,10 @@ run-debug: iso disk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
 		-d int,cpu_reset -no-reboot
 
+run-gdb: iso disk
+	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
+		-s -S
+
 clean:
 	rm -rf $(ISO_ROOT) $(ISO)
 	cargo clean --manifest-path kernel/Cargo.toml

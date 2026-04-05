@@ -22,6 +22,11 @@ pub fn _print(args: fmt::Arguments) {
 	StdoutWriter.write_fmt(args).unwrap();
 }
 
+/* print_str - Write a &str directly to stdout, bypassing fmt machinery */
+pub fn print_str(s: &str) {
+	sys_write(STDOUT, s.as_bytes());
+}
+
 #[macro_export]
 macro_rules! print {
 	($($arg:tt)*) => {
