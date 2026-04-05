@@ -26,9 +26,13 @@ use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, P
  * At entry: kernel stack is valid, r12 = user entry point, r13 = user RSP.
  * Builds the iretq frame and switches to Ring 3.
  *
- * GS is NOT swapped here. At spawn time GS_BASE = 0 (user) and
- * KernelGsBase = PER_CPU_DATA, which is exactly what the syscall trampoline
- * expects. swapgs in the syscall handler will make PER_CPU_DATA active.
+ * GS invariant (this kernel): GS_BASE is ALWAYS 0 in both Ring 0 and Ring 3
+ * normal execution. KernelGsBase holds PER_CPU_DATA. swapgs only happens
+ * inside syscall_entry/syscall_exit to temporarily make PER_CPU_DATA live.
+ *
+ * Therefore this trampoline must always be reached with GS_BASE=0. Callers
+ * in syscall context (SYS_EXIT, SYS_WAIT) must issue swapgs before calling
+ * context_switch so that GS is restored before we arrive here.
  */
 #[unsafe(naked)]
 pub unsafe extern "C" fn user_entry_trampoline() -> ! {

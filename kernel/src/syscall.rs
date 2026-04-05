@@ -367,6 +367,13 @@ extern "C" fn syscall_dispatcher(
 						fs_base: 0, gs_base: 0, cr3: 0,
 					};
 					unsafe {
+						/*
+						 * Restore normal kernel GS state before context_switch.
+						 * syscall_entry swapgs'd GS_BASE to PER_CPU_DATA; we must
+						 * swap back (GS_BASE→0, KernelGsBase→PER_CPU_DATA) so that
+						 * user_entry_trampoline always sees GS_BASE=0.
+						 */
+						core::arch::asm!("swapgs");
 						task::context_switch::context_switch(
 							core::ptr::addr_of_mut!(DUMMY_CTX),
 							new_ctx,
@@ -450,7 +457,20 @@ extern "C" fn syscall_dispatcher(
 					if let Some(arc) = task::scheduler::current_task_arc() {
 						arc.lock().waiting_for_child = true;
 					}
+					/*
+					 * Restore normal kernel GS before blocking. syscall_entry
+					 * swapgs'd GS_BASE to PER_CPU_DATA; swap back so that
+					 * user_entry_trampoline (reached via context_switch inside
+					 * block_current_and_switch) always sees GS_BASE=0.
+					 */
+					unsafe { core::arch::asm!("swapgs"); }
 					task::block_current_and_switch();
+					/*
+					 * When this task is woken and rescheduled, execution
+					 * resumes here — still inside the syscall handler, so
+					 * we must re-establish the syscall GS state.
+					 */
+					unsafe { core::arch::asm!("swapgs"); }
 				});
 			}
 		}
