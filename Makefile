@@ -46,7 +46,7 @@ rsh:
 	    --release \
 	    --target x86_64-unknown-none
 
-iso: init rsh $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
+iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
 	xorriso -as mkisofs -b boot/limine-bios-cd.bin \
 	  -no-emul-boot -boot-load-size 4 -boot-info-table \
 	  --efi-boot boot/limine-uefi-cd.bin \
