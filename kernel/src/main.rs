@@ -80,8 +80,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 	let mut port = Port::new(0x60);
 	let scancode: u8 = unsafe { port.read() };
 
-	hal::serial_println!("[PS/2] scancode={:#x}", scancode);
-
 	/* Process the scancode via keyboard module */
 	keyboard::handle_scancode(scancode);
 
