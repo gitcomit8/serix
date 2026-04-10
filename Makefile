@@ -54,21 +54,14 @@ iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/l
 	  $(ISO_ROOT) -o $(ISO)
 	./limine/limine bios-install $(ISO)
 
-disk: init rsh
-	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c FAT)" -eq 0 ]; then \
-		dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null; \
-		mkfs.vfat -F 32 -n SERIX disk.img; \
-		echo "Formatted disk.img as FAT32 (SERIX)"; \
+disk:
+	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c ext2)" -eq 0 ]; then \
+		dd if=/dev/zero of=disk.img bs=1M count=64 2>/dev/null; \
+		mkfs.ext2 disk.img; \
+		echo "Formatted disk.img as ext2"; \
 	else \
-		echo "disk.img already FAT32, skipping format"; \
+		echo "disk.img already ext2, skipping format"; \
 	fi
-	@mkdir -p disk_mount && \
-	sudo mount -o loop disk.img disk_mount && \
-	sudo cp target/x86_64-unknown-none/release/examples/init disk_mount/init && \
-	sudo cp ../rsh/target/x86_64-unknown-none/release/rsh disk_mount/rsh && \
-	sudo umount disk_mount && \
-	rmdir disk_mount && \
-	echo "Copied init and rsh to disk.img" || echo "Warning: Failed to copy to disk.img"
 
 QEMU_COMMON = -m 4G -boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \

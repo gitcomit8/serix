@@ -30,11 +30,10 @@ use loader::LoadableSegment;
 use memory::heap::{StaticBootFrameAllocator, init_heap};
 use spin::{Mutex, Once};
 use task::{Scheduler, TaskCB};
-use task::{init_executor, poll_executor};
+use task::init_executor;
 use util::panic::halt_loop;
-use vfs::{INode, RamFile};
+use vfs::INode;
 use x86_64::instructions::hlt;
-use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
@@ -80,6 +79,8 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 	/* Read scancode from keyboard data port (0x60) */
 	let mut port = Port::new(0x60);
 	let scancode: u8 = unsafe { port.read() };
+
+	hal::serial_println!("[PS/2] scancode={:#x}", scancode);
 
 	/* Process the scancode via keyboard module */
 	keyboard::handle_scancode(scancode);
@@ -520,53 +521,24 @@ pub extern "C" fn _start() -> ! {
 	drivers::virtio::setup_queues_global();
 	drivers::virtio::register_interrupt();
 
-	/* Mount FAT32 filesystem and set VFS root */
-	if fs::mount() {
-		serial_println!("FS: FAT32 mounted");
-		fb_println!("FS: FAT32 mounted");
-		vfs::set_root(alloc::sync::Arc::new(fs::FatDirINode::root()));
+	/* Register filesystem drivers */
+	fs::fat32::init();
+	fs::ext2::init();
 
-		/* Kernel-side smoke test: create, write, read back */
-		let root = vfs::lookup_path("/").unwrap();
-		root.insert("hello.txt",
-			alloc::sync::Arc::new(vfs::RamFile::new("placeholder"))).ok();
-		let hello = vfs::lookup_path("/hello.txt").unwrap();
-		hello.write(0, b"Hello from Serix!");
-		let mut buf = [0u8; 17];
-		hello.read(0, &mut buf);
-		let hello_str = core::str::from_utf8(&buf).unwrap_or("ERR");
-		serial_println!("FS: /hello.txt = {:?}", hello_str);
-		fb_println!("FS: /hello.txt = {:?}", hello_str);
+	/* Boot VFS: RamDir at / and /dev/ */
+	vfs::mount("/",     alloc::sync::Arc::new(vfs::RamDir::new("/")));
+	vfs::mount("/dev/", alloc::sync::Arc::new(vfs::RamDir::new("dev")));
+	serial_println!("VFS: mount table initialized");
+	fb_println!("VFS: / and /dev/ ready");
 
-		/* Test FD table: open, read, seek, close */
-		if let Some(fd) = fd::open(0, "/hello.txt") {
-			let mut fbuf = [0u8; 17];
-			if let Some(file) = fd::get(0, fd) {
-				let n = file.inode.read(0, &mut fbuf);
-				*file.offset.lock() = n;
-			}
-			serial_println!("FD: fd={} read {:?}",
-				fd, core::str::from_utf8(&fbuf).unwrap_or("ERR"));
-			fb_println!("FD: fd={} read OK", fd);
-			fd::seek(0, fd, 0);
-			fd::close(0, fd);
-			serial_println!("FD: seek+close OK");
-			fb_println!("FD: seek+close OK");
-		}
-	} else {
-		serial_println!("FS: FAT32 mount failed, falling back to RamDir root");
-		fb_println!("FS: FAT32 mount failed, RamDir fallback");
-		vfs::set_root(alloc::sync::Arc::new(vfs::RamDir::new("/")));
-	}
-
-	let file = RamFile::new("system.log");
-	file.write(0, b"Serix Kernel Phase 3 OK");
-
-	let mut read_buf = [0u8; 23];
-	file.read(0, &mut read_buf);
-	if let Ok(msg) = core::str::from_utf8(&read_buf) {
-		serial_println!("VFS Readback: {}", msg);
-		fb_println!("VFS: {}", msg);
+	/* Expose VirtIO block device as /dev/sda */
+	let sda: alloc::sync::Arc<dyn INode> = alloc::sync::Arc::new(
+		fs::BlockDevINode(alloc::sync::Arc::new(fs::VirtioBlockDev))
+	);
+	if let Some(dev_dir) = vfs::lookup_path("/dev/") {
+		dev_dir.insert("sda", sda).ok();
+		serial_println!("VFS: /dev/sda available");
+		fb_println!("VFS: /dev/sda ready — run 'mount /dev/sda /' to attach ext2");
 	}
 	/* Wire up fd 0/1/2 for the init task */
 	fd::init_stdio(0);
