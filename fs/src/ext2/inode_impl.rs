@@ -222,11 +222,12 @@ impl INode for Ext2DirINode {
 		}
 
 		let mut child = Inode {
-			mode:   super::inode::EXT2_S_IFDIR | 0o755,
-			size:   bsz as u32,
-			blocks: spb as u32,
-			block:  [0u32; 15],
-			ino:    child_ino,
+			mode:        super::inode::EXT2_S_IFDIR | 0o755,
+			links_count: 2,   /* parent entry + '.' in self */
+			size:        bsz as u32,
+			blocks:      spb as u32,
+			block:       [0u32; 15],
+			ino:         child_ino,
 		};
 		child.block[0] = blk;
 		child.write(dev.as_ref(), &e.sb, &e.bgdt);
@@ -254,11 +255,12 @@ impl INode for Ext2DirINode {
 			.ok_or("no free inodes")?;
 
 		let child = Inode {
-			mode:   super::inode::EXT2_S_IFREG | 0o644,
-			size:   0,
-			blocks: 0,
-			block:  [0u32; 15],
-			ino:    child_ino,
+			mode:        super::inode::EXT2_S_IFREG | 0o644,
+			links_count: 1,
+			size:        0,
+			blocks:      0,
+			block:       [0u32; 15],
+			ino:         child_ino,
 		};
 		child.write(dev.as_ref(), &e.sb, &e.bgdt);
 
