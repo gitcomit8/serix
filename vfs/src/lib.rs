@@ -1,18 +1,25 @@
 /*
  * lib.rs - Virtual File System
  *
- * Implements the VFS layer with support for files, directories, and devices.
- * Uses Arc for shared ownership of filesystem nodes.
+ * Implements the VFS layer with a mount table that supports multiple
+ * simultaneous filesystem mounts. Longest-prefix matching ensures that
+ * specific mounts (e.g. /dev/) shadow the root mount for their subtree.
+ *
+ * Mount table is kept sorted longest-path-first so the first match is
+ * always the most specific one.
  */
 
 #![no_std]
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::mutex::Mutex;
-use spin::Once;
+use spin::Mutex;
+
+/* ------------------------------------------------------------------ */
+/*  FileType                                                            */
+/* ------------------------------------------------------------------ */
 
 /*
  * enum FileType - Type of VFS node
@@ -24,148 +31,186 @@ pub enum FileType {
 	Device,
 }
 
+/* ------------------------------------------------------------------ */
+/*  INode trait                                                         */
+/* ------------------------------------------------------------------ */
+
 /*
  * trait INode - Abstract filesystem node
  *
- * Provides common interface for files, directories, and devices.
+ * All filesystem drivers implement this trait for their file and
+ * directory types. Default implementations return errors or zero so
+ * that drivers only need to implement operations they support.
  */
 pub trait INode: Send + Sync {
-	/*
-	 * read - Read data from the node
-	 * @offset: Offset to read from
-	 * @buf: Buffer to read into
-	 *
-	 * Return: Number of bytes read
-	 */
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize;
-
-	/*
-	 * write - Write data to the node
-	 * @offset: Offset to write to
-	 * @buf: Buffer containing data to write
-	 *
-	 * Return: Number of bytes written
-	 */
 	fn write(&self, offset: usize, buf: &[u8]) -> usize;
-
-	/*
-	 * metadata - Get node metadata
-	 *
-	 * Return: FileType of this node
-	 */
 	fn metadata(&self) -> FileType;
 
-	/*
-	 * lookup - Look up a child node by name (directories only)
-	 * @_name: Name to look up
-	 *
-	 * Return: Some(node) if found, None otherwise
-	 */
-	fn lookup(&self, _name: &str) -> Option<Arc<dyn INode>> {
-		None
-	}
+	fn lookup(&self, _name: &str) -> Option<Arc<dyn INode>> { None }
 
-	/*
-	 * insert - Insert a child node (directories only)
-	 * @_name: Name of child
-	 * @_node: Node to insert
-	 *
-	 * Return: Ok(()) on success, Err on failure
-	 */
 	fn insert(&self, _name: &str, _node: Arc<dyn INode>) -> Result<(), &'static str> {
-		Err("Not a directory")
+		Err("not a directory")
 	}
 
 	/*
-	 * mkdir - Create a subdirectory (directories only)
-	 * @_name: Name of the new directory
+	 * create_file - Create a new empty file in this directory
+	 * @name: Name for the new file
 	 *
-	 * Return: Ok(()) on success, Err on failure
+	 * Returns the INode of the newly created file, which the caller can
+	 * immediately write to. Used by kshell `write` when the target does
+	 * not exist yet. ext2 allocates an on-disk inode; RamDir wraps RamFile.
 	 */
+	fn create_file(&self, _name: &str) -> Result<Arc<dyn INode>, &'static str> {
+		Err("not a directory")
+	}
+
 	fn mkdir(&self, _name: &str) -> Result<(), &'static str> {
 		Err("not a directory")
 	}
 
-	/*
-	 * unlink - Remove a child entry (directories only)
-	 * @_name: Name of child to remove
-	 *
-	 * Return: Ok(()) on success, Err on failure
-	 */
 	fn unlink(&self, _name: &str) -> Result<(), &'static str> {
 		Err("not a directory")
 	}
 
-	/*
-	 * size - Get node size in bytes
-	 *
-	 * Return: Size in bytes
-	 */
-	fn size(&self) -> usize {
-		0
-	}
+	fn size(&self) -> usize { 0 }
 
-	/*
-	 * readdir - List directory entries (directories only)
-	 *
-	 * Return: Some(Vec of (name, FileType)) if this is a directory, None otherwise
-	 */
-	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
-		None
+	fn readdir(&self) -> Option<Vec<(String, FileType)>> { None }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mount table                                                         */
+/* ------------------------------------------------------------------ */
+
+struct MountEntry {
+	path: String,          /* e.g. "/" or "/dev/" — always ends with / */
+	root: Arc<dyn INode>,
+}
+
+/*
+ * MOUNT_TABLE - All active mounts, sorted longest-path-first.
+ *
+ * Longest-first ordering means the first matching entry in a linear scan
+ * is always the most specific mount for any given path.
+ */
+static MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
+
+/*
+ * normalize_mount_path - Ensure path ends with '/' (root stays "/")
+ */
+fn normalize_mount_path(path: &str) -> String {
+	if path == "/" {
+		return "/".to_string();
+	}
+	let p = path.trim_end_matches('/');
+	let mut s = String::from(p);
+	s.push('/');
+	s
+}
+
+/*
+ * mount - Add or replace a mount point
+ * @path:  Mount point path (e.g. "/" or "/dev/")
+ * @root:  Root INode of the filesystem to mount here
+ */
+pub fn mount(path: &str, root: Arc<dyn INode>) {
+	let key = normalize_mount_path(path);
+	let mut table = MOUNT_TABLE.lock();
+	/* Replace existing entry if present */
+	if let Some(entry) = table.iter_mut().find(|e| e.path == key) {
+		entry.root = root;
+		return;
+	}
+	table.push(MountEntry { path: key, root });
+	/* Keep sorted longest-path-first for correct prefix matching */
+	table.sort_unstable_by(|a, b| b.path.len().cmp(&a.path.len()));
+}
+
+/*
+ * umount - Remove a mount point
+ * @path: Mount point to remove
+ *
+ * Returns Err if the path is not currently mounted.
+ */
+pub fn umount(path: &str) -> Result<(), &'static str> {
+	let key = normalize_mount_path(path);
+	let mut table = MOUNT_TABLE.lock();
+	if let Some(pos) = table.iter().position(|e| e.path == key) {
+		table.remove(pos);
+		Ok(())
+	} else {
+		Err("not mounted")
 	}
 }
 
 /*
- * VFS_ROOT - Global root inode
- */
-static VFS_ROOT: Once<Arc<dyn INode>> = Once::new();
-
-/*
- * set_root - Set the global VFS root inode
- * @root: Root directory inode
+ * set_root - Convenience wrapper: mount an inode at "/"
+ *
+ * Kept for compatibility with existing callers (kernel/src/main.rs).
  */
 pub fn set_root(root: Arc<dyn INode>) {
-	VFS_ROOT.call_once(|| root);
+	mount("/", root);
 }
 
 /*
- * lookup_path - Resolve an absolute path to an inode
- * @path: Absolute path (e.g. "/hello.txt" or "/")
+ * lookup_path - Resolve an absolute path to an INode
+ * @path: Absolute path (must start with '/')
  *
- * Return: Some(inode) if found, None otherwise
+ * Finds the longest matching mount prefix, uses that mount's root as
+ * the starting INode, then traverses remaining path components.
+ *
+ * Return: Some(inode) if found, None if path or any component is absent.
  */
 pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
-	let root = VFS_ROOT.get()?;
-	if path == "/" || path.is_empty() {
-		return Some(Arc::clone(root));
+	let table = MOUNT_TABLE.lock();
+	if table.is_empty() {
+		return None;
 	}
-	let mut node: Arc<dyn INode> = Arc::clone(root);
-	for component in path.trim_start_matches('/').split('/') {
-		if component.is_empty() {
-			continue;
+
+	/* Find the longest mount prefix that path starts with */
+	let entry = table.iter().find(|e| {
+		if e.path == "/" {
+			path.starts_with('/')
+		} else {
+			/* Exact match on mount point or path is inside mount */
+			path == e.path.trim_end_matches('/')
+				|| path.starts_with(e.path.as_str())
 		}
+	})?;
+
+	/* Strip the mount prefix to get the remainder to traverse */
+	let remainder = if entry.path == "/" {
+		path.trim_start_matches('/')
+	} else {
+		path.strip_prefix(entry.path.as_str())
+			.unwrap_or("")
+			.trim_start_matches('/')
+	};
+
+	if remainder.is_empty() {
+		return Some(Arc::clone(&entry.root));
+	}
+
+	let mut node = Arc::clone(&entry.root);
+	for component in remainder.split('/').filter(|c| !c.is_empty()) {
 		node = node.lookup(component)?;
 	}
 	Some(node)
 }
 
+/* ------------------------------------------------------------------ */
+/*  RamFile                                                             */
+/* ------------------------------------------------------------------ */
+
 /*
- * struct RamFile - In-memory file implementation
- * @name: File name
- * @data: File contents
+ * struct RamFile - In-memory file
  */
 pub struct RamFile {
-	name: String,
+	pub name: String,
 	data: Mutex<Vec<u8>>,
 }
 
 impl RamFile {
-	/*
-	 * new - Create a new RAM file
-	 * @name: File name
-	 *
-	 * Return: New RamFile instance
-	 */
 	pub fn new(name: &str) -> Self {
 		Self {
 			name: String::from(name),
@@ -177,9 +222,7 @@ impl RamFile {
 impl INode for RamFile {
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
 		let data = self.data.lock();
-		if offset >= data.len() {
-			return 0;
-		}
+		if offset >= data.len() { return 0; }
 		let len = core::cmp::min(buf.len(), data.len() - offset);
 		buf[..len].copy_from_slice(&data[offset..offset + len]);
 		len
@@ -194,32 +237,24 @@ impl INode for RamFile {
 		buf.len()
 	}
 
-	fn metadata(&self) -> FileType {
-		FileType::File
-	}
+	fn metadata(&self) -> FileType { FileType::File }
 
-	fn size(&self) -> usize {
-		self.data.lock().len()
-	}
+	fn size(&self) -> usize { self.data.lock().len() }
 }
 
+/* ------------------------------------------------------------------ */
+/*  RamDir                                                              */
+/* ------------------------------------------------------------------ */
+
 /*
- * struct RamDir - In-memory directory implementation
- * @name: Directory name
- * @children: List of child nodes
+ * struct RamDir - In-memory directory
  */
 pub struct RamDir {
-	name: String,
+	pub name: String,
 	children: Mutex<Vec<(String, Arc<dyn INode>)>>,
 }
 
 impl RamDir {
-	/*
-	 * new - Create a new RAM directory
-	 * @name: Directory name
-	 *
-	 * Return: New RamDir instance
-	 */
 	pub fn new(name: &str) -> Self {
 		Self {
 			name: String::from(name),
@@ -229,37 +264,53 @@ impl RamDir {
 }
 
 impl INode for RamDir {
-	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize {
-		0
-	}
-
-	fn write(&self, _offset: usize, _buf: &[u8]) -> usize {
-		0
-	}
-
-	fn metadata(&self) -> FileType {
-		FileType::Directory
-	}
+	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize { 0 }
+	fn write(&self, _offset: usize, _buf: &[u8]) -> usize { 0 }
+	fn metadata(&self) -> FileType { FileType::Directory }
 
 	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
-		let children = self.children.lock();
-		children
+		self.children.lock()
 			.iter()
 			.find(|(n, _)| n == name)
-			.map(|(_, node)| node.clone())
+			.map(|(_, node)| Arc::clone(node))
 	}
 
 	fn insert(&self, name: &str, node: Arc<dyn INode>) -> Result<(), &'static str> {
 		let mut children = self.children.lock();
 		if children.iter().any(|(n, _)| n == name) {
-			return Err("File exists");
+			return Err("file exists");
 		}
 		children.push((String::from(name), node));
 		Ok(())
 	}
 
+	fn create_file(&self, name: &str) -> Result<Arc<dyn INode>, &'static str> {
+		let node: Arc<dyn INode> = Arc::new(RamFile::new(name));
+		self.insert(name, Arc::clone(&node))?;
+		Ok(node)
+	}
+
+	fn mkdir(&self, name: &str) -> Result<(), &'static str> {
+		let dir: Arc<dyn INode> = Arc::new(RamDir::new(name));
+		self.insert(name, dir)
+	}
+
+	fn unlink(&self, name: &str) -> Result<(), &'static str> {
+		let mut children = self.children.lock();
+		if let Some(pos) = children.iter().position(|(n, _)| n == name) {
+			children.remove(pos);
+			Ok(())
+		} else {
+			Err("not found")
+		}
+	}
+
 	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
-		let children = self.children.lock();
-		Some(children.iter().map(|(name, node)| (name.clone(), node.metadata())).collect())
+		Some(
+			self.children.lock()
+				.iter()
+				.map(|(name, node)| (name.clone(), node.metadata()))
+				.collect(),
+		)
 	}
 }
