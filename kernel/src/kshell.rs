@@ -84,20 +84,20 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 /*
  * read_byte - Block until a key arrives.
  *
- * Polls PS/2 (bare metal) and COM1 serial (QEMU -serial stdio) so the
- * shell is usable in both environments.  PS/2 is checked first; serial
- * is a fallback and can be removed once PS/2 is validated on bare metal.
+ * Serial (COM1) is checked first so QEMU -serial stdio works out of the
+ * box.  PS/2 is checked second for bare-metal use once the QEMU graphical
+ * window has keyboard focus (click to capture, Ctrl+Alt+G to release).
  */
 fn read_byte() -> u8 {
 	loop {
 		x86_64::instructions::interrupts::enable();
 
-		if let Some(b) = keyboard::pop_key() {
+		if let Some(b) = hal::serial::serial_read_byte() {
 			x86_64::instructions::interrupts::disable();
 			return b;
 		}
 
-		if let Some(b) = hal::serial::serial_read_byte() {
+		if let Some(b) = keyboard::pop_key() {
 			x86_64::instructions::interrupts::disable();
 			return b;
 		}
@@ -196,10 +196,10 @@ fn run_output_command(line: &str, out: &mut String) {
 		}
 
 		"ls" => {
-			let path = if args.is_empty() { "/" } else { args };
-			match vfs::lookup_path(path) {
+			let p = if args.is_empty() { String::from("/") } else { abs_path(args) };
+			match vfs::lookup_path(&p) {
 				None => {
-					let _ = writeln!(out, "ls: {}: not found", path);
+					let _ = writeln!(out, "ls: {}: not found", p);
 				}
 				Some(node) => {
 					match node.readdir() {
@@ -218,7 +218,7 @@ fn run_output_command(line: &str, out: &mut String) {
 							}
 						}
 						None => {
-							let _ = writeln!(out, "ls: {}: not a directory", path);
+							let _ = writeln!(out, "ls: {}: not a directory", p);
 						}
 					}
 				}
@@ -230,9 +230,10 @@ fn run_output_command(line: &str, out: &mut String) {
 				let _ = writeln!(out, "usage: cat <file>");
 				return;
 			}
-			match vfs::lookup_path(args) {
+			let p = abs_path(args);
+			match vfs::lookup_path(&p) {
 				None => {
-					let _ = writeln!(out, "cat: {}: not found", args);
+					let _ = writeln!(out, "cat: {}: not found", p);
 				}
 				Some(node) => {
 					let mut offset = 0usize;
@@ -279,17 +280,17 @@ fn run_side_effect_command(line: &str) {
 				graphics::kprintln!("usage: write <file> <data>");
 				return;
 			}
+			let p    = abs_path(arg1);
 			let data = arg2.as_bytes();
-			match vfs::lookup_path(arg1) {
+			match vfs::lookup_path(&p) {
 				Some(node) => {
 					node.write(0, data);
 				}
 				None => {
-					/* File doesn't exist — create it in the parent directory */
-					if let Some(node) = create_file_at(arg1) {
+					if let Some(node) = create_file_at(&p) {
 						node.write(0, data);
 					} else {
-						graphics::kprintln!("write: {}: cannot create", arg1);
+						graphics::kprintln!("write: {}: cannot create", p);
 					}
 				}
 			}
@@ -300,7 +301,8 @@ fn run_side_effect_command(line: &str) {
 				graphics::kprintln!("usage: mkdir <path>");
 				return;
 			}
-			let (parent_path, name) = split_path(arg1);
+			let p = abs_path(arg1);
+			let (parent_path, name) = split_path(&p);
 			match vfs::lookup_path(parent_path) {
 				Some(parent) => {
 					match parent.mkdir(name) {
@@ -317,7 +319,8 @@ fn run_side_effect_command(line: &str) {
 				graphics::kprintln!("usage: rm <path>");
 				return;
 			}
-			let (parent_path, name) = split_path(arg1);
+			let p = abs_path(arg1);
+			let (parent_path, name) = split_path(&p);
 			match vfs::lookup_path(parent_path) {
 				Some(parent) => {
 					match parent.unlink(name) {
@@ -425,6 +428,22 @@ impl fs::BlockDev for VfsBlockDevAdapter {
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/*
+ * abs_path - Return path with a leading '/' if not already present.
+ *
+ * kshell treats all paths as absolute from '/'.  This lets users type
+ * 'ls etc' instead of 'ls /etc' without confusion.
+ */
+fn abs_path(path: &str) -> String {
+	if path.starts_with('/') {
+		String::from(path)
+	} else {
+		let mut s = String::from("/");
+		s.push_str(path);
+		s
+	}
+}
 
 /*
  * split_path - Split "/a/b/c" into ("/a/b", "c").

@@ -20,11 +20,12 @@ pub const EXT2_S_IFREG: u16 = 0x8000;
 pub const EXT2_S_IFDIR: u16 = 0x4000;
 
 pub struct Inode {
-	pub mode:   u16,
-	pub size:   u32,
-	pub blocks: u32,   /* 512-byte units */
-	pub block:  [u32; 15],
-	pub ino:    u32,
+	pub mode:        u16,
+	pub links_count: u16,  /* must be ≥1 for allocated inodes (e2fsck) */
+	pub size:        u32,
+	pub blocks:      u32,  /* 512-byte units */
+	pub block:       [u32; 15],
+	pub ino:         u32,
 }
 
 impl Inode {
@@ -96,9 +97,10 @@ impl Inode {
 		if blk_data.len() < off_in_blk + 128 { return None; }
 
 		let r = &blk_data[off_in_blk..off_in_blk + 128];
-		let mode   = u16::from_le_bytes([r[0], r[1]]);
-		let size   = u32::from_le_bytes([r[4], r[5], r[6], r[7]]);
-		let blocks = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
+		let mode        = u16::from_le_bytes([r[0],  r[1]]);
+		let links_count = u16::from_le_bytes([r[26], r[27]]);
+		let size        = u32::from_le_bytes([r[4],  r[5],  r[6],  r[7]]);
+		let blocks      = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
 
 		let mut block = [0u32; 15];
 		for i in 0..15 {
@@ -106,7 +108,7 @@ impl Inode {
 			block[i] = u32::from_le_bytes([r[base], r[base+1], r[base+2], r[base+3]]);
 		}
 
-		Some(Inode { mode, size, blocks, block, ino })
+		Some(Inode { mode, links_count, size, blocks, block, ino })
 	}
 
 	/*
@@ -129,6 +131,7 @@ impl Inode {
 		let dst = &mut blk_data[off_in_blk..off_in_blk + 128];
 
 		dst[0..2].copy_from_slice(&self.mode.to_le_bytes());
+		dst[26..28].copy_from_slice(&self.links_count.to_le_bytes());
 		dst[4..8].copy_from_slice(&self.size.to_le_bytes());
 		dst[28..32].copy_from_slice(&self.blocks.to_le_bytes());
 		for i in 0..15 {
