@@ -57,7 +57,7 @@ iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/l
 disk:
 	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c ext2)" -eq 0 ]; then \
 		dd if=/dev/zero of=disk.img bs=1M count=64 2>/dev/null; \
-		mkfs.ext2 disk.img; \
+		mkfs.ext2 -O ^resize_inode disk.img; \
 		echo "Formatted disk.img as ext2"; \
 	else \
 		echo "disk.img already ext2, skipping format"; \
