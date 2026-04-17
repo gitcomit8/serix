@@ -47,6 +47,7 @@ impl FsDriver for Ext2Driver {
 	 * mount - Parse superblock + BGDT, return root directory INode (inode 2).
 	 */
 	fn mount(&self, dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>> {
+		let dev  = Arc::new(crate::CachedBlockDev::new(dev)) as Arc<dyn BlockDev>;
 		let sb   = Superblock::read(dev.as_ref())?;
 		let bgdt = BgDescTable::read(dev.as_ref(), &sb);
 		let state = Arc::new(Mutex::new(Ext2State { dev, sb, bgdt }));
