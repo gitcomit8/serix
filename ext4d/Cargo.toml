@@ -1,0 +1,15 @@
+[package]
+name    = "ext4d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ulib = { path = "../ulib" }
+fs   = { path = "../fs", default-features = false }
+vfs  = { path = "../vfs" }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
