@@ -6,11 +6,15 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run iso disk clean limine kernel
+.PHONY: all run iso disk clean limine kernel ext4d ext4disk
 
 all: iso
 
-kernel:
+ext4d:
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -p ext4d --release --target x86_64-unknown-none
+
+kernel: ext4d
 	cargo build --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
 
 limine:
@@ -22,8 +26,17 @@ limine:
 $(ISO_ROOT)/boot:
 	mkdir -p $@
 
-$(ISO_ROOT)/boot/kernel: kernel | $(ISO_ROOT)/boot
+$(ISO_ROOT)/boot/kernel: kernel ext4d | $(ISO_ROOT)/boot
 	cp $(KERNEL) $@
+
+ext4disk:
+	@if [ ! -f ext4.img ]; then \
+		dd if=/dev/zero of=ext4.img bs=1M count=128 2>/dev/null; \
+		mkfs.ext4 -O ^has_journal,^64bit,^metadata_csum,^dir_index ext4.img; \
+		echo "Formatted ext4.img"; \
+	else \
+		echo "ext4.img exists, skipping"; \
+	fi
 
 $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin: limine | $(ISO_ROOT)/boot
 	cp $(LIMINE_DIR)/limine-bios.sys $(ISO_ROOT)/boot/

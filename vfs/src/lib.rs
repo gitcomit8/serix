@@ -217,6 +217,18 @@ impl RamFile {
 			data: Mutex::new(Vec::new()),
 		}
 	}
+
+	/*
+	 * new_with_data - Create a RamFile pre-populated with data
+	 * @data: Initial file contents
+	 *
+	 * Used to embed static binaries (e.g. ext4d ELF) into the VFS at boot.
+	 */
+	pub fn new_with_data(data: &[u8]) -> Self {
+		let mut f = Self::new("");
+		f.data.lock().extend_from_slice(data);
+		f
+	}
 }
 
 impl INode for RamFile {
