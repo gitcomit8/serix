@@ -11,6 +11,7 @@ pub mod superblock;
 pub mod bgdt;
 pub mod inode;
 pub mod extent;
+pub mod dir;
 pub mod bitmap_alloc;
 
 pub use superblock::Superblock;
