@@ -253,6 +253,98 @@ pub fn exit(code: i32) -> ! {
 	}
 }
 
+/*
+ * IPC message layout (must match ipc::Message in the kernel):
+ *   sender_id: u64
+ *   id:        u64
+ *   len:       u64
+ *   data:      [u8; 128]
+ * Total: 152 bytes
+ */
+pub const IPC_MSG_SIZE: usize = 152;
+pub const IPC_MAX_DATA: usize = 128;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IpcMsg {
+	pub sender_id: u64,
+	pub id:        u64,
+	pub len:       u64,
+	pub data:      [u8; IPC_MAX_DATA],
+}
+
+impl Default for IpcMsg {
+	fn default() -> Self {
+		Self { sender_id: 0, id: 0, len: 0, data: [0; IPC_MAX_DATA] }
+	}
+}
+
+/*
+ * send_ipc - Send a message to an IPC port (SYS_SEND = 30)
+ * @port: destination port ID
+ * @msg:  pointer to IpcMsg
+ *
+ * Adapts to kernel SYS_SEND ABI: (port, msg_id, data_ptr, data_len).
+ * Returns 0 on success, non-zero on error.
+ */
+pub fn send_ipc(port: u64, msg: &IpcMsg) -> usize {
+	unsafe {
+		syscall4(
+			SYS_SEND,
+			port as usize,
+			msg.id as usize,
+			msg.data.as_ptr() as usize,
+			msg.len as usize,
+		)
+	}
+}
+
+/*
+ * recv_ipc_blocking - Block until a message arrives on port (SYS_RECV_BLOCK = 32)
+ * @port: source port ID
+ * @msg:  output buffer — receives the full IpcMsg struct
+ */
+pub fn recv_ipc_blocking(port: u64, msg: &mut IpcMsg) {
+	unsafe {
+		syscall2(
+			SYS_RECV_BLOCK,
+			port as usize,
+			msg as *mut IpcMsg as usize,
+		);
+	}
+}
+
+/*
+ * open - Open a file by path (byte-slice form, for no_std callers)
+ * @path:   null-terminated or length-implicit byte slice
+ * @_flags: flags (currently unused)
+ *
+ * Return: fd on success, large value on error
+ */
+pub fn open(path: &[u8], _flags: usize) -> usize {
+	/* Strip trailing null if present, kernel uses ptr+len */
+	let len = path.iter().position(|&b| b == 0).unwrap_or(path.len());
+	unsafe { syscall2(SYS_OPEN, path.as_ptr() as usize, len) }
+}
+
+/*
+ * seek - Set file offset
+ * @fd:     file descriptor
+ * @offset: new byte offset
+ *
+ * Return: 0 on success, non-zero on error
+ */
+pub fn seek(fd: usize, offset: usize) -> usize {
+	unsafe { syscall2(SYS_SEEK, fd, offset) }
+}
+
+/*
+ * getpid - Return the calling task's ID
+ */
+pub fn getpid() -> usize {
+	unsafe { syscall0(SYS_GETPID) }
+}
+
 /* serix_yield - Voluntarily yield the CPU to the scheduler */
 pub fn serix_yield() {
 	unsafe { syscall0(SYS_YIELD); }

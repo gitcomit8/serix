@@ -638,33 +638,40 @@ extern "C" fn syscall_dispatcher(
 			/*
 			 * Blocking Receive IPC Message
 			 * arg1: Local Port ID
-			 * arg2: Pointer to buffer to write message data
-			 * Returns: Message ID in RAX
+			 * arg2: Pointer to IpcMsg buffer in userspace (receives full Message)
+			 * Returns: 0 on success, errno on error
 			 *
-			 * Blocks the calling task until a message is available.
+			 * Copies the entire ipc::Message struct (sender_id, id, len, data)
+			 * into the user-supplied buffer. Blocks until a message arrives.
 			 */
 			let port_id = arg1;
 			let out_ptr = arg2 as *mut u8;
+			let msg_size = core::mem::size_of::<ipc::Message>();
 
 			let port = match ipc::IPC_GLOBAL.get_port(port_id) {
 				Some(p) => p,
 				None => return ERRNO_ENOENT,
 			};
 
-			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
-				port.receive_blocking()
-			});
-
-			let len = msg.len as usize;
-			if !is_user_accessible(out_ptr, len) {
+			if !is_user_accessible(out_ptr, msg_size) {
 				return ERRNO_EFAULT;
 			}
+
+			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
+				unsafe { core::arch::asm!("swapgs"); }
+				let m = port.receive_blocking();
+				unsafe { core::arch::asm!("swapgs"); }
+				m
+			});
+
 			unsafe {
 				core::ptr::copy_nonoverlapping(
-					msg.data.as_ptr(), out_ptr, len,
+					&msg as *const ipc::Message as *const u8,
+					out_ptr,
+					msg_size,
 				);
 			}
-			msg.id
+			0
 		}
 		SYS_DUP => {
 			let task_id = task::scheduler::current_task_id();
