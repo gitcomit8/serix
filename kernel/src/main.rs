@@ -48,6 +48,11 @@ static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 /* Global capability store */
 static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
+/* Embedded ext4d daemon ELF (built before kernel via Makefile) */
+static EXT4D_ELF: &[u8] = include_bytes!(
+	"../../target/x86_64-unknown-none/release/ext4d"
+);
+
 /*
  * panic - Kernel panic handler
  * @info: Panic information containing location and message
@@ -522,6 +527,7 @@ pub extern "C" fn _start() -> ! {
 	/* Register filesystem drivers */
 	fs::fat32::init();
 	fs::ext2::init();
+	fs::ext4::init();
 
 	/* Boot VFS: RamDir at / and /dev/ */
 	vfs::mount("/",     alloc::sync::Arc::new(vfs::RamDir::new("/")));
@@ -538,6 +544,19 @@ pub extern "C" fn _start() -> ! {
 		serial_println!("VFS: /dev/sda available");
 		fb_println!("VFS: /dev/sda ready — run 'mount /dev/sda /' to attach ext2");
 	}
+	/* Insert ext4d daemon into VFS and pre-create its IPC ports */
+	{
+		let ext4d_file: alloc::sync::Arc<dyn INode> =
+			alloc::sync::Arc::new(vfs::RamFile::new_with_data(EXT4D_ELF));
+		if let Some(root) = vfs::lookup_path("/") {
+			root.insert("ext4d", ext4d_file).ok();
+		}
+		/* Pre-create IPC ports so stub can send before daemon is scheduled */
+		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
+		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
+		serial_println!("ext4d: ELF inserted into VFS, IPC ports created");
+	}
+
 	/* Wire up fd 0/1/2 for the init task */
 	fd::init_stdio(0);
 	serial_println!("FD: stdio initialized for task 0");
@@ -563,6 +582,18 @@ pub extern "C" fn _start() -> ! {
 		TaskCB::running_task(),
 	));
 	task::scheduler::global().lock().current = Some(boot_task);
+
+	/* Spawn the ext4 filesystem daemon */
+	match crate::process::spawn_user_process("/ext4d", 0) {
+		Ok(pid) => {
+			serial_println!("ext4d: daemon spawned PID={}", pid);
+			fb_println!("ext4d: daemon spawned PID={}", pid);
+		}
+		Err(e) => {
+			serial_println!("ext4d: spawn failed: {}", e);
+			fb_println!("ext4d: spawn failed");
+		}
+	}
 
 	/* Spawn the built-in kernel shell */
 	match kshell::spawn_kshell() {
