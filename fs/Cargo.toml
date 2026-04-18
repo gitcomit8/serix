@@ -3,9 +3,14 @@ name = "fs"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["kernel"]
+kernel = ["dep:apic", "dep:drivers", "dep:hal", "dep:ipc"]
+
 [dependencies]
-apic = { path = "../apic" }
-drivers = { path = "../drivers" }
-vfs = { path = "../vfs" }
-hal = { path = "../hal" }
-spin = "0.10.0"
+apic    = { path = "../apic",    optional = true }
+drivers = { path = "../drivers", optional = true }
+hal     = { path = "../hal",     optional = true }
+ipc     = { path = "../ipc",     optional = true }
+vfs     = { path = "../vfs" }
+spin    = "0.10.0"
