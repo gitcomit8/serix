@@ -18,15 +18,23 @@
 #![no_std]
 extern crate alloc;
 
+#[cfg(feature = "kernel")]
 use alloc::sync::Arc;
+#[cfg(feature = "kernel")]
 use alloc::vec::Vec;
+#[cfg(feature = "kernel")]
 use spin::Mutex;
+#[cfg(feature = "kernel")]
 use vfs::INode;
 
+#[cfg(feature = "kernel")]
 pub mod fat32;
+#[cfg(feature = "kernel")]
 pub mod ext2;
 pub mod ext4;
+#[cfg(feature = "kernel")]
 pub mod block_cache;
+#[cfg(feature = "kernel")]
 pub use block_cache::CachedBlockDev;
 
 /* ------------------------------------------------------------------ */
@@ -47,68 +55,36 @@ pub trait BlockDev: Send + Sync {
 }
 
 /* ------------------------------------------------------------------ */
-/*  FsDriver trait                                                      */
+/*  FsDriver trait (kernel only)                                        */
 /* ------------------------------------------------------------------ */
 
-/*
- * trait FsDriver - A registered filesystem driver
- *
- * Each filesystem submodule creates a zero-sized struct implementing
- * this trait and registers it via fs::register().
- */
+#[cfg(feature = "kernel")]
 pub trait FsDriver: Send + Sync {
 	fn name(&self) -> &'static str;
-
-	/*
-	 * probe - Return true if dev contains this filesystem.
-	 *
-	 * Called sequentially for each registered driver when the user
-	 * runs `mount <dev> <path>`. The first driver returning true wins.
-	 */
 	fn probe(&self, dev: &dyn BlockDev) -> bool;
-
-	/*
-	 * mount - Parse the filesystem on dev and return its root INode.
-	 */
 	fn mount(&self, dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>>;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Global driver registry                                             */
+/*  Global driver registry (kernel only)                               */
 /* ------------------------------------------------------------------ */
 
+#[cfg(feature = "kernel")]
 static FS_REGISTRY: Mutex<Vec<Arc<dyn FsDriver>>> = Mutex::new(Vec::new());
 
-/*
- * register - Add a filesystem driver to the registry
- *
- * Called by each submodule's init() function at boot.
- * Safe to call multiple times; duplicate names are silently replaced.
- */
+#[cfg(feature = "kernel")]
 pub fn register(driver: Arc<dyn FsDriver>) {
 	let mut reg = FS_REGISTRY.lock();
 	reg.retain(|d| d.name() != driver.name());
 	reg.push(driver);
 }
 
-/*
- * unregister - Remove a filesystem driver from the registry
- *
- * Analogous to Linux unregister_filesystem(). The driver code remains
- * compiled in; it just stops being probed during mount.
- */
+#[cfg(feature = "kernel")]
 pub fn unregister(name: &str) {
 	FS_REGISTRY.lock().retain(|d| d.name() != name);
 }
 
-/*
- * probe_and_mount - Try all registered drivers; return root INode
- *
- * Iterates registered drivers in registration order, calls probe(),
- * and calls mount() on the first one that matches.
- *
- * Return: Some(root_inode) on success, None if no driver matched.
- */
+#[cfg(feature = "kernel")]
 pub fn probe_and_mount(dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>> {
 	let drivers: Vec<Arc<dyn FsDriver>> = FS_REGISTRY.lock().clone();
 	for driver in drivers {
@@ -120,16 +96,13 @@ pub fn probe_and_mount(dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  VirtioBlockDev                                                      */
+/*  VirtioBlockDev (kernel only)                                       */
 /* ------------------------------------------------------------------ */
 
-/*
- * struct VirtioBlockDev - BlockDev wrapper around the global VirtIO device
- *
- * Zero-sized; all calls go through drivers::virtio::virtio_blk().
- */
+#[cfg(feature = "kernel")]
 pub struct VirtioBlockDev;
 
+#[cfg(feature = "kernel")]
 impl BlockDev for VirtioBlockDev {
 	fn read_block(&self, sector: u64, buf: &mut [u8; 512]) -> bool {
 		drivers::virtio::virtio_blk()
@@ -151,17 +124,13 @@ impl BlockDev for VirtioBlockDev {
 }
 
 /* ------------------------------------------------------------------ */
-/*  BlockDevINode                                                       */
+/*  BlockDevINode (kernel only)                                        */
 /* ------------------------------------------------------------------ */
 
-/*
- * struct BlockDevINode - VFS INode backed by a raw block device
- *
- * Exposed as /dev/sda so kshell can pass it to probe_and_mount().
- * read/write translate byte offsets to 512-byte sectors.
- */
+#[cfg(feature = "kernel")]
 pub struct BlockDevINode(pub Arc<dyn BlockDev>);
 
+#[cfg(feature = "kernel")]
 impl INode for BlockDevINode {
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
 		if buf.is_empty() { return 0; }
