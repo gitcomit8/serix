@@ -10,6 +10,8 @@ use crate::{BlockDev, FsDriver};
 pub mod superblock;
 pub mod bgdt;
 pub mod inode;
+pub mod extent;
+pub mod bitmap_alloc;
 
 pub use superblock::Superblock;
 
