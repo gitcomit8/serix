@@ -8,6 +8,8 @@ use vfs::INode;
 use crate::{BlockDev, FsDriver};
 
 pub mod superblock;
+pub mod bgdt;
+pub mod inode;
 
 pub use superblock::Superblock;
 
