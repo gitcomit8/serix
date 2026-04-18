@@ -25,6 +25,7 @@ use vfs::INode;
 
 pub mod fat32;
 pub mod ext2;
+pub mod ext4;
 pub mod block_cache;
 pub use block_cache::CachedBlockDev;
 
