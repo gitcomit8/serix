@@ -17,7 +17,15 @@ use core::arch::naked_asm;
 use loader::LoadableSegment;
 use spin::Mutex;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{
+	FrameAllocator,
+	Mapper,
+	Page,
+	PageTableFlags,
+	PhysFrame,
+	Size4KiB,
+	Translate,
+};
 
 /*
  * user_entry_trampoline - Ring 0 → Ring 3 bridge for newly spawned tasks
@@ -55,7 +63,7 @@ pub unsafe extern "C" fn user_entry_trampoline() -> ! {
  * @phys_offset: HHDM offset used to access frame contents
  */
 pub unsafe fn map_segment(
-	mapper: &mut impl Mapper<Size4KiB>,
+	mapper: &mut (impl Mapper<Size4KiB> + Translate),
 	allocator: &mut impl FrameAllocator<Size4KiB>,
 	segment: &LoadableSegment,
 	phys_offset: VirtAddr,
@@ -76,11 +84,25 @@ pub unsafe fn map_segment(
 	}
 
 	for page in Page::range_inclusive(start_page, end_page) {
-		let new_frame = allocator.allocate_frame().expect("OOM during segment load");
-		let (frame, freshly_mapped) = match mapper.map_to(page, new_frame, flags, allocator) {
-			Ok(f) => { f.flush(); (new_frame, true) }
-			Err(MapToError::PageAlreadyMapped(existing)) => (existing, false),
-			Err(e) => panic!("map_segment: {:?}", e),
+		let (frame, freshly_mapped) = if let Some(existing_phys) = mapper.translate_addr(page.start_address()) {
+			let frame = PhysFrame::containing_address(existing_phys);
+			/* Overlapping ELF segments may require adding permissions on an existing page. */
+			mapper.update_flags(page, flags).expect("map_segment: update_flags failed").flush();
+			(frame, false)
+		} else {
+			let new_frame = allocator.allocate_frame().expect("OOM during segment load");
+			match mapper.map_to(page, new_frame, flags, allocator) {
+				Ok(f) => {
+					f.flush();
+					(new_frame, true)
+				}
+				Err(MapToError::PageAlreadyMapped(_)) => {
+					let phys = mapper.translate_addr(page.start_address())
+						.expect("map_segment: mapped page missing translation");
+					(PhysFrame::containing_address(phys), false)
+				}
+				Err(e) => panic!("map_segment: {:?}", e),
+			}
 		};
 
 		let frame_virt = phys_offset + frame.start_address().as_u64();
