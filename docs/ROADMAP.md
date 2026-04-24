@@ -18,6 +18,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
 - **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; interrupt-driven sector read/write (IRQ via IOAPIC); `BlockDevice` VFS INode for byte-oriented access; 32 MiB disk, write→read verified
 - **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write, `mkdir`, `unlink` (with LFN cleanup), duplicate filename rejection, LAPIC-tick timestamps; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
+- **Ext4 (Ring 3):** ext4 daemon (`ext4d`) + kernel VFS IPC stubs are wired into boot, with superblock/BGDT/inode/extent support and IPC-backed `lookup`, `readdir`, `read`, `write`, `mkdir`, `create`, `unlink`
 - **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 backed by stdio INodes (fd 0 → PS/2 keyboard, fd 1 → framebuffer console, fd 2 → serial); user files start at fd 3
 - **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes), ELF loader, IPC, async executor, capability store (not yet enforced), PCI enumeration, serial + framebuffer console, fs (FAT32)
 
@@ -130,7 +131,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 4: Storage & Filesystem Stack
 
-**Status:** Complete; Ext4/page cache deferred to Phase 7
+**Status:** In progress (FAT32 complete; ext4 daemon MVP integrated)
 
 ### VFS Core Enhancements
 
@@ -160,14 +161,14 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ### Ext4 Filesystem Daemon (Ring 3)
 
-- [ ] Superblock parsing at device offset `0x400` (magic `0xEF53`, block size, inode count, feature flags)
-- [ ] Block group descriptor table traversal
-- [ ] Inode table lookup and inode struct parsing (mode, size, extent tree root)
-- [ ] **Extent tree** traversal for file block mapping (`ext4_extent_header` → `ext4_extent` leaf nodes)
-- [ ] Directory entry parsing (linear and HTree/dx_root indexed)
-- [ ] File read path: inode → extent lookup → VirtIO-blk sector read → page cache insertion
-- [ ] File write path: block allocation from bitmap, extent tree insertion, data writeback
-- [ ] `mkdir()` / `rmdir()` / `unlink()` — directory entry manipulation with inode refcount management
+- [x] Superblock parsing at device offset `0x400` (magic `0xEF53`, block size, inode count, feature flags)
+- [x] Block group descriptor table traversal
+- [x] Inode table lookup and inode struct parsing (mode, size, extent tree root)
+- [x] **Extent tree** traversal for file block mapping (`ext4_extent_header` → `ext4_extent` leaf nodes)
+- [ ] Directory entry parsing (linear + HTree/dx_root indexed) — linear entries implemented; HTree pending
+- [x] File read path: inode → extent lookup → VirtIO-blk sector read
+- [x] File write path: block allocation from bitmap, extent tree insertion, data writeback
+- [ ] Full directory mutation parity: `rmdir()` semantics and stricter inode/link-count checks
 - [ ] Superblock generation and formatting (mkfs equivalent) for blank VirtIO-blk devices
 - [ ] Journal (JBD2) — transaction commit for metadata consistency (initially ordered-mode)
 
@@ -414,7 +415,7 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 | **1** | Core Foundation (boot, memory, HAL) | ✅ Complete |
 | **2** | System Infrastructure (tasks, capabilities, syscalls) | ✅ Complete |
 | **3** | Preemptive Scheduling & IPC Hardening | 🔄 Core complete; SMP/WFQ deferred |
-| **4** | Storage & Filesystem Stack (Ext4, page cache) | ✅ Complete; Ext4/page cache deferred to Phase 7 |
+| **4** | Storage & Filesystem Stack (Ext4, page cache) | 🔄 In progress (FAT32 complete, ext4 daemon MVP wired) |
 | **5** | Linux ABI Translation Layer (LES) | 📋 Planned |
 | **6** | Security Bridge & Capability Enforcement | 📋 Planned |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 📋 Planned |
@@ -427,7 +428,7 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-priority items for contributors:
 
 1. **Shell (`rsh`) no_std port** — port [rsh](https://github.com/gitcomit8/rsh) to `#![no_std]` + `ulib` (Phase 8)
-2. **Ext4 read path** — superblock + extent tree parsing (Phase 4)
+2. **Ext4 daemon hardening** — HTree directories, `rmdir` semantics, and journaling (Phase 4/7)
 3. **Capability enforcement** — gate syscalls/IPC on `CapabilityHandle` (Phase 6)
 4. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap + per-CPU run queues (Phase 7)
 
