@@ -44,7 +44,7 @@ These modules execute in supervisor mode with direct access to CR3, MSRs, and MM
 | **Interrupt Dispatcher** | `idt/`, `apic/` | IDT vectors, LAPIC/I/O APIC programming, EOI signaling |
 | **Capability Store** | `capability/` | `BTreeMap`-backed capability validation on every syscall/IPC boundary |
 | **Syscall Entry** | `kernel/` | `SYSCALL`/`SYSRET` trampoline; MSR configuration (`LSTAR`, `STAR`, `SFMASK`, `EFER.SCE`) |
-| **FAT32 Filesystem** | `fs/` | Synchronous sector I/O via VirtIO-blk; cluster chain operations must be atomic |
+| **Filesystem Core (FAT32/ext2/ext4 stub)** | `fs/` | In-kernel VFS-facing filesystem drivers and ext4 IPC stubs |
 
 ### 2.2 Ring 3 — Userspace Server Processes
 
@@ -52,7 +52,7 @@ These subsystems run as isolated processes in their own address spaces. Faults i
 
 | Server | Transport | Description |
 |---|---|---|
-| **Ext4 Filesystem Daemon** | Synchronous IPC | Parses extent trees, manages journal, serves VFS `read`/`write` dispatches |
+| **Ext4 Filesystem Daemon** | Synchronous IPC | Current MVP daemon for `lookup/readdir/read/write/mkdir/create/unlink` over ext4 extents |
 | **Network Stack** | Zero-copy shared buffers | TCP/IP processing on VirtIO-net ring buffers mapped into application address space |
 | **Block Driver (VirtIO-blk)** | Polled I/O | Currently Ring 0; submits I/O descriptors to VirtIO virtqueues; polled completion |
 | **USB/Input Driver (XHCI)** | Asynchronous IPC | Manages XHCI host controller rings; delivers HID events via IPC ports |
@@ -74,7 +74,7 @@ The LES enables execution of unmodified Linux ELF binaries by translating Linux 
 
 - The `SYSCALL` entry point (`kernel/src/syscall.rs`) is a **zero-overhead naked function** (`#[naked]`) emitting raw assembly via `naked_asm!`.
 - Register state is marshaled according to the Linux x86_64 ABI: `RAX`=syscall number, `RDI`/`RSI`/`RDX`/`R10`/`R8`/`R9`=arguments.
-- Serix intentionally shares Linux syscall numbers (e.g., `SYS_WRITE=1`, `SYS_READ=0`, `SYS_EXIT=60`) so the trampoline functions primarily as an **IPC routing layer** — it decodes the syscall number and dispatches to the appropriate Ring 0 handler or Ring 3 server via IPC.
+- Serix uses a Serix-native syscall table (process/file/IPC groups in `kernel/src/syscall.rs`) while preserving Linux-style register ABI (`RAX` number, `RDI..R9` args). The trampoline decodes numbers and dispatches to Ring 0 handlers or Ring 3 servers via IPC.
 
 ### 3.2 Translation Pipeline
 
@@ -288,7 +288,7 @@ The Server Manager is the first userspace process spawned by the kernel. It orch
 	- Maps the device's BAR MMIO regions into the driver server's address space.
 	- Registers DMA buffer frames in the IOMMU.
 	- Spawns the driver server process and grants it the appropriate `CapabilityHandle` set.
-7. **Filesystem servers:** Starts the Ext4 daemon, which reads the superblock at offset `0x400` from the VirtIO-blk device and mounts the partition.
+7. **Filesystem servers:** Starts the Ext4 daemon (`ext4d`) for IPC-backed ext4 operations over `/dev/sda`.
 8. **User session:** Spawns `serix-sh` (the default shell) or the configured login manager.
 
 ## 11. Subsystem Documentation Index
@@ -317,7 +317,7 @@ serix/
 ├── capability/    # CapabilityStore, CapabilityHandle, grant/revoke/validate
 ├── ipc/           # Port-based IPC, Message, IpcSpace, fastpath
 ├── vfs/           # INode trait, RamFile, RamDir, mount table, page cache
-├── fs/            # FAT32 filesystem driver (BPB, cluster chains, directory entries, file I/O)
+├── fs/            # FAT32 + ext2 drivers, ext4 parser/kernel stubs, block cache
 ├── loader/        # ELF64 parser, PT_LOAD/PT_INTERP, auxv construction
 ├── drivers/       # PCI enumeration, VirtIO-blk, ConsoleDevice
 ├── keyboard/      # PS/2 scancode translation, key event queue

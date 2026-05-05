@@ -2,6 +2,8 @@
 
 This directory contains comprehensive technical documentation for the Serix microkernel operating system.
 
+Current focus areas are ext4 daemon stabilization (Ring 3), scheduler/process bring-up, and syscall ABI hardening.
+
 ## Core Documentation
 
 ### System Architecture
