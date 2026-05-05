@@ -79,10 +79,11 @@ The kernel entry point (`_start`) executes this initialization sequence:
 7. Initialize heap using static boot frame allocator
 8. Initialize graphics console and paint screen blue
 9. Initialize VFS with ramdisk
-10. Load and execute init binary from ramdisk
-11. Enter idle loop (`hlt` instruction)
+10. Spawn ext4d daemon (Ring 3 process handling ext4 IPC requests)
+11. Spawn kshell interactive shell
+12. Enter idle loop (`hlt` instruction)
 
-**Critical**: Heap must be initialized before any allocations (`Vec`, `Box`, etc.). Interrupts must be enabled after IDT is loaded.
+**Critical ordering**: heap must exist before any allocations (`Vec`, `Box`, etc.). Interrupts must be enabled after IDT is loaded. ext4d must spawn before kshell so filesystem operations work.
 
 ### Memory Layout
 
@@ -98,20 +99,22 @@ See `docs/MEMORY_LAYOUT.md` for complete memory map.
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `kernel/` | Entry point, initialization, syscalls | `main.rs`, `syscall.rs`, `gdt.rs` |
-| `hal/` | Hardware abstraction (serial, CPU topology) | `serial.rs`, `cpu.rs`, `topology.rs` |
+| `kernel/` | Entry point, initialization, syscalls, boot orchestration | `main.rs`, `syscall.rs`, `gdt.rs`, `process.rs` |
+| `hal/` | Hardware abstraction (serial, CPU topology, I/O ports) | `serial.rs`, `cpu.rs`, `topology.rs` |
 | `apic/` | APIC interrupt controller (Local APIC, I/O APIC, timer) | `lib.rs`, `ioapic.rs`, `timer.rs` |
 | `idt/` | Interrupt Descriptor Table setup | `lib.rs` |
-| `memory/` | Page tables, heap, frame allocation | `lib.rs`, `heap.rs` |
-| `graphics/` | Framebuffer console, drawing primitives | `lib.rs`, `console/mod.rs` |
-| `task/` | Async task executor, scheduler skeleton | `lib.rs` |
-| `capability/` | Capability-based security system | `lib.rs`, `store.rs`, `types.rs` |
+| `memory/` | Page tables, heap, frame allocation, HHDM management | `lib.rs`, `heap.rs`, `page_table.rs` |
+| `graphics/` | Framebuffer console, drawing primitives, memory map visualization | `lib.rs`, `console/mod.rs` |
+| `task/` | Async task executor, scheduler skeleton, TaskCB state | `lib.rs` |
+| `capability/` | Capability-based security system (framework, not yet enforced) | `lib.rs`, `store.rs`, `types.rs` |
 | `keyboard/` | PS/2 keyboard driver, scancode translation | `lib.rs` |
-| `drivers/` | Device drivers (VirtIO block, PCI, console) | `virtio.rs`, `pci.rs`, `console.rs` |
-| `vfs/` | Virtual filesystem (ramdisk, INode abstraction) | `lib.rs` |
-| `ipc/` | Inter-process communication | `lib.rs` |
-| `loader/` | ELF loader for userspace binaries | `lib.rs` |
-| `ulib/` | Userspace library (syscall wrappers) | Examples in `examples/` |
+| `drivers/` | Device drivers (VirtIO block, PCI enumeration, console) | `virtio.rs`, `pci.rs`, `console.rs` |
+| `fs/` | Filesystem drivers (FAT32, ext2, ext4 daemon stub) with mount registry | `lib.rs`, `fat32/`, `ext2/`, `ext4/`, `block_cache.rs` |
+| `vfs/` | Virtual filesystem (path resolution, FD table, INode trait) | `lib.rs` |
+| `ipc/` | Inter-process communication (port-based synchronous messaging) | `lib.rs` |
+| `loader/` | ELF loader for userspace binaries (segment mapping, relocation) | `lib.rs` |
+| `ext4d/` | **Ring 3 ext4 filesystem daemon** (handles IPC requests from kernel) | `main.rs` |
+| `ulib/` | Userspace library (syscall wrappers, init binary example) | `lib.rs`, `examples/init.rs` |
 
 ### Interrupt Handling
 
@@ -131,20 +134,55 @@ System calls use `SYSCALL`/`SYSRET` instructions with Linux-style register ABI (
 |--------|------|-------------|
 | 0 | `SYS_READ` | Read from fd (only fd 0 / STDIN) |
 | 1 | `SYS_WRITE` | Write to fd (only fd 1 / STDOUT) |
-| 20 | `SYS_SEND` | Send IPC message to port |
-| 21 | `SYS_RECV` | Receive IPC message from port |
+| 5 | `SYS_OPEN` | Open file (returns fd) |
+| 3 | `SYS_CLOSE` | Close fd |
+| 8 | `SYS_SEEK` | Seek within file |
+| 20 | `SYS_SEND` | Send IPC message to port (ext4d uses) |
+| 21 | `SYS_RECV` | Receive IPC message from port (ext4d uses) |
 | 24 | `SYS_YIELD` | Yield CPU voluntarily |
 | 60 | `SYS_EXIT` | Terminate process |
+| 83 | `SYS_MKDIR` | Create directory |
+| 87 | `SYS_UNLINK` | Delete file or empty directory |
 
 Kernel-side dispatch: `kernel/src/syscall.rs`. Userspace wrappers: `ulib/src/lib.rs`.
 
 ### Task Model
 
 Currently skeletal. Tasks are async-based:
-- `TaskCB` (Task Control Block) stores task state
+- `TaskCB` (Task Control Block) stores task state, stack, CR3, and registers
 - `Scheduler` is a placeholder (not preemptive yet)
 - `init_executor()` sets up async executor
 - Userspace tasks loaded via ELF loader (`loader/`)
+
+### ELF Loader & Process Spawning
+
+- **Segment mapping**: `kernel/src/process.rs` maps PT_LOAD segments into user address space
+- **Overlapping segments**: When multiple segments share a page (e.g., `.got` and `.rodata` on same 4KB page), the loader detects existing mappings via `translate_addr()` and reuses the mapped frame, updating page flags as needed
+- **User entry trampoline**: Naked assembly function at `user_entry_trampoline()` bridges Ring 0 execution to Ring 3 via `iretq`
+- **Userspace address space**: Loaded at 0x200000 (set by `user.ld` linker script)
+
+### Filesystem Stack
+
+**Ring 0 (Kernel):**
+- **VFS layer** (`vfs/`): Path resolution, file descriptor table, INode trait abstraction
+- **Filesystem drivers** (`fs/`):
+  - **FAT32**: Full R/W, LFN support, cluster allocation (all in kernel)
+  - **ext2**: Basic ext2 support (legacy)
+  - **ext4 daemon stub** (`fs/ext4/kernel_stub.rs`): Kernel-side IPC forwarding layer (translates INode operations to IPC messages)
+- **Block device abstraction**: `BlockDev` trait for sector-level I/O; `CachedBlockDev` for write-through caching
+
+**Ring 3 (Userspace):**
+- **ext4d daemon** (`ext4d/`): Runs as isolated Ring 3 process
+  - Handles ext4 operations via IPC receive/send
+  - Parses superblock, BGDT, inode tables, extent trees
+  - Handles file read/write, directory lookup, metadata ops
+  - **Current scope**: Linear directories, extent-based files, basic metadata (no journal, no HTree indexing)
+
+**IPC Protocol:**
+- Synchronous request/response via kernel IPC ports
+- `SYS_SEND(port_id, message)` from kshell → ext4d
+- `SYS_RECV(port_id, &mut message)` from ext4d to receive kernel requests
+- Message format: opcode + args (defined in `fs/src/ext4/ipc_protocol.rs`)
 
 ## Key Conventions
 
@@ -233,5 +271,111 @@ The `make run` command launches QEMU with specific devices:
 - **4GB RAM**: `-m 4G`
 - **Serial**: `-serial stdio` (redirected to terminal)
 - **VirtIO block device**: `-drive file=disk.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0`
+- **Additional image**: `ext4.img` for ext4 testing (formatted with `mkfs.ext4 -O ^has_journal,^64bit,^metadata_csum,^dir_index`)
 
 To modify QEMU settings, edit the `run` target in `Makefile`.
+
+## Writing Serix Userspace Binaries
+
+### Current Capabilities (Phase 4)
+
+Userspace binaries are loaded as Ring 3 ELF executables. Only static linking is supported (no dynamic linker yet).
+
+**Requirements:**
+- Write in Rust (requires `ulib` syscall wrappers)
+- Compile with `x86_64-unknown-none` target (baremetal)
+- Link with `user.ld` linker script
+- Use `#![no_std]` and `extern crate alloc`
+
+### Building an Example Binary
+
+The init binary is built separately:
+```bash
+make init
+# Internally:
+# RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+#   cargo build -p ulib --example init --release --target x86_64-unknown-none
+```
+
+### Linking Against ulib
+
+```rust
+// myapp/src/main.rs
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+use ulib::*;
+
+#[no_mangle]
+pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
+    serix_write(1, b"Hello from userspace!\n");
+    0
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+```
+
+Compile with:
+```bash
+RUSTFLAGS="-C relocation-model=static -C link-arg=-Tserix/user.ld -C link-arg=-no-pie" \
+  cargo build --target x86_64-unknown-none --release
+```
+
+**Note**: Future phases will add support for C via musl, but currently only Rust + ulib is stable.
+
+## Development Workflow & Testing
+
+### Quick Testing Loop
+```bash
+make clean       # Remove stale artifacts
+make run         # Rebuild kernel + ISO, boot in QEMU
+# Serial output appears in terminal
+# Press Ctrl+C to exit QEMU
+```
+
+### Debugging a Crash
+```bash
+make run-debug   # Adds -d int,cpu_reset -no-reboot to catch triple faults
+# Look for "Reset" or "Triple fault" in output
+# Use serial checkpoints ([CHECKPOINT] messages) to narrow down failing subsystem
+```
+
+### Modifying Boot Sequence
+Kernel initialization is hardcoded in `kernel/src/main.rs::_start()`. Current order:
+1. ext4d daemon spawned (Ring 3 process)
+2. kshell spawned (interactive shell)
+
+To change process startup order, edit `kernel/src/main.rs` and rebuild with `make run`.
+
+## Project Status & Roadmap
+
+**Current Phase:** 4 (Storage & Filesystem Stack)  
+**Version:** 0.0.6  
+**Status:** ext4 daemon MVP integrated; FAT32 complete
+
+### What Works
+- Boot kernel to blue framebuffer with memory map
+- Spawn multiple Ring 3 processes (ext4d daemon, kshell)
+- Mount FAT32 or ext4 filesystem from block device
+- Read/write files via syscall-mediated filesystem operations
+- PS/2 keyboard input, LAPIC timer interrupts
+- Basic shell commands (help, echo, etc.)
+
+### What's Missing (Phase 4 continuation)
+- Mount table (BTreeMap for multi-filesystem layouts)
+- PCI device enumeration (auto-detect block devices → /dev names)
+- Auto-mount root filesystem at boot
+- Ring 3 driver server framework (MMIO BAR mapping)
+- ext4 journal (JBD2) and HTree directory indexing
+- Unified page cache with demand paging
+
+### Known Limitations
+- ext4d daemon is MVP scope: linear directories only (no HTree), single-level extents, no journal
+- FAT32 bypasses block cache (uses global `read_sector()`/`write_sector()`)
+- No dynamic linking or `execve()` yet
+- No fork/clone/waitpid() yet
+- No signal handling
