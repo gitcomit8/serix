@@ -10,8 +10,8 @@ preemptive scheduling.
 Current release: v0.0.6
 
 The kernel successfully boots to a graphical console, initializes core
-subsystems (APIC, IDT, heap, VFS), loads and executes a userspace init
-binary, and responds to keyboard/timer interrupts.
+subsystems (APIC, IDT, heap, VFS), spawns the Ring-3 `ext4d` daemon and
+kernel shell tasks, and responds to keyboard/timer interrupts.
 
 [Screenshot placeholder: Boot screen with blue framebuffer and memory map visualization]
 Alt text: "Serix kernel boot screen showing blue framebuffer with colored memory map bars at bottom and white text displaying boot messages"
@@ -33,11 +33,11 @@ Alt text: "Terminal recording showing QEMU boot of Serix kernel with serial cons
 - Framebuffer graphics with text console
 - VFS with ramdisk support
 - ELF loader for userspace binaries
-- Syscalls: read, write, open, close, seek, exit, yield, send, recv, recv_block
-- Async task executor with cooperative scheduling
-- FAT32 filesystem with file create/read/write (Linux-compatible disk image)
-- VirtIO block device driver with PCI enumeration
+- Syscalls: process (exit/yield/getpid/getppid/spawn/wait), fd I/O (open/close/read/write/seek/dup/dup2/pipe/getdents), IPC (send/recv/recv_block), filesystem (mkdir/unlink)
 - Preemptive scheduling with LAPIC timer at ~625 Hz
+- FAT32 filesystem with mkdir/unlink and LFN support (Linux-compatible disk image)
+- ext4 Ring-3 daemon path (kernel IPC stubs + userspace `ext4d`)
+- VirtIO block device driver with PCI enumeration
 - IPC port-based message passing with blocking receive
 - File descriptor table with open/close/seek syscalls
 
@@ -106,7 +106,7 @@ Alt text: "Terminal recording showing keyboard input test - typing characters on
   ipc/            Inter-process communication
   loader/         ELF userspace binary loader
   ulib/           Userspace library with syscall wrappers
-  fs/             FAT32 filesystem driver
+  fs/             Filesystem drivers (FAT32, ext2, ext4 parser/stubs, block cache)
   keyboard/       PS/2 keyboard driver
   util/           Utility functions (panic handler, etc.)
   docs/           Technical documentation

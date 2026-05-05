@@ -44,7 +44,7 @@ task/           Async executor, scheduler, task control blocks
 capability/     Capability-based security system
 drivers/        Device drivers (VirtIO, PCI, console)
 vfs/            Virtual filesystem (ramdisk, INode abstraction)
-fs/             FAT32 filesystem driver
+fs/             Filesystem drivers (FAT32, ext2, ext4 parser/stubs, block cache)
 ipc/            Inter-process communication
 loader/         ELF userspace binary loader
 ulib/           Userspace library (syscall wrappers)
@@ -54,16 +54,16 @@ ulib/           Userspace library (syscall wrappers)
 ## Current Status (v0.0.6)
 
 System Calls
-    10 syscalls implemented: serix_write, serix_read, serix_open, serix_close, serix_seek, serix_exit, serix_yield, serix_send, serix_recv, serix_recv_block
+    19 syscalls implemented across process, file I/O, filesystem, and IPC groups
 
 VFS
-    Path resolution via lookup_path(), global VFS root, FAT32 filesystem mounted from VirtIO block device
+    Mount-table based path resolution via lookup_path(), / and /dev mounts, block device exposure at /dev/sda, ext4 daemon IPC stubs available
 
 Task Scheduler
     Preemptive round-robin scheduling with LAPIC timer at ~625 Hz
 
 Filesystem
-    FAT32 driver with BPB parsing, cluster chains, directory entries (8.3+LFN), file read/write
+    FAT32 + ext2 in-kernel drivers, ext4 parser + Ring-3 daemon IPC path, write-through cached block device support
 
 File Descriptors
     Global FD table keyed by (task_id, fd); open/close/seek operations
@@ -583,16 +583,29 @@ Syscall vector assignments
 
 ```
 
-const SYS_READ:       u64 = 0;
-const SYS_WRITE:      u64 = 1;
-const SYS_OPEN:       u64 = 2;
-const SYS_CLOSE:      u64 = 3;
-const SYS_SEEK:       u64 = 8;
-const SYS_SEND:       u64 = 20;
-const SYS_RECV:       u64 = 21;
-const SYS_RECV_BLOCK: u64 = 22;
-const SYS_YIELD:      u64 = 24;
-const SYS_EXIT:       u64 = 60;
+const SYS_EXIT:       u64 = 0;
+const SYS_YIELD:      u64 = 1;
+const SYS_GETPID:     u64 = 2;
+const SYS_GETPPID:    u64 = 3;
+const SYS_SPAWN:      u64 = 4;
+const SYS_WAIT:       u64 = 5;
+
+const SYS_OPEN:       u64 = 10;
+const SYS_CLOSE:      u64 = 11;
+const SYS_READ:       u64 = 12;
+const SYS_WRITE:      u64 = 13;
+const SYS_SEEK:       u64 = 14;
+const SYS_DUP:        u64 = 15;
+const SYS_DUP2:       u64 = 16;
+const SYS_PIPE:       u64 = 17;
+const SYS_GETDENTS:   u64 = 18;
+
+const SYS_MKDIR:      u64 = 20;
+const SYS_UNLINK:     u64 = 21;
+
+const SYS_SEND:       u64 = 30;
+const SYS_RECV:       u64 = 31;
+const SYS_RECV_BLOCK: u64 = 32;
 
 ```
 
@@ -1308,7 +1321,7 @@ halt_loop();
 ## Virtual Filesystem
 
 The VFS subsystem provides filesystem abstraction with a trait-based INode
-interface, global root directory, path resolution, and FAT32 backend.
+interface, mount-table based root resolution, path lookup, and multiple filesystem backends.
 
 ## VFS Root and Path Resolution
 
@@ -1369,6 +1382,8 @@ Implementations:
     RamDir — In-memory directory with Vec<(String, Arc<dyn INode>)> children
     FatDirINode — FAT32 directory backed by cluster chain on disk
     FatFileINode — FAT32 file backed by cluster chain on disk
+    Ext4DirStub — Kernel-side ext4 directory INode proxying operations over IPC
+    Ext4FileStub — Kernel-side ext4 file INode proxying operations over IPC
 
 ## File Descriptor Table
 
