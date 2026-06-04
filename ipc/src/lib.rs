@@ -10,8 +10,8 @@ extern crate alloc;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
-use spin::Mutex;
 use spin::lock_api::RwLock;
+use spin::Mutex;
 use task::TaskCB;
 
 /*
@@ -52,10 +52,12 @@ impl Default for Message {
 /*
  * struct Port - Communication port
  * @id: Port identifier
+ * @owner_id: Owner identifier
  * @queue: Message queue
  */
 pub struct Port {
 	id: u64,
+	pub owner_id: u64,
 	queue: Mutex<VecDeque<Message>>,
 	waiting_receivers: Mutex<VecDeque<Arc<Mutex<TaskCB>>>>,
 }
@@ -64,12 +66,14 @@ impl Port {
 	/*
 	 * new - Create a new port
 	 * @id: Port identifier
+	 * @owner_id: Task ID of the port creator
 	 *
 	 * Return: New Port instance
 	 */
-	pub fn new(id: u64) -> Self {
+	pub fn new(id: u64, owner_id: u64) -> Self {
 		Self {
 			id,
+			owner_id,
 			queue: Mutex::new(VecDeque::with_capacity(PORT_QUEUE_LEN)),
 			waiting_receivers: Mutex::new(VecDeque::new()),
 		}
@@ -139,9 +143,9 @@ impl Port {
 			};
 
 			/* Place on wait queue BEFORE removing from RunQueue */
-			self.waiting_receivers.lock().push_back(
-				Arc::clone(&current),
-			);
+			self.waiting_receivers
+				.lock()
+				.push_back(Arc::clone(&current));
 
 			/* Block and context-switch away */
 			task::block_current_and_switch();
@@ -179,7 +183,8 @@ impl IpcSpace {
 	 */
 	pub fn create_port(&self, id: u64) -> Arc<Port> {
 		let mut ports = self.ports.write();
-		let port = Arc::new(Port::new(id));
+		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
+		let port = Arc::new(Port::new(id, owner_id));
 		ports.insert(id, port.clone());
 		port
 	}
