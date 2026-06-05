@@ -12,13 +12,13 @@
  */
 
 extern crate alloc;
+use super::ipc as proto;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use ipc::{Message, IPC_GLOBAL};
 use spin::Mutex;
 use vfs::{FileType, INode};
-use ipc::{IPC_GLOBAL, Message};
-use super::ipc as proto;
 
 /* Expose request port value for mod.rs */
 pub const EXT4_REQ_PORT_VAL: u64 = proto::EXT4_REQ_PORT;
@@ -33,23 +33,29 @@ fn send_and_recv(req: Message) -> Message {
 	/* Ensure kernel reply port exists */
 	{
 		if IPC_GLOBAL.get_port(KERNEL_REPLY_PORT).is_none() {
-			IPC_GLOBAL.create_port(KERNEL_REPLY_PORT);
+			let _ = IPC_GLOBAL.create_port(KERNEL_REPLY_PORT);
 		}
 	}
 	/* Drain any stale reply messages */
 	while let Some(p) = IPC_GLOBAL.get_port(KERNEL_REPLY_PORT) {
-		if p.receive().is_none() { break; }
+		if p.receive().is_none() {
+			break;
+		}
 	}
 	if let Some(port) = IPC_GLOBAL.get_port(proto::EXT4_REQ_PORT) {
-		port.send(req);
+		let _ = port.send_kernel(req);
 	}
-	IPC_GLOBAL.get_port(KERNEL_REPLY_PORT)
+	IPC_GLOBAL
+		.get_port(KERNEL_REPLY_PORT)
 		.map(|p| p.receive_blocking())
 		.unwrap_or_default()
 }
 
 fn mk_req(id: u64, ino: u32, data: &[u8]) -> Message {
-	let mut msg = Message { id, ..Default::default() };
+	let mut msg = Message {
+		id,
+		..Default::default()
+	};
 	msg.data[0..4].copy_from_slice(&ino.to_le_bytes());
 	let n = data.len().min(ipc::MAX_MSG_SIZE - 4);
 	msg.data[4..4 + n].copy_from_slice(&data[..n]);
@@ -59,8 +65,12 @@ fn mk_req(id: u64, ino: u32, data: &[u8]) -> Message {
 
 /* ------------------------------------------------------------------ */
 
-pub struct Ext4FileStub { pub ino: u32 }
-pub struct Ext4DirStub  { pub ino: u32 }
+pub struct Ext4FileStub {
+	pub ino: u32,
+}
+pub struct Ext4DirStub {
+	pub ino: u32,
+}
 
 impl INode for Ext4FileStub {
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
@@ -72,7 +82,9 @@ impl INode for Ext4FileStub {
 			d[4..6].copy_from_slice(&max.to_le_bytes());
 			let resp = send_and_recv(mk_req(proto::MSG_READ, self.ino, &d));
 			let actual = u16::from_le_bytes([resp.data[0], resp.data[1]]) as usize;
-			if actual == 0 { break; }
+			if actual == 0 {
+				break;
+			}
 			buf[done..done + actual].copy_from_slice(&resp.data[2..2 + actual]);
 			done += actual;
 		}
@@ -88,16 +100,20 @@ impl INode for Ext4FileStub {
 			d[4..6].copy_from_slice(&(chunk as u16).to_le_bytes());
 			d[6..6 + chunk].copy_from_slice(&buf[done..done + chunk]);
 			let resp = send_and_recv(mk_req(proto::MSG_WRITE, self.ino, &d));
-			let written = u32::from_le_bytes([
-				resp.data[0], resp.data[1], resp.data[2], resp.data[3],
-			]) as usize;
-			if written == 0 { break; }
+			let written =
+				u32::from_le_bytes([resp.data[0], resp.data[1], resp.data[2], resp.data[3]])
+					as usize;
+			if written == 0 {
+				break;
+			}
 			done += written;
 		}
 		done
 	}
 
-	fn metadata(&self) -> FileType { FileType::File }
+	fn metadata(&self) -> FileType {
+		FileType::File
+	}
 
 	fn size(&self) -> usize {
 		let resp = send_and_recv(mk_req(proto::MSG_SIZE, self.ino, &[]));
@@ -106,9 +122,15 @@ impl INode for Ext4FileStub {
 }
 
 impl INode for Ext4DirStub {
-	fn read(&self, _: usize, _: &mut [u8]) -> usize { 0 }
-	fn write(&self, _: usize, _: &[u8]) -> usize { 0 }
-	fn metadata(&self) -> FileType { FileType::Directory }
+	fn read(&self, _: usize, _: &mut [u8]) -> usize {
+		0
+	}
+	fn write(&self, _: usize, _: &[u8]) -> usize {
+		0
+	}
+	fn metadata(&self) -> FileType {
+		FileType::Directory
+	}
 
 	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
 		let nb = name.as_bytes();
@@ -117,13 +139,14 @@ impl INode for Ext4DirStub {
 		d[0] = nlen as u8;
 		d[1..1 + nlen].copy_from_slice(&nb[..nlen]);
 		let resp = send_and_recv(mk_req(proto::MSG_LOOKUP, self.ino, &d));
-		let child_ino = u32::from_le_bytes([
-			resp.data[0], resp.data[1], resp.data[2], resp.data[3],
-		]);
+		let child_ino =
+			u32::from_le_bytes([resp.data[0], resp.data[1], resp.data[2], resp.data[3]]);
 		let ftype = resp.data[4];
-		if child_ino == 0 { return None; }
+		if child_ino == 0 {
+			return None;
+		}
 		if ftype == 2 {
-			Some(Arc::new(Ext4DirStub  { ino: child_ino }))
+			Some(Arc::new(Ext4DirStub { ino: child_ino }))
 		} else {
 			Some(Arc::new(Ext4FileStub { ino: child_ino }))
 		}
@@ -137,22 +160,33 @@ impl INode for Ext4DirStub {
 			d[0..2].copy_from_slice(&skip.to_le_bytes());
 			let resp = send_and_recv(mk_req(proto::MSG_READDIR, self.ino, &d));
 			let count = resp.data[0] as usize;
-			if count == 0 { break; }
+			if count == 0 {
+				break;
+			}
 			let mut off = 1usize;
 			for _ in 0..count {
-				if off + 6 > ipc::MAX_MSG_SIZE { break; }
+				if off + 6 > ipc::MAX_MSG_SIZE {
+					break;
+				}
 				let _ino = u32::from_le_bytes([
-					resp.data[off], resp.data[off + 1],
-					resp.data[off + 2], resp.data[off + 3],
+					resp.data[off],
+					resp.data[off + 1],
+					resp.data[off + 2],
+					resp.data[off + 3],
 				]);
-				let ft   = resp.data[off + 4];
+				let ft = resp.data[off + 4];
 				let nlen = resp.data[off + 5] as usize;
 				off += 6;
-				if off + nlen > ipc::MAX_MSG_SIZE { break; }
-				let name = String::from(
-					core::str::from_utf8(&resp.data[off..off + nlen]).unwrap_or("?"),
-				);
-				let ftype = if ft == 2 { FileType::Directory } else { FileType::File };
+				if off + nlen > ipc::MAX_MSG_SIZE {
+					break;
+				}
+				let name =
+					String::from(core::str::from_utf8(&resp.data[off..off + nlen]).unwrap_or("?"));
+				let ftype = if ft == 2 {
+					FileType::Directory
+				} else {
+					FileType::File
+				};
 				entries.push((name, ftype));
 				off += nlen;
 				skip += 1;
@@ -168,10 +202,12 @@ impl INode for Ext4DirStub {
 		d[0] = nlen as u8;
 		d[1..1 + nlen].copy_from_slice(&nb[..nlen]);
 		let resp = send_and_recv(mk_req(proto::MSG_MKDIR, self.ino, &d));
-		let child = u32::from_le_bytes([
-			resp.data[0], resp.data[1], resp.data[2], resp.data[3],
-		]);
-		if child == 0 { Err("mkdir failed") } else { Ok(()) }
+		let child = u32::from_le_bytes([resp.data[0], resp.data[1], resp.data[2], resp.data[3]]);
+		if child == 0 {
+			Err("mkdir failed")
+		} else {
+			Ok(())
+		}
 	}
 
 	fn create_file(&self, name: &str) -> Result<Arc<dyn INode>, &'static str> {
@@ -181,10 +217,11 @@ impl INode for Ext4DirStub {
 		d[0] = nlen as u8;
 		d[1..1 + nlen].copy_from_slice(&nb[..nlen]);
 		let resp = send_and_recv(mk_req(proto::MSG_CREATE, self.ino, &d));
-		let child_ino = u32::from_le_bytes([
-			resp.data[0], resp.data[1], resp.data[2], resp.data[3],
-		]);
-		if child_ino == 0 { return Err("create failed"); }
+		let child_ino =
+			u32::from_le_bytes([resp.data[0], resp.data[1], resp.data[2], resp.data[3]]);
+		if child_ino == 0 {
+			return Err("create failed");
+		}
 		Ok(Arc::new(Ext4FileStub { ino: child_ino }))
 	}
 
@@ -195,7 +232,11 @@ impl INode for Ext4DirStub {
 		d[0] = nlen as u8;
 		d[1..1 + nlen].copy_from_slice(&nb[..nlen]);
 		let resp = send_and_recv(mk_req(proto::MSG_UNLINK, self.ino, &d));
-		if resp.data[0] == 0 { Ok(()) } else { Err("unlink failed") }
+		if resp.data[0] == 0 {
+			Ok(())
+		} else {
+			Err("unlink failed")
+		}
 	}
 
 	fn insert(&self, _: &str, _: Arc<dyn INode>) -> Result<(), &'static str> {

@@ -7,9 +7,9 @@
 
 use core::arch::naked_asm;
 use hal::serial_println;
-use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
+use x86_64::VirtAddr;
 /*
  * Serix System Call Numbers
  *
@@ -44,40 +44,40 @@ use x86_64::registers::rflags::RFlags;
  *   31 RECV        Receive a message from an IPC port (non-blocking)
  *   32 RECV_BLOCK  Receive a message from an IPC port (blocking)
  */
-pub const SYS_EXIT: u64        =  0;
-pub const SYS_YIELD: u64       =  1;
-pub const SYS_GETPID: u64      =  2;
-pub const SYS_GETPPID: u64     =  3;
-pub const SYS_SPAWN: u64       =  4;
-pub const SYS_WAIT: u64        =  5;
+pub const SYS_EXIT: u64 = 0;
+pub const SYS_YIELD: u64 = 1;
+pub const SYS_GETPID: u64 = 2;
+pub const SYS_GETPPID: u64 = 3;
+pub const SYS_SPAWN: u64 = 4;
+pub const SYS_WAIT: u64 = 5;
 
-pub const SYS_OPEN: u64        = 10;
-pub const SYS_CLOSE: u64       = 11;
-pub const SYS_READ: u64        = 12;
-pub const SYS_WRITE: u64       = 13;
-pub const SYS_SEEK: u64        = 14;
-pub const SYS_DUP: u64         = 15;
-pub const SYS_DUP2: u64        = 16;
-pub const SYS_PIPE: u64        = 17;
-pub const SYS_GETDENTS: u64    = 18;
+pub const SYS_OPEN: u64 = 10;
+pub const SYS_CLOSE: u64 = 11;
+pub const SYS_READ: u64 = 12;
+pub const SYS_WRITE: u64 = 13;
+pub const SYS_SEEK: u64 = 14;
+pub const SYS_DUP: u64 = 15;
+pub const SYS_DUP2: u64 = 16;
+pub const SYS_PIPE: u64 = 17;
+pub const SYS_GETDENTS: u64 = 18;
 
-pub const SYS_MKDIR: u64       = 20;
-pub const SYS_UNLINK: u64      = 21;
+pub const SYS_MKDIR: u64 = 20;
+pub const SYS_UNLINK: u64 = 21;
 
-pub const SYS_SEND: u64        = 30;
-pub const SYS_RECV: u64        = 31;
-pub const SYS_RECV_BLOCK: u64  = 32;
+pub const SYS_SEND: u64 = 30;
+pub const SYS_RECV: u64 = 31;
+pub const SYS_RECV_BLOCK: u64 = 32;
 
 /* Error codes (negative errno values represented as u64) */
-pub const ERRNO_EBADF: u64 = u64::MAX - 8;  /* Bad file descriptor (errno 9) */
-pub const ERRNO_ECHILD: u64 = u64::MAX - 9;  /* No child processes (errno 10) */
+pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
+pub const ERRNO_ECHILD: u64 = u64::MAX - 9; /* No child processes (errno 10) */
 pub const ERRNO_EAGAIN: u64 = u64::MAX - 11; /* Resource temporarily unavailable */
 pub const ERRNO_ENOMEM: u64 = u64::MAX - 11; /* Out of memory (errno 12) */
 pub const ERRNO_EFAULT: u64 = u64::MAX - 13; /* Bad address (errno 14) */
-pub const ERRNO_ENOENT: u64 = u64::MAX - 2;  /* No such file or entry */
+pub const ERRNO_ENOENT: u64 = u64::MAX - 2; /* No such file or entry */
 pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
 pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
-pub const ERRNO_EPIPE: u64 = u64::MAX - 31;  /* Broken pipe (errno 32) */
+pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
 
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
@@ -323,7 +323,9 @@ extern "C" fn syscall_dispatcher(
 			x86_64::instructions::interrupts::without_interrupts(|| {
 				let old_arc = match task::scheduler::take_current() {
 					Some(t) => t,
-					None => loop { hal::cpu::halt(); },
+					None => loop {
+						hal::cpu::halt();
+					},
 				};
 
 				{
@@ -353,7 +355,9 @@ extern "C" fn syscall_dispatcher(
 				if let Some(new_arc) = task::scheduler::pick_next_task() {
 					if let Some(hook) = task::SWITCH_HOOK.get() {
 						let ks = new_arc.lock().kstack;
-						if ks.as_u64() != 0 { hook(ks); }
+						if ks.as_u64() != 0 {
+							hook(ks);
+						}
 					}
 					let new_ctx = {
 						let g = new_arc.lock();
@@ -361,10 +365,24 @@ extern "C" fn syscall_dispatcher(
 					};
 					/* Use a dummy old context (never resumed) */
 					static mut DUMMY_CTX: task::CPUContext = task::CPUContext {
-						rsp: 0, rbp: 0, rbx: 0, r12: 0, r13: 0,
-						r14: 0, r15: 0, rip: 0, rflags: 0,
-						cs: 0, ss: 0, fs: 0, gs: 0, ds: 0, es: 0,
-						fs_base: 0, gs_base: 0, cr3: 0,
+						rsp: 0,
+						rbp: 0,
+						rbx: 0,
+						r12: 0,
+						r13: 0,
+						r14: 0,
+						r15: 0,
+						rip: 0,
+						rflags: 0,
+						cs: 0,
+						ss: 0,
+						fs: 0,
+						gs: 0,
+						ds: 0,
+						es: 0,
+						fs_base: 0,
+						gs_base: 0,
+						cr3: 0,
 					};
 					unsafe {
 						/*
@@ -381,7 +399,9 @@ extern "C" fn syscall_dispatcher(
 					}
 				}
 			});
-			loop { hal::cpu::halt(); }
+			loop {
+				hal::cpu::halt();
+			}
 		}
 
 		SYS_GETPID => task::scheduler::current_task_id(),
@@ -439,10 +459,10 @@ extern "C" fn syscall_dispatcher(
 					}
 
 					/* Write status to userspace if pointer is valid */
-					if !status_ptr.is_null()
-						&& is_user_accessible(status_ptr as *const u8, 4)
-					{
-						unsafe { *status_ptr = (exit_status & 0xFF) << 8; }
+					if !status_ptr.is_null() && is_user_accessible(status_ptr as *const u8, 4) {
+						unsafe {
+							*status_ptr = (exit_status & 0xFF) << 8;
+						}
 					}
 
 					return child_pid;
@@ -463,14 +483,18 @@ extern "C" fn syscall_dispatcher(
 					 * user_entry_trampoline (reached via context_switch inside
 					 * block_current_and_switch) always sees GS_BASE=0.
 					 */
-					unsafe { core::arch::asm!("swapgs"); }
+					unsafe {
+						core::arch::asm!("swapgs");
+					}
 					task::block_current_and_switch();
 					/*
 					 * When this task is woken and rescheduled, execution
 					 * resumes here — still inside the syscall handler, so
 					 * we must re-establish the syscall GS state.
 					 */
-					unsafe { core::arch::asm!("swapgs"); }
+					unsafe {
+						core::arch::asm!("swapgs");
+					}
 				});
 			}
 		}
@@ -597,7 +621,11 @@ extern "C" fn syscall_dispatcher(
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
 				x86_64::instructions::interrupts::without_interrupts(|| {
-					if port.send(msg) { 0 } else { ERRNO_EAGAIN }
+					if port.send_kernel(msg).is_ok() {
+						0
+					} else {
+						ERRNO_EAGAIN
+					}
 				})
 			} else {
 				ERRNO_ENOENT
@@ -621,9 +649,7 @@ extern "C" fn syscall_dispatcher(
 						return ERRNO_EFAULT;
 					}
 					unsafe {
-						core::ptr::copy_nonoverlapping(
-							msg.data.as_ptr(), out_ptr, len,
-						);
+						core::ptr::copy_nonoverlapping(msg.data.as_ptr(), out_ptr, len);
 					}
 					msg.id
 				} else {
@@ -658,9 +684,13 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			let msg = x86_64::instructions::interrupts::without_interrupts(|| {
-				unsafe { core::arch::asm!("swapgs"); }
+				unsafe {
+					core::arch::asm!("swapgs");
+				}
 				let m = port.receive_blocking();
-				unsafe { core::arch::asm!("swapgs"); }
+				unsafe {
+					core::arch::asm!("swapgs");
+				}
 				m
 			});
 

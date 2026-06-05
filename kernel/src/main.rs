@@ -24,13 +24,13 @@ use drivers::pci;
 use drivers::virtio::VirtioBlock;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
-use limine::BaseRevision;
 use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
+use limine::BaseRevision;
 use loader::LoadableSegment;
-use memory::heap::{StaticBootFrameAllocator, init_heap};
+use memory::heap::{init_heap, StaticBootFrameAllocator};
 use spin::{Mutex, Once};
-use task::{Scheduler, TaskCB};
 use task::init_executor;
+use task::{Scheduler, TaskCB};
 use util::panic::halt_loop;
 use vfs::INode;
 use x86_64::instructions::hlt;
@@ -49,9 +49,7 @@ static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
 /* Embedded ext4d daemon ELF (built before kernel via Makefile) */
-static EXT4D_ELF: &[u8] = include_bytes!(
-	"../../target/x86_64-unknown-none/release/ext4d"
-);
+static EXT4D_ELF: &[u8] = include_bytes!("../../target/x86_64-unknown-none/release/ext4d");
 
 /*
  * panic - Kernel panic handler
@@ -505,11 +503,9 @@ pub extern "C" fn _start() -> ! {
 
 	for dev in devices {
 		/* Phase 1: PCI discovery + feature negotiation (no DMA alloc) */
-		if let Some(blk) = unsafe {
-			VirtioBlock::init(
-				dev, &mut mmio_mapper, phys_mem_offset.as_u64(),
-			)
-		} {
+		if let Some(blk) =
+			unsafe { VirtioBlock::init(dev, &mut mmio_mapper, phys_mem_offset.as_u64()) }
+		{
 			drivers::virtio::store_global(blk);
 			serial_println!("VirtIO: Phase 1 init complete");
 			fb_println!("VirtIO: block device detected");
@@ -530,15 +526,14 @@ pub extern "C" fn _start() -> ! {
 	fs::ext4::init();
 
 	/* Boot VFS: RamDir at / and /dev/ */
-	vfs::mount("/",     alloc::sync::Arc::new(vfs::RamDir::new("/")));
+	vfs::mount("/", alloc::sync::Arc::new(vfs::RamDir::new("/")));
 	vfs::mount("/dev/", alloc::sync::Arc::new(vfs::RamDir::new("dev")));
 	serial_println!("VFS: mount table initialized");
 	fb_println!("VFS: / and /dev/ ready");
 
 	/* Expose VirtIO block device as /dev/sda */
-	let sda: alloc::sync::Arc<dyn INode> = alloc::sync::Arc::new(
-		fs::BlockDevINode(alloc::sync::Arc::new(fs::VirtioBlockDev))
-	);
+	let sda: alloc::sync::Arc<dyn INode> =
+		alloc::sync::Arc::new(fs::BlockDevINode(alloc::sync::Arc::new(fs::VirtioBlockDev)));
 	if let Some(dev_dir) = vfs::lookup_path("/dev/") {
 		dev_dir.insert("sda", sda).ok();
 		serial_println!("VFS: /dev/sda available");
@@ -552,8 +547,8 @@ pub extern "C" fn _start() -> ! {
 			root.insert("ext4d", ext4d_file).ok();
 		}
 		/* Pre-create IPC ports so stub can send before daemon is scheduled */
-		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
-		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
+		let _ = ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
+		let _ = ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
 		serial_println!("ext4d: ELF inserted into VFS, IPC ports created");
 	}
 
@@ -578,9 +573,7 @@ pub extern "C" fn _start() -> ! {
 	 * The first context switch saves _start's context into boot_task
 	 * (which is never re-enqueued), then jumps to the first task.
 	 */
-	let boot_task = alloc::sync::Arc::new(spin::Mutex::new(
-		TaskCB::running_task(),
-	));
+	let boot_task = alloc::sync::Arc::new(spin::Mutex::new(TaskCB::running_task()));
 	task::scheduler::global().lock().current = Some(boot_task);
 
 	/* Spawn the ext4 filesystem daemon */
