@@ -73,6 +73,7 @@ impl fmt::Debug for CapabilityHandle {
  * @MemoryRegion: Memory region access capability
  * @IODevice: I/O device access capability
  * @FileDescriptor: File descriptor capability
+ * @IpcPort: IPC port access capability with specific permissions
  */
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CapabilityType {
@@ -80,6 +81,11 @@ pub enum CapabilityType {
 	MemoryRegion,
 	IODevice,
 	FileDescriptor,
+	IpcPort {
+		port_id: u64,
+		can_send: bool,
+		can_recv: bool,
+	},
 }
 
 /*

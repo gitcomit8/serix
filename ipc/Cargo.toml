@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 spin = "0.10.0"
 task = { path = "../task" }
+capability = { path = "../capability" }

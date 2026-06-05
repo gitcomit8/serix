@@ -59,7 +59,7 @@ pub struct Port {
 	id: u64,
 	pub owner_id: u64,
 	queue: Mutex<VecDeque<Message>>,
-	waiting_receivers: Mutex<VecDeque<Arc<Mutex<TaskCB>>>>,
+	waiting_receivers: Mutex<VecDeque<Arc<spin::Mutex<TaskCB>>>>,
 }
 
 impl Port {
@@ -82,16 +82,69 @@ impl Port {
 	/*
 	 * send - Push a message to the port and wake a blocked receiver
 	 * @msg: Message to send
+	 * @handle: Capability handle presented by the sender
+	 * @cap_store: Reference to capability store for validation
 	 *
 	 * If any tasks are blocked waiting for messages on this port,
 	 * the first waiter is woken and re-enqueued on the RunQueue.
 	 *
-	 * Return: true if successful, false if queue full
+	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
-	pub fn send(&self, msg: Message) -> bool {
+	pub fn send(
+		&self,
+		msg: Message,
+		handle: &capability::CapabilityHandle,
+		cap_store: &capability::CapabilityStore,
+	) -> Result<(), &'static str> {
+		/* 1. Capability Authorization Check */
+		let cap = cap_store
+			.get_capability(&handle.key)
+			.ok_or("Invalid Capability Handle")?;
+
+		match cap.cap_type {
+			capability::CapabilityType::IpcPort {
+				port_id, can_send, ..
+			} => {
+				if port_id != self.id {
+					return Err("Capability does not match target port");
+				}
+				if !can_send {
+					return Err("Capability lacks send permission");
+				}
+			}
+			_ => return Err("Unknown Capability Type"),
+		}
+
+		/* 2. Enqueue Message */
 		let mut q = self.queue.lock();
 		if q.len() >= PORT_QUEUE_LEN {
-			return false;
+			return Err("Port queue full");
+		}
+		q.push_back(msg);
+		drop(q);
+
+		/* 3. Wake first waiting reciever */
+		let waiter = self.waiting_receivers.lock().pop_front();
+		if let Some(t) = waiter {
+			task::wake_task(t);
+		}
+
+		Ok(())
+	}
+
+	/*
+	 * send_kernel - Push a message (Bypasses cap check)
+	 *
+	 * Intended ONLY for Ring 0 trusted kernel subsystems
+	 * Does not require a capability ticker
+	 *
+	 * Return: Result<(), &'static str> indicating success or failure reason
+	 */
+	pub fn send_kernel(&self, msg: Message) -> Result<(), &'static str> {
+		/* Enqueue Message directly */
+		let mut q = self.queue.lock();
+		if q.len() >= PORT_QUEUE_LEN {
+			return Err("Port queue full");
 		}
 		q.push_back(msg);
 		drop(q);
@@ -101,7 +154,7 @@ impl Port {
 		if let Some(t) = waiter {
 			task::wake_task(t);
 		}
-		true
+		Ok(())
 	}
 
 	/*
@@ -143,9 +196,7 @@ impl Port {
 			};
 
 			/* Place on wait queue BEFORE removing from RunQueue */
-			self.waiting_receivers
-				.lock()
-				.push_back(Arc::clone(&current));
+			self.waiting_receivers.lock().push_back(current);
 
 			/* Block and context-switch away */
 			task::block_current_and_switch();
@@ -179,14 +230,24 @@ impl IpcSpace {
 	 * create_port - Create a new port
 	 * @id: Port identifier
 	 *
-	 * Return: Arc reference to the new port
+	 * Return: Tuple of (Arc<Port>, Capability) representing full access rights
 	 */
-	pub fn create_port(&self, id: u64) -> Arc<Port> {
+	pub fn create_port(&self, id: u64) -> (Arc<Port>, capability::Capability) {
 		let mut ports = self.ports.write();
 		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
 		let port = Arc::new(Port::new(id, owner_id));
 		ports.insert(id, port.clone());
-		port
+
+		let handle = capability::CapabilityHandle::generate();
+		let cap = capability::Capability {
+			cap_type: capability::CapabilityType::IpcPort {
+				port_id: id,
+				can_recv: true,
+				can_send: true,
+			},
+			handle,
+		};
+		(port, cap)
 	}
 
 	/*
