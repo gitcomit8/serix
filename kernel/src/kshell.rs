@@ -17,7 +17,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt::Write as FmtWrite;
 
 const LINE_MAX: usize = 256;
@@ -111,7 +110,10 @@ fn read_byte() -> u8 {
 /* ------------------------------------------------------------------ */
 
 #[derive(Clone, Copy, PartialEq)]
-enum RedirMode { Overwrite, Append }
+enum RedirMode {
+	Overwrite,
+	Append,
+}
 
 /*
  * parse_line - Split "cmd >> file" / "cmd > file" / "cmd" into parts.
@@ -121,13 +123,13 @@ enum RedirMode { Overwrite, Append }
  */
 fn parse_line(line: &str) -> (&str, Option<(RedirMode, &str)>) {
 	if let Some(pos) = line.find(">>") {
-		let cmd  = line[..pos].trim();
-		let file = line[pos+2..].trim();
+		let cmd = line[..pos].trim();
+		let file = line[pos + 2..].trim();
 		return (cmd, Some((RedirMode::Append, file)));
 	}
 	if let Some(pos) = line.find('>') {
-		let cmd  = line[..pos].trim();
-		let file = line[pos+1..].trim();
+		let cmd = line[..pos].trim();
+		let file = line[pos + 1..].trim();
 		return (cmd, Some((RedirMode::Overwrite, file)));
 	}
 	(line, None)
@@ -139,7 +141,9 @@ fn parse_line(line: &str) -> (&str, Option<(RedirMode, &str)>) {
 
 fn dispatch(line: &str) {
 	let (cmd_line, redir) = parse_line(line);
-	if cmd_line.is_empty() { return; }
+	if cmd_line.is_empty() {
+		return;
+	}
 
 	/* Commands that produce text output — buffered so we can redirect */
 	let is_output_cmd = {
@@ -172,7 +176,7 @@ fn dispatch(line: &str) {
 
 fn run_output_command(line: &str, out: &mut String) {
 	let mut parts = line.splitn(2, ' ');
-	let cmd  = parts.next().unwrap_or("");
+	let cmd = parts.next().unwrap_or("");
 	let args = parts.next().unwrap_or("").trim();
 
 	match cmd {
@@ -196,32 +200,34 @@ fn run_output_command(line: &str, out: &mut String) {
 		}
 
 		"ls" => {
-			let p = if args.is_empty() { String::from("/") } else { abs_path(args) };
+			let p = if args.is_empty() {
+				String::from("/")
+			} else {
+				abs_path(args)
+			};
 			match vfs::lookup_path(&p) {
 				None => {
 					let _ = writeln!(out, "ls: {}: not found", p);
 				}
-				Some(node) => {
-					match node.readdir() {
-						Some(entries) => {
-							if entries.is_empty() {
-								let _ = writeln!(out, "(empty)");
-							} else {
-								for (name, ft) in entries {
-									let tag = match ft {
-										vfs::FileType::Directory => "[DIR] ",
-										vfs::FileType::Device    => "[DEV] ",
-										vfs::FileType::File      => "[FILE]",
-									};
-									let _ = writeln!(out, "  {} {}", tag, name);
-								}
+				Some(node) => match node.readdir() {
+					Some(entries) => {
+						if entries.is_empty() {
+							let _ = writeln!(out, "(empty)");
+						} else {
+							for (name, ft) in entries {
+								let tag = match ft {
+									vfs::FileType::Directory => "[DIR] ",
+									vfs::FileType::Device => "[DEV] ",
+									vfs::FileType::File => "[FILE]",
+								};
+								let _ = writeln!(out, "  {} {}", tag, name);
 							}
 						}
-						None => {
-							let _ = writeln!(out, "ls: {}: not a directory", p);
-						}
 					}
-				}
+					None => {
+						let _ = writeln!(out, "ls: {}: not a directory", p);
+					}
+				},
 			}
 		}
 
@@ -237,10 +243,12 @@ fn run_output_command(line: &str, out: &mut String) {
 				}
 				Some(node) => {
 					let mut offset = 0usize;
-					let mut chunk  = [0u8; 512];
+					let mut chunk = [0u8; 512];
 					loop {
 						let n = node.read(offset, &mut chunk);
-						if n == 0 { break; }
+						if n == 0 {
+							break;
+						}
 						if let Ok(s) = core::str::from_utf8(&chunk[..n]) {
 							out.push_str(s);
 						} else {
@@ -252,7 +260,9 @@ fn run_output_command(line: &str, out: &mut String) {
 						offset += n;
 					}
 					/* Ensure trailing newline */
-					if !out.ends_with('\n') { out.push('\n'); }
+					if !out.ends_with('\n') {
+						out.push('\n');
+					}
 				}
 			}
 		}
@@ -269,7 +279,7 @@ fn run_output_command(line: &str, out: &mut String) {
 
 fn run_side_effect_command(line: &str) {
 	let mut parts = line.splitn(3, ' ');
-	let cmd  = parts.next().unwrap_or("");
+	let cmd = parts.next().unwrap_or("");
 	let arg1 = parts.next().unwrap_or("").trim();
 	let arg2 = parts.next().unwrap_or("").trim();
 
@@ -280,7 +290,7 @@ fn run_side_effect_command(line: &str) {
 				graphics::kprintln!("usage: write <file> <data>");
 				return;
 			}
-			let p    = abs_path(arg1);
+			let p = abs_path(arg1);
 			let data = arg2.as_bytes();
 			match vfs::lookup_path(&p) {
 				Some(node) => {
@@ -304,12 +314,10 @@ fn run_side_effect_command(line: &str) {
 			let p = abs_path(arg1);
 			let (parent_path, name) = split_path(&p);
 			match vfs::lookup_path(parent_path) {
-				Some(parent) => {
-					match parent.mkdir(name) {
-						Ok(()) => {}
-						Err(e) => graphics::kprintln!("mkdir: {}", e),
-					}
-				}
+				Some(parent) => match parent.mkdir(name) {
+					Ok(()) => {}
+					Err(e) => graphics::kprintln!("mkdir: {}", e),
+				},
 				None => graphics::kprintln!("mkdir: {}: parent not found", parent_path),
 			}
 		}
@@ -322,12 +330,10 @@ fn run_side_effect_command(line: &str) {
 			let p = abs_path(arg1);
 			let (parent_path, name) = split_path(&p);
 			match vfs::lookup_path(parent_path) {
-				Some(parent) => {
-					match parent.unlink(name) {
-						Ok(()) => {}
-						Err(e) => graphics::kprintln!("rm: {}", e),
-					}
-				}
+				Some(parent) => match parent.unlink(name) {
+					Ok(()) => {}
+					Err(e) => graphics::kprintln!("rm: {}", e),
+				},
 				None => graphics::kprintln!("rm: {}: parent not found", parent_path),
 			}
 		}
@@ -453,9 +459,9 @@ fn abs_path(path: &str) -> String {
 fn split_path(path: &str) -> (&str, &str) {
 	let trimmed = path.trim_end_matches('/');
 	match trimmed.rfind('/') {
-		None          => ("/", trimmed),
-		Some(0)       => ("/", &trimmed[1..]),
-		Some(pos)     => (&trimmed[..pos], &trimmed[pos+1..]),
+		None => ("/", trimmed),
+		Some(0) => ("/", &trimmed[1..]),
+		Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
 	}
 }
 
@@ -476,17 +482,17 @@ fn create_file_at(path: &str) -> Option<alloc::sync::Arc<dyn vfs::INode>> {
 fn write_to_file(path: &str, data: &[u8], mode: RedirMode) {
 	let node = match vfs::lookup_path(path) {
 		Some(n) => n,
-		None    => match create_file_at(path) {
+		None => match create_file_at(path) {
 			Some(n) => n,
-			None    => {
+			None => {
 				graphics::kprintln!("redirect: {}: cannot create", path);
 				return;
 			}
-		}
+		},
 	};
 	let offset = match mode {
 		RedirMode::Overwrite => 0,
-		RedirMode::Append    => node.size(),
+		RedirMode::Append => node.size(),
 	};
 	node.write(offset, data);
 }
@@ -501,33 +507,34 @@ fn write_to_file(path: &str, data: &[u8], mode: RedirMode) {
  * Called from _start after the kstack region and scheduler are ready.
  */
 pub fn spawn_kshell() -> Result<u64, &'static str> {
-	let kstack = memory::kstack::alloc_kernel_stack(64 * 1024)
-		.ok_or("kshell: OOM allocating stack")?;
+	let kstack =
+		memory::kstack::alloc_kernel_stack(64 * 1024).ok_or("kshell: OOM allocating stack")?;
 
-	let id     = task::TaskId::new();
+	let id = task::TaskId::new();
 	let id_val = id.0;
 
 	let mut ctx = task::CPUContext::default();
-	ctx.rsp    = kstack.as_u64();
-	ctx.rip    = kshell_task as u64;
-	ctx.cr3    = 0;      /* 0 = keep kernel CR3 */
-	ctx.cs     = 0x08;
-	ctx.ss     = 0x10;
+	ctx.rsp = kstack.as_u64();
+	ctx.rip = kshell_task as u64;
+	ctx.cr3 = 0; /* 0 = keep kernel CR3 */
+	ctx.cs = 0x08;
+	ctx.ss = 0x10;
 	ctx.rflags = 0x202;
 
 	let tcb = task::TaskCB {
 		id,
-		state:             task::TaskState::Ready,
-		sched_class:       task::SchedClass::Fair(120),
-		context:           ctx,
+		state: task::TaskState::Ready,
+		sched_class: task::SchedClass::Fair(120),
+		context: ctx,
 		kstack,
-		ustack:            None,
-		name:              "kshell",
-		parent_id:         0,
-		exit_status:       None,
-		pml4_frame:        None,
-		children:          alloc::vec::Vec::new(),
+		ustack: None,
+		name: "kshell",
+		parent_id: 0,
+		exit_status: None,
+		pml4_frame: None,
+		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
+		cspace: alloc::vec::Vec::new(),
 	};
 
 	task::scheduler::enqueue_task(alloc::sync::Arc::new(spin::Mutex::new(tcb)));

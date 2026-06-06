@@ -16,16 +16,10 @@ use alloc::vec::Vec;
 use core::arch::naked_asm;
 use loader::LoadableSegment;
 use spin::Mutex;
-use x86_64::VirtAddr;
 use x86_64::structures::paging::{
-	FrameAllocator,
-	Mapper,
-	Page,
-	PageTableFlags,
-	PhysFrame,
-	Size4KiB,
-	Translate,
+	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, Translate,
 };
+use x86_64::VirtAddr;
 
 /*
  * user_entry_trampoline - Ring 0 → Ring 3 bridge for newly spawned tasks
@@ -46,11 +40,11 @@ use x86_64::structures::paging::{
 pub unsafe extern "C" fn user_entry_trampoline() -> ! {
 	naked_asm!(
 		"cli",
-		"push 0x23",          /* SS  — user data RPL 3 */
-		"push r13",           /* RSP — user stack pointer */
-		"push 0x202",         /* RFLAGS — IF=1, reserved=1 */
-		"push 0x2B",          /* CS  — user code RPL 3 */
-		"push r12",           /* RIP — user entry point */
+		"push 0x23",  /* SS  — user data RPL 3 */
+		"push r13",   /* RSP — user stack pointer */
+		"push 0x202", /* RFLAGS — IF=1, reserved=1 */
+		"push 0x2B",  /* CS  — user code RPL 3 */
+		"push r12",   /* RIP — user entry point */
 		"iretq",
 	)
 }
@@ -84,26 +78,31 @@ pub unsafe fn map_segment(
 	}
 
 	for page in Page::range_inclusive(start_page, end_page) {
-		let (frame, freshly_mapped) = if let Some(existing_phys) = mapper.translate_addr(page.start_address()) {
-			let frame = PhysFrame::containing_address(existing_phys);
-			/* Overlapping ELF segments may require adding permissions on an existing page. */
-			mapper.update_flags(page, flags).expect("map_segment: update_flags failed").flush();
-			(frame, false)
-		} else {
-			let new_frame = allocator.allocate_frame().expect("OOM during segment load");
-			match mapper.map_to(page, new_frame, flags, allocator) {
-				Ok(f) => {
-					f.flush();
-					(new_frame, true)
+		let (frame, freshly_mapped) =
+			if let Some(existing_phys) = mapper.translate_addr(page.start_address()) {
+				let frame = PhysFrame::containing_address(existing_phys);
+				/* Overlapping ELF segments may require adding permissions on an existing page. */
+				mapper
+					.update_flags(page, flags)
+					.expect("map_segment: update_flags failed")
+					.flush();
+				(frame, false)
+			} else {
+				let new_frame = allocator.allocate_frame().expect("OOM during segment load");
+				match mapper.map_to(page, new_frame, flags, allocator) {
+					Ok(f) => {
+						f.flush();
+						(new_frame, true)
+					}
+					Err(MapToError::PageAlreadyMapped(_)) => {
+						let phys = mapper
+							.translate_addr(page.start_address())
+							.expect("map_segment: mapped page missing translation");
+						(PhysFrame::containing_address(phys), false)
+					}
+					Err(e) => panic!("map_segment: {:?}", e),
 				}
-				Err(MapToError::PageAlreadyMapped(_)) => {
-					let phys = mapper.translate_addr(page.start_address())
-						.expect("map_segment: mapped page missing translation");
-					(PhysFrame::containing_address(phys), false)
-				}
-				Err(e) => panic!("map_segment: {:?}", e),
-			}
-		};
+			};
 
 		let frame_virt = phys_offset + frame.start_address().as_u64();
 		let ptr = frame_virt.as_mut_ptr::<u8>();
@@ -114,14 +113,22 @@ pub unsafe fn map_segment(
 		let page_addr = page.start_address().as_u64();
 		let seg_addr = start.as_u64();
 
-		let data_start = if page_addr < seg_addr { 0 } else { page_addr - seg_addr };
+		let data_start = if page_addr < seg_addr {
+			0
+		} else {
+			page_addr - seg_addr
+		};
 		let data_end = core::cmp::min(
 			segment.data.len() as u64,
 			(page_addr + 4096).saturating_sub(seg_addr),
 		);
 
 		if data_start < data_end {
-			let dest_offset = if page_addr < seg_addr { seg_addr - page_addr } else { 0 };
+			let dest_offset = if page_addr < seg_addr {
+				seg_addr - page_addr
+			} else {
+				0
+			};
 			core::ptr::copy_nonoverlapping(
 				segment.data.as_ptr().add(data_start as usize),
 				ptr.add(dest_offset as usize),
@@ -149,7 +156,8 @@ pub unsafe fn allocate_user_stack(
 
 	let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
 	let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
-	let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+	let flags =
+		PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
 	for page in Page::range_inclusive(start_page, end_page) {
 		let frame = allocator.allocate_frame().expect("OOM: user stack");
@@ -183,7 +191,9 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	let mut off = 0usize;
 	while off < size {
 		let n = inode.read(off, &mut data[off..]);
-		if n == 0 { break; }
+		if n == 0 {
+			break;
+		}
 		off += n;
 	}
 
@@ -208,7 +218,12 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 
 		for seg in &image.segments {
 			unsafe {
-				map_segment(&mut user_mapper, &mut alloc_guard.frame_alloc, seg, phys_offset);
+				map_segment(
+					&mut user_mapper,
+					&mut alloc_guard.frame_alloc,
+					seg,
+					phys_offset,
+				);
 			}
 		}
 
@@ -219,8 +234,8 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		drop(alloc_guard); /* release before kernel stack alloc */
 
 		/* Allocate kernel stack from dedicated fixed range (always mapped) */
-		let ks = memory::kstack::alloc_kernel_stack(1024 * 1024)
-			.ok_or("spawn: OOM kernel stack")?;
+		let ks =
+			memory::kstack::alloc_kernel_stack(1024 * 1024).ok_or("spawn: OOM kernel stack")?;
 
 		(pml4, ust, ks)
 	};
@@ -229,8 +244,8 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	let mut ctx = task::CPUContext::default();
 	ctx.rsp = kstack.as_u64();
 	ctx.rip = user_entry_trampoline as u64;
-	ctx.r12 = image.entry_point.as_u64();  /* user entry point, read by trampoline */
-	ctx.r13 = user_stack_top.as_u64();     /* user RSP, read by trampoline */
+	ctx.r12 = image.entry_point.as_u64(); /* user entry point, read by trampoline */
+	ctx.r13 = user_stack_top.as_u64(); /* user RSP, read by trampoline */
 	ctx.cr3 = pml4_frame.start_address().as_u64();
 	ctx.cs = 0x08; /* kernel CS — trampoline is Ring 0 code */
 	ctx.ss = 0x10;
@@ -253,6 +268,7 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		pml4_frame: Some(pml4_frame),
 		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
+		cspace: alloc::vec::Vec::new(),
 	};
 
 	/* 9. Initialise stdio fds */
@@ -268,8 +284,12 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	/* 11. Enqueue */
 	task::scheduler::enqueue_task(Arc::new(Mutex::new(tcb)));
 
-	hal::serial_println!("[SPAWN] pid={} entry={:#x} cr3={:#x}",
-		child_id, image.entry_point.as_u64(), pml4_frame.start_address().as_u64());
+	hal::serial_println!(
+		"[SPAWN] pid={} entry={:#x} cr3={:#x}",
+		child_id,
+		image.entry_point.as_u64(),
+		pml4_frame.start_address().as_u64()
+	);
 
 	Ok(child_id)
 }

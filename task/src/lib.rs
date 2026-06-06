@@ -11,20 +11,20 @@ extern crate alloc;
 pub mod async_task;
 pub mod context_switch;
 pub mod executor;
+pub mod scheduler;
 pub mod waker;
 pub mod yield_now;
-pub mod scheduler;
 
 use crate::async_task::AsyncTask;
+use crate::context_switch::context_switch;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use spin::{Mutex, Once};
-use x86_64::VirtAddr;
-use x86_64::structures::paging::PhysFrame;
-use crate::context_switch::context_switch;
 pub use scheduler::{current_task_arc, wake_task};
+use spin::{Mutex, Once};
+use x86_64::structures::paging::PhysFrame;
+use x86_64::VirtAddr;
 /*
  * CURRENT_TASK - Task ID of the currently running task
  *
@@ -264,6 +264,7 @@ impl Default for CPUContext {
  * @pml4_frame: User address space PML4 frame (None for kernel tasks)
  * @children: Task IDs of spawned child processes
  * @waiting_for_child: True when task is blocked in SYS_WAIT4
+ * @cspace: Per-task capability handle table
  */
 #[derive(Debug, Clone)]
 pub struct TaskCB {
@@ -279,6 +280,7 @@ pub struct TaskCB {
 	pub pml4_frame: Option<PhysFrame>,
 	pub children: Vec<u64>,
 	pub waiting_for_child: bool,
+	pub cspace: Vec<capability::CapabilityHandle>,
 }
 
 /*
@@ -346,6 +348,7 @@ impl TaskCB {
 			pml4_frame: None,
 			children: Vec::new(),
 			waiting_for_child: false,
+			cspace: Vec::new(),
 		}
 	}
 
@@ -368,6 +371,7 @@ impl TaskCB {
 			pml4_frame: None,
 			children: Vec::new(),
 			waiting_for_child: false,
+			cspace: Vec::new(),
 		}
 	}
 
@@ -401,7 +405,7 @@ impl TaskCB {
 	 * Only Ready tasks may be dequeued and switched to by the scheduler.
 	 * Running, Blocked, Sleeping, and Zombie tasks are not eligible.
 	 */
-	pub fn is_runable(&self)->bool{
+	pub fn is_runable(&self) -> bool {
 		self.state == TaskState::Ready
 	}
 }
@@ -605,26 +609,26 @@ impl Scheduler {
 }
 
 /*
-	schedule - Preempt the current task and switch to the next runnable tak
+   schedule - Preempt the current task and switch to the next runnable tak
 
-	Called from the timer interrupt handler every TIME_SLICE_TICKS ticks
+   Called from the timer interrupt handler every TIME_SLICE_TICKS ticks
 
-	Flow:
-		1. Ask scheduler to re-enqueue current task and pick next
-		2. If no next task, return early (only one task, continues running)
-		3. Extract raw pointers to both tasks' CPUContext
-		4. Keep both Arcs alive on the stack so heap addresses stay valid
-		5. Call context_switch - execution resumes here when task is rescheduled
+   Flow:
+	   1. Ask scheduler to re-enqueue current task and pick next
+	   2. If no next task, return early (only one task, continues running)
+	   3. Extract raw pointers to both tasks' CPUContext
+	   4. Keep both Arcs alive on the stack so heap addresses stay valid
+	   5. Call context_switch - execution resumes here when task is rescheduled
 
-	Safety:
-		- Must be called with interrupts disable (timer IRQ context)
-		- Single-CPU only: no concurrent RunQueue access possible
-		- Arc guarantees TaskCB heap stability; raw pointers remain valid
-		  across the switch because no reallocation occurs between extraction
-		  and use, and no other CPU can touch the queue
- */
+   Safety:
+	   - Must be called with interrupts disable (timer IRQ context)
+	   - Single-CPU only: no concurrent RunQueue access possible
+	   - Arc guarantees TaskCB heap stability; raw pointers remain valid
+		 across the switch because no reallocation occurs between extraction
+		 and use, and no other CPU can touch the queue
+*/
 pub fn schedule() {
-	use crate::scheduler::{global_or_none, reschedule_current, pick_next_task};
+	use crate::scheduler::{global_or_none, pick_next_task, reschedule_current};
 	use alloc::sync::Arc;
 	use spin::Mutex;
 
@@ -707,7 +711,7 @@ pub fn task_yield() {
  *         back as current and returns without switching.
  */
 pub fn block_current_and_switch() {
-	use crate::scheduler::{take_current, pick_next_task};
+	use crate::scheduler::{pick_next_task, take_current};
 
 	/* Remove current task from RunQueue without re-enqueuing */
 	let old_arc = match take_current() {
