@@ -10,8 +10,9 @@ extern crate alloc;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
-use spin::lock_api::RwLock;
+use hal::serial_println;
 use spin::Mutex;
+use spin::lock_api::RwLock;
 use task::TaskCB;
 
 /*
@@ -80,40 +81,33 @@ impl Port {
 	}
 
 	/*
+	 * id - Get the port identifier
+	 *
+	 * Return: Port ID
+	 */
+	pub fn id(&self) -> u64 {
+		self.id
+	}
+
+	/*
 	 * send - Push a message to the port and wake a blocked receiver
 	 * @msg: Message to send
-	 * @handle: Capability handle presented by the sender
-	 * @cap_store: Reference to capability store for validation
 	 *
+	 * Performs capability validation against the current task's C-space.
 	 * If any tasks are blocked waiting for messages on this port,
 	 * the first waiter is woken and re-enqueued on the RunQueue.
 	 *
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
-	pub fn send(
-		&self,
-		msg: Message,
-		handle: &capability::CapabilityHandle,
-		cap_store: &capability::CapabilityStore,
-	) -> Result<(), &'static str> {
+	pub fn send(&self, msg: Message) -> Result<(), &'static str> {
 		/* 1. Capability Authorization Check */
-		let cap = cap_store
-			.get_capability(&handle.key)
-			.ok_or("Invalid Capability Handle")?;
-
-		match cap.cap_type {
-			capability::CapabilityType::IpcPort {
-				port_id, can_send, ..
-			} => {
-				if port_id != self.id {
-					return Err("Capability does not match target port");
-				}
-				if !can_send {
-					return Err("Capability lacks send permission");
-				}
-			}
-			_ => return Err("Unknown Capability Type"),
-		}
+		let task_arc = task::scheduler::current_task_arc().ok_or("No current task")?;
+		let task_cspace = {
+			let task = task_arc.lock();
+			task.cspace.clone()
+		};
+		let cap_store = capability::global_cap_store().lock();
+		check_send_capability(&task_cspace, self.id, &cap_store)?;
 
 		/* 2. Enqueue Message */
 		let mut q = self.queue.lock();
@@ -123,7 +117,7 @@ impl Port {
 		q.push_back(msg);
 		drop(q);
 
-		/* 3. Wake first waiting reciever */
+		/* 3. Wake first waiting receiver */
 		let waiter = self.waiting_receivers.lock().pop_front();
 		if let Some(t) = waiter {
 			task::wake_task(t);
@@ -207,6 +201,50 @@ impl Port {
 }
 
 /*
+ * check_send_capability - Verify current task has SEND capability for port
+ * @task_cspace: Current task's capability handle table
+ * @port_id: Target port ID
+ * @cap_store: Global capability store
+ *
+ * Returns Ok(()) if task has SEND permission for port_id,
+ * Err("Port not found") if port doesn't exist,
+ * Err("Permission denied") if task lacks capability.
+ */
+fn check_send_capability(
+	task_cspace: &[capability::CapabilityHandle],
+	port_id: u64,
+	cap_store: &capability::CapabilityStore,
+) -> Result<(), &'static str> {
+	/* First verify port exists */
+	if IPC_GLOBAL.get_port(port_id).is_none() {
+		return Err("Port not found");
+	}
+
+	/* Check each capability in task's cspace */
+	for handle in task_cspace {
+		if let Some(cap) = cap_store.get_capability(&handle.key) {
+			match cap.cap_type {
+				capability::CapabilityType::IpcPort {
+					port_id: cap_port_id,
+					can_send,
+					..
+				} => {
+					if cap_port_id == port_id && can_send {
+						return Ok(());
+					}
+				}
+				_ => {}
+			}
+		}
+	}
+
+	/* Audit log denied attempt */
+	let task_id = task::scheduler::current_task_id();
+	serial_println!("[AUDIT] ipc: denied send task={} port={}", task_id, port_id);
+	Err("Permission denied")
+}
+
+/*
  * struct IpcSpace - IPC Namespace (Global for now)
  * @ports: Map of port IDs to port objects
  */
@@ -227,12 +265,16 @@ impl IpcSpace {
 	}
 
 	/*
-	 * create_port - Create a new port
+	 * create_port - Create a new port and grant SEND capability to creator
 	 * @id: Port identifier
 	 *
-	 * Return: Tuple of (Arc<Port>, Capability) representing full access rights
+	 * Return: Tuple of (Arc<Port>, CapabilityHandle) for the granted capability
+	 *
+	 * The capability is automatically added to:
+	 * 1. Global capability store
+	 * 2. Current task's C-space
 	 */
-	pub fn create_port(&self, id: u64) -> (Arc<Port>, capability::Capability) {
+	pub fn create_port(&self, id: u64) -> (Arc<Port>, capability::CapabilityHandle) {
 		let mut ports = self.ports.write();
 		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
 		let port = Arc::new(Port::new(id, owner_id));
@@ -247,7 +289,16 @@ impl IpcSpace {
 			},
 			handle,
 		};
-		(port, cap)
+
+		/* Add to global capability store */
+		capability::global_cap_store().lock().add_capability(cap);
+
+		/* Add to current task's cspace */
+		if let Some(task_arc) = task::scheduler::current_task_arc() {
+			task_arc.lock().cspace.push(handle);
+		}
+
+		(port, handle)
 	}
 
 	/*

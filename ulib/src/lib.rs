@@ -12,29 +12,30 @@ pub mod io;
  * Must stay in sync with kernel/src/syscall.rs.
  * See that file for the full table and per-syscall documentation.
  */
-const SYS_EXIT: usize        =  0;
-const SYS_YIELD: usize       =  1;
-const SYS_GETPID: usize      =  2;
-const SYS_GETPPID: usize     =  3;
-const SYS_SPAWN: usize       =  4;
-const SYS_WAIT: usize        =  5;
+const SYS_EXIT: usize = 0;
+const SYS_YIELD: usize = 1;
+const SYS_GETPID: usize = 2;
+const SYS_GETPPID: usize = 3;
+const SYS_SPAWN: usize = 4;
+const SYS_WAIT: usize = 5;
 
-const SYS_OPEN: usize        = 10;
-const SYS_CLOSE: usize       = 11;
-const SYS_READ: usize        = 12;
-const SYS_WRITE: usize       = 13;
-const SYS_SEEK: usize        = 14;
-const SYS_DUP: usize         = 15;
-const SYS_DUP2: usize        = 16;
-const SYS_PIPE: usize        = 17;
-const SYS_GETDENTS: usize    = 18;
+const SYS_OPEN: usize = 10;
+const SYS_CLOSE: usize = 11;
+const SYS_READ: usize = 12;
+const SYS_WRITE: usize = 13;
+const SYS_SEEK: usize = 14;
+const SYS_DUP: usize = 15;
+const SYS_DUP2: usize = 16;
+const SYS_PIPE: usize = 17;
+const SYS_GETDENTS: usize = 18;
 
-const SYS_MKDIR: usize       = 20;
-const SYS_UNLINK: usize      = 21;
+const SYS_MKDIR: usize = 20;
+const SYS_UNLINK: usize = 21;
 
-const SYS_SEND: usize        = 30;
-const SYS_RECV: usize        = 31;
-const SYS_RECV_BLOCK: usize  = 32;
+const SYS_SEND: usize = 30;
+const SYS_RECV: usize = 31;
+const SYS_RECV_BLOCK: usize = 32;
+const SYS_CREATE_PORT: usize = 33;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -188,9 +189,7 @@ pub fn read(fd: usize, buf: &mut [u8]) -> usize {
  * Return: fd (>= 3) on success, or negative errno
  */
 pub fn serix_open(path: &str) -> isize {
-	unsafe {
-		syscall2(SYS_OPEN, path.as_ptr() as usize, path.len()) as isize
-	}
+	unsafe { syscall2(SYS_OPEN, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
@@ -227,9 +226,7 @@ pub fn serix_seek(fd: usize, offset: usize) -> isize {
  * Return: 0 on success, negative errno on error
  */
 pub fn serix_mkdir(path: &str) -> isize {
-	unsafe {
-		syscall2(SYS_MKDIR, path.as_ptr() as usize, path.len()) as isize
-	}
+	unsafe { syscall2(SYS_MKDIR, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
@@ -239,9 +236,7 @@ pub fn serix_mkdir(path: &str) -> isize {
  * Return: 0 on success, negative errno on error
  */
 pub fn serix_unlink(path: &str) -> isize {
-	unsafe {
-		syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize
-	}
+	unsafe { syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize }
 }
 
 pub fn exit(code: i32) -> ! {
@@ -268,14 +263,19 @@ pub const IPC_MAX_DATA: usize = 128;
 #[derive(Clone, Copy)]
 pub struct IpcMsg {
 	pub sender_id: u64,
-	pub id:        u64,
-	pub len:       u64,
-	pub data:      [u8; IPC_MAX_DATA],
+	pub id: u64,
+	pub len: u64,
+	pub data: [u8; IPC_MAX_DATA],
 }
 
 impl Default for IpcMsg {
 	fn default() -> Self {
-		Self { sender_id: 0, id: 0, len: 0, data: [0; IPC_MAX_DATA] }
+		Self {
+			sender_id: 0,
+			id: 0,
+			len: 0,
+			data: [0; IPC_MAX_DATA],
+		}
 	}
 }
 
@@ -306,11 +306,7 @@ pub fn send_ipc(port: u64, msg: &IpcMsg) -> usize {
  */
 pub fn recv_ipc_blocking(port: u64, msg: &mut IpcMsg) {
 	unsafe {
-		syscall2(
-			SYS_RECV_BLOCK,
-			port as usize,
-			msg as *mut IpcMsg as usize,
-		);
+		syscall2(SYS_RECV_BLOCK, port as usize, msg as *mut IpcMsg as usize);
 	}
 }
 
@@ -347,7 +343,9 @@ pub fn getpid() -> usize {
 
 /* serix_yield - Voluntarily yield the CPU to the scheduler */
 pub fn serix_yield() {
-	unsafe { syscall0(SYS_YIELD); }
+	unsafe {
+		syscall0(SYS_YIELD);
+	}
 }
 
 /* serix_getpid - Return the calling task's ID */
@@ -367,9 +365,7 @@ pub fn serix_getppid() -> u64 {
  * Return: child pid (> 0) on success, negative errno on failure
  */
 pub fn serix_spawn(path: &str) -> i64 {
-	unsafe {
-		syscall2(SYS_SPAWN, path.as_ptr() as usize, path.len()) as i64
-	}
+	unsafe { syscall2(SYS_SPAWN, path.as_ptr() as usize, path.len()) as i64 }
 }
 
 /*
@@ -400,9 +396,7 @@ pub fn serix_wait(pid: i64) -> (i64, i32) {
  * Return: bytes written, 0 at EOF, negative errno on error
  */
 pub fn serix_getdents(fd: usize, buf: &mut [u8]) -> isize {
-	unsafe {
-		syscall3(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len()) as isize
-	}
+	unsafe { syscall3(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len()) as isize }
 }
 
 /* serix_dup - Duplicate fd to the next available descriptor */
@@ -423,4 +417,17 @@ pub fn serix_dup2(old_fd: usize, new_fd: usize) -> isize {
  */
 pub fn serix_pipe(fds: &mut [u64; 2]) -> isize {
 	unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, 0) as isize }
+}
+
+/*
+ * serix_create_port - Create an IPC port
+ * @cap_handle: Output buffer for capability handle (16 bytes / 2 u64)
+ *
+ * Creates a new IPC port and grants the calling task a capability
+ * with both send and receive rights.
+ *
+ * Return: Port ID on success, negative errno on error
+ */
+pub fn serix_create_port(cap_handle: &mut [u64; 2]) -> i64 {
+	unsafe { syscall1(SYS_CREATE_PORT, cap_handle.as_mut_ptr() as usize) as i64 }
 }
