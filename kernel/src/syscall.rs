@@ -7,9 +7,9 @@
 
 use core::arch::naked_asm;
 use hal::serial_println;
+use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
-use x86_64::VirtAddr;
 /*
  * Serix System Call Numbers
  *
@@ -67,6 +67,7 @@ pub const SYS_UNLINK: u64 = 21;
 pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
 pub const SYS_RECV_BLOCK: u64 = 32;
+pub const SYS_CREATE_PORT: u64 = 33;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
@@ -78,6 +79,7 @@ pub const ERRNO_ENOENT: u64 = u64::MAX - 2; /* No such file or entry */
 pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
 pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
 pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
+pub const ERRNO_EPERM: u64 = u64::MAX - 1; /* Operation not permitted (errno 1) */
 
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
@@ -620,12 +622,12 @@ extern "C" fn syscall_dispatcher(
 			};
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
-				x86_64::instructions::interrupts::without_interrupts(|| {
-					if port.send_kernel(msg).is_ok() {
-						0
-					} else {
-						ERRNO_EAGAIN
-					}
+				x86_64::instructions::interrupts::without_interrupts(|| match port.send(msg) {
+					Ok(()) => 0,
+					Err("Port not found") => ERRNO_ENOENT,
+					Err("Permission denied") => ERRNO_EPERM,
+					Err("Port queue full") => ERRNO_EAGAIN,
+					Err(_) => ERRNO_EINVAL,
 				})
 			} else {
 				ERRNO_ENOENT
@@ -702,6 +704,39 @@ extern "C" fn syscall_dispatcher(
 				);
 			}
 			0
+		}
+		SYS_CREATE_PORT => {
+			/*
+			 * Create IPC Port
+			 * arg1: Pointer to output buffer for capability handle (16 bytes = 2 u64)
+			 * Returns: Port ID on success, errno on error
+			 *
+			 * Creates a new IPC port and grants the calling task a capability
+			 * with both send and receive rights. The capability handle is written
+			 * to the user-provided buffer.
+			 */
+			let cap_ptr = arg1 as *mut u64;
+
+			if !is_user_accessible(cap_ptr as *const u8, 16) {
+				return ERRNO_EFAULT;
+			}
+
+			let port_id = {
+				static NEXT_PORT_ID: core::sync::atomic::AtomicU64 =
+					core::sync::atomic::AtomicU64::new(1);
+				NEXT_PORT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+			};
+
+			let (_port, cap_handle) = ipc::IPC_GLOBAL.create_port(port_id);
+
+			/* create_port already adds to global cap store and current task's cspace */
+
+			unsafe {
+				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
+				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+			}
+
+			port_id
 		}
 		SYS_DUP => {
 			let task_id = task::scheduler::current_task_id();

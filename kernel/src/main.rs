@@ -18,16 +18,15 @@ pub mod process;
 pub mod stdio;
 mod syscall;
 
-use capability::CapabilityStore;
 use core::panic::PanicInfo;
 use drivers::pci;
 use drivers::virtio::VirtioBlock;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
-use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use limine::BaseRevision;
+use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 use loader::LoadableSegment;
-use memory::heap::{init_heap, StaticBootFrameAllocator};
+use memory::heap::{StaticBootFrameAllocator, init_heap};
 use spin::{Mutex, Once};
 use task::init_executor;
 use task::{Scheduler, TaskCB};
@@ -44,9 +43,6 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 static HHDM_REQ: HhdmRequest = HhdmRequest::new();
-
-/* Global capability store */
-static CAP_STORE_ONCE: Once<Mutex<CapabilityStore>> = Once::new();
 
 /* Embedded ext4d daemon ELF (built before kernel via Makefile) */
 static EXT4D_ELF: &[u8] = include_bytes!("../../target/x86_64-unknown-none/release/ext4d");
@@ -90,15 +86,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 	unsafe {
 		apic::send_eoi();
 	}
-}
-
-/*
- * global_cap_store - Get the global capability store
- *
- * Returns a reference to the global capability store, initializing it if needed.
- */
-pub fn global_cap_store() -> &'static Mutex<CapabilityStore> {
-	CAP_STORE_ONCE.call_once(|| Mutex::new(CapabilityStore::new()))
 }
 
 /*
@@ -539,17 +526,14 @@ pub extern "C" fn _start() -> ! {
 		serial_println!("VFS: /dev/sda available");
 		fb_println!("VFS: /dev/sda ready — run 'mount /dev/sda /' to attach ext2");
 	}
-	/* Insert ext4d daemon into VFS and pre-create its IPC ports */
+	/* Insert ext4d daemon into VFS */
 	{
 		let ext4d_file: alloc::sync::Arc<dyn INode> =
 			alloc::sync::Arc::new(vfs::RamFile::new_with_data(EXT4D_ELF));
 		if let Some(root) = vfs::lookup_path("/") {
 			root.insert("ext4d", ext4d_file).ok();
 		}
-		/* Pre-create IPC ports so stub can send before daemon is scheduled */
-		let _ = ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
-		let _ = ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
-		serial_println!("ext4d: ELF inserted into VFS, IPC ports created");
+		serial_println!("ext4d: ELF inserted into VFS");
 	}
 
 	/* Wire up fd 0/1/2 for the init task */
@@ -574,6 +558,22 @@ pub extern "C" fn _start() -> ! {
 	 * (which is never re-enqueued), then jumps to the first task.
 	 */
 	let boot_task = alloc::sync::Arc::new(spin::Mutex::new(TaskCB::running_task()));
+
+	/* Pre-create IPC ports for ext4d so stub can send before daemon is scheduled */
+	let (ext4_req_port, ext4_req_cap) = ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
+	let (ext4_reply_port, ext4_reply_cap) =
+		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
+
+	/* Add caps to boot task's cspace (create_port already adds to global store and cspace) */
+	boot_task.lock().cspace.push(ext4_req_cap);
+	boot_task.lock().cspace.push(ext4_reply_cap);
+
+	serial_println!(
+		"ext4d: IPC ports created (req={}, reply_base={})",
+		ext4_req_port.id(),
+		ext4_reply_port.id()
+	);
+
 	task::scheduler::global().lock().current = Some(boot_task);
 
 	/* Spawn the ext4 filesystem daemon */
