@@ -23,8 +23,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 pub use scheduler::{current_task_arc, wake_task};
 use spin::{Mutex, Once};
-use x86_64::structures::paging::PhysFrame;
 use x86_64::VirtAddr;
+use x86_64::structures::paging::PhysFrame;
 /*
  * CURRENT_TASK - Task ID of the currently running task
  *

@@ -47,7 +47,9 @@ pub trait INode: Send + Sync {
 	fn write(&self, offset: usize, buf: &[u8]) -> usize;
 	fn metadata(&self) -> FileType;
 
-	fn lookup(&self, _name: &str) -> Option<Arc<dyn INode>> { None }
+	fn lookup(&self, _name: &str) -> Option<Arc<dyn INode>> {
+		None
+	}
 
 	fn insert(&self, _name: &str, _node: Arc<dyn INode>) -> Result<(), &'static str> {
 		Err("not a directory")
@@ -73,9 +75,13 @@ pub trait INode: Send + Sync {
 		Err("not a directory")
 	}
 
-	fn size(&self) -> usize { 0 }
+	fn size(&self) -> usize {
+		0
+	}
 
-	fn readdir(&self) -> Option<Vec<(String, FileType)>> { None }
+	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
+		None
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -83,7 +89,7 @@ pub trait INode: Send + Sync {
 /* ------------------------------------------------------------------ */
 
 struct MountEntry {
-	path: String,          /* e.g. "/" or "/dev/" — always ends with / */
+	path: String, /* e.g. "/" or "/dev/" — always ends with / */
 	root: Arc<dyn INode>,
 }
 
@@ -173,8 +179,7 @@ pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
 			path.starts_with('/')
 		} else {
 			/* Exact match on mount point or path is inside mount */
-			path == e.path.trim_end_matches('/')
-				|| path.starts_with(e.path.as_str())
+			path == e.path.trim_end_matches('/') || path.starts_with(e.path.as_str())
 		}
 	})?;
 
@@ -234,7 +239,9 @@ impl RamFile {
 impl INode for RamFile {
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
 		let data = self.data.lock();
-		if offset >= data.len() { return 0; }
+		if offset >= data.len() {
+			return 0;
+		}
 		let len = core::cmp::min(buf.len(), data.len() - offset);
 		buf[..len].copy_from_slice(&data[offset..offset + len]);
 		len
@@ -249,9 +256,13 @@ impl INode for RamFile {
 		buf.len()
 	}
 
-	fn metadata(&self) -> FileType { FileType::File }
+	fn metadata(&self) -> FileType {
+		FileType::File
+	}
 
-	fn size(&self) -> usize { self.data.lock().len() }
+	fn size(&self) -> usize {
+		self.data.lock().len()
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -276,12 +287,19 @@ impl RamDir {
 }
 
 impl INode for RamDir {
-	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize { 0 }
-	fn write(&self, _offset: usize, _buf: &[u8]) -> usize { 0 }
-	fn metadata(&self) -> FileType { FileType::Directory }
+	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize {
+		0
+	}
+	fn write(&self, _offset: usize, _buf: &[u8]) -> usize {
+		0
+	}
+	fn metadata(&self) -> FileType {
+		FileType::Directory
+	}
 
 	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
-		self.children.lock()
+		self.children
+			.lock()
 			.iter()
 			.find(|(n, _)| n == name)
 			.map(|(_, node)| Arc::clone(node))
@@ -319,7 +337,8 @@ impl INode for RamDir {
 
 	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
 		Some(
-			self.children.lock()
+			self.children
+				.lock()
 				.iter()
 				.map(|(name, node)| (name.clone(), node.metadata()))
 				.collect(),

@@ -6,18 +6,18 @@
  */
 
 extern crate alloc;
+use crate::BlockDev;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::BlockDev;
 
 const CACHE_CAP: usize = 512; /* 512 sectors = 256 KiB */
 
 struct Inner {
 	cache: BTreeMap<u64, [u8; 512]>,
-	order: Vec<u64>,          /* insertion order for FIFO eviction */
-	dev:   Arc<dyn BlockDev>,
+	order: Vec<u64>, /* insertion order for FIFO eviction */
+	dev: Arc<dyn BlockDev>,
 }
 
 pub struct CachedBlockDev {
@@ -36,7 +36,8 @@ impl CachedBlockDev {
 	}
 
 	/* flush - Write all dirty sectors (no-op for write-through; kept for API symmetry) */
-	pub fn flush(&self) { /* write-through: nothing to do */ }
+	pub fn flush(&self) { /* write-through: nothing to do */
+	}
 }
 
 impl BlockDev for CachedBlockDev {
@@ -47,7 +48,9 @@ impl BlockDev for CachedBlockDev {
 			return true;
 		}
 		/* Cache miss */
-		if !g.dev.read_block(sector, buf) { return false; }
+		if !g.dev.read_block(sector, buf) {
+			return false;
+		}
 		/* Evict FIFO if full */
 		if g.cache.len() >= CACHE_CAP {
 			if let Some(old) = g.order.first().copied() {
@@ -63,7 +66,9 @@ impl BlockDev for CachedBlockDev {
 	fn write_block(&self, sector: u64, buf: &[u8; 512]) -> bool {
 		let mut g = self.inner.lock();
 		/* Write-through: device first */
-		if !g.dev.write_block(sector, buf) { return false; }
+		if !g.dev.write_block(sector, buf) {
+			return false;
+		}
 		/* Update cache entry if present; insert if there is room */
 		if let Some(line) = g.cache.get_mut(&sector) {
 			line.copy_from_slice(buf);

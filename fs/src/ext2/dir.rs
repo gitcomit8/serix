@@ -7,19 +7,19 @@
  */
 
 extern crate alloc;
-use alloc::string::String;
-use alloc::vec::Vec;
-use crate::BlockDev;
-use super::superblock::Superblock;
 use super::bgdt::BgDescTable;
 use super::inode::Inode;
+use super::superblock::Superblock;
+use crate::BlockDev;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /* ------------------------------------------------------------------ */
 /*  Entry file_type constants                                          */
 /* ------------------------------------------------------------------ */
 
 pub const EXT2_FT_REG_FILE: u8 = 1;
-pub const EXT2_FT_DIR:      u8 = 2;
+pub const EXT2_FT_DIR: u8 = 2;
 
 /* ------------------------------------------------------------------ */
 /*  Block I/O helpers (duplicated locally to avoid cross-module dep)  */
@@ -64,15 +64,19 @@ where
 {
 	let mut off = 0usize;
 	while off + 8 <= block.len() {
-		let ino      = u32::from_le_bytes([block[off], block[off+1], block[off+2], block[off+3]]);
-		let rec_len  = u16::from_le_bytes([block[off+4], block[off+5]]) as usize;
-		let name_len = block[off+6] as usize;
+		let ino = u32::from_le_bytes([block[off], block[off + 1], block[off + 2], block[off + 3]]);
+		let rec_len = u16::from_le_bytes([block[off + 4], block[off + 5]]) as usize;
+		let name_len = block[off + 6] as usize;
 
-		if rec_len < 8 || off + rec_len > block.len() { break; }
+		if rec_len < 8 || off + rec_len > block.len() {
+			break;
+		}
 
 		let name_bytes = &block[off + 8..off + 8 + name_len.min(block.len() - off - 8)];
 
-		if !f(off, ino, rec_len, name_bytes) { return; }
+		if !f(off, ino, rec_len, name_bytes) {
+			return;
+		}
 
 		off += rec_len;
 	}
@@ -109,7 +113,9 @@ pub fn lookup_in_dir(
 			}
 		});
 
-		if found.is_some() { return found; }
+		if found.is_some() {
+			return found;
+		}
 	}
 	None
 }
@@ -128,7 +134,10 @@ pub fn readdir(
 	let mut entries = Vec::new();
 
 	for blk_idx in 0..n_blocks as u32 {
-		let phys = match dir_ino.get_block(dev, sb, blk_idx) { Some(p) => p, None => continue };
+		let phys = match dir_ino.get_block(dev, sb, blk_idx) {
+			Some(p) => p,
+			None => continue,
+		};
 		let block = read_block(dev, sb, phys);
 
 		for_each_entry(&block, |_off, ino, _rec, nbs| {
@@ -136,11 +145,16 @@ pub fn readdir(
 				if let Ok(s) = core::str::from_utf8(nbs) {
 					let name = String::from(s);
 					if name != "." && name != ".." {
-						let ftype = if let Some(ch_ino) = super::inode::Inode::read(dev, sb, bgdt, ino) {
-							if ch_ino.is_dir() { vfs::FileType::Directory } else { vfs::FileType::File }
-						} else {
-							vfs::FileType::File
-						};
+						let ftype =
+							if let Some(ch_ino) = super::inode::Inode::read(dev, sb, bgdt, ino) {
+								if ch_ino.is_dir() {
+									vfs::FileType::Directory
+								} else {
+									vfs::FileType::File
+								}
+							} else {
+								vfs::FileType::File
+							};
 						entries.push((name, ftype));
 					}
 				}
@@ -166,27 +180,34 @@ pub fn add_entry(
 	child_ino: u32,
 	file_type: u8,
 ) {
-	let bsz     = sb.block_size();
-	let name_b  = name.as_bytes();
-	let nlen    = name_b.len();
+	let bsz = sb.block_size();
+	let name_b = name.as_bytes();
+	let nlen = name_b.len();
 	/* Entry size: header(8) + name, rounded to 4 bytes */
-	let needed  = ((8 + nlen + 3) & !3) as u16;
+	let needed = ((8 + nlen + 3) & !3) as u16;
 
 	let n_blocks = (dir_ino.size() + bsz - 1) / bsz;
 
 	/* Scan existing blocks for slack space in the last real entry */
 	for blk_idx in 0..n_blocks as u32 {
-		let phys = match dir_ino.get_block(dev, sb, blk_idx) { Some(p) => p, None => continue };
+		let phys = match dir_ino.get_block(dev, sb, blk_idx) {
+			Some(p) => p,
+			None => continue,
+		};
 		let mut block = read_block(dev, sb, phys);
 		let mut inserted = false;
 
 		/* Walk entries to find the last one with surplus rec_len */
 		let mut off = 0usize;
 		loop {
-			if off + 8 > block.len() { break; }
-			let rec_len  = u16::from_le_bytes([block[off+4], block[off+5]]) as usize;
-			let name_len = block[off+6] as usize;
-			if rec_len < 8 { break; }
+			if off + 8 > block.len() {
+				break;
+			}
+			let rec_len = u16::from_le_bytes([block[off + 4], block[off + 5]]) as usize;
+			let name_len = block[off + 6] as usize;
+			if rec_len < 8 {
+				break;
+			}
 
 			let actual = ((8 + name_len + 3) & !3) as usize;
 			let next_off = off + rec_len;
@@ -196,10 +217,12 @@ pub fn add_entry(
 				let slack = rec_len - actual;
 				if slack >= needed as usize {
 					/* Shrink current entry to actual size, put new entry after */
-					block[off+4..off+6].copy_from_slice(&(actual as u16).to_le_bytes());
+					block[off + 4..off + 6].copy_from_slice(&(actual as u16).to_le_bytes());
 					let new_off = off + actual;
 					let new_rec = (rec_len - actual) as u16;
-					write_dir_entry(&mut block, new_off, child_ino, new_rec, nlen as u8, file_type, name_b);
+					write_dir_entry(
+						&mut block, new_off, child_ino, new_rec, nlen as u8, file_type, name_b,
+					);
 					write_block(dev, sb, phys, &block);
 					inserted = true;
 				}
@@ -208,15 +231,22 @@ pub fn add_entry(
 			off = next_off;
 		}
 
-		if inserted { return; }
+		if inserted {
+			return;
+		}
 	}
 
 	/* No space found — allocate a new block */
-	let phys = match super::bitmap_alloc::alloc_block(dev, sb, bgdt) { Some(p) => p, None => return };
+	let phys = match super::bitmap_alloc::alloc_block(dev, sb, bgdt) {
+		Some(p) => p,
+		None => return,
+	};
 	let blk_idx = n_blocks as u32;
 	let mut block = alloc::vec![0u8; bsz];
 	let rec_len = bsz as u16;
-	write_dir_entry(&mut block, 0, child_ino, rec_len, nlen as u8, file_type, name_b);
+	write_dir_entry(
+		&mut block, 0, child_ino, rec_len, nlen as u8, file_type, name_b,
+	);
 	write_block(dev, sb, phys, &block);
 
 	dir_ino.set_block(dev, sb, bgdt, blk_idx, phys);
@@ -242,7 +272,10 @@ pub fn remove_entry(
 	let n_blocks = (dir_ino.size() + bsz - 1) / bsz;
 
 	for blk_idx in 0..n_blocks as u32 {
-		let phys = match dir_ino.get_block(dev, sb, blk_idx) { Some(p) => p, None => continue };
+		let phys = match dir_ino.get_block(dev, sb, blk_idx) {
+			Some(p) => p,
+			None => continue,
+		};
 		let mut block = read_block(dev, sb, phys);
 		let mut prev_off: Option<usize> = None;
 		let mut off = 0usize;
@@ -260,12 +293,12 @@ pub fn remove_entry(
 
 		if let Some((cur_off, prev, rec)) = found_off {
 			/* Zero the inode field — marks entry as free */
-			block[cur_off..cur_off+4].copy_from_slice(&0u32.to_le_bytes());
+			block[cur_off..cur_off + 4].copy_from_slice(&0u32.to_le_bytes());
 			if let Some(poff) = prev {
 				/* Expand previous entry's rec_len to absorb this one */
-				let prev_rec = u16::from_le_bytes([block[poff+4], block[poff+5]]) as usize;
-				let new_rec  = (prev_rec + rec) as u16;
-				block[poff+4..poff+6].copy_from_slice(&new_rec.to_le_bytes());
+				let prev_rec = u16::from_le_bytes([block[poff + 4], block[poff + 5]]) as usize;
+				let new_rec = (prev_rec + rec) as u16;
+				block[poff + 4..poff + 6].copy_from_slice(&new_rec.to_le_bytes());
 			}
 			write_block(dev, sb, phys, &block);
 			return true;
@@ -287,10 +320,10 @@ fn write_dir_entry(
 	file_type: u8,
 	name: &[u8],
 ) {
-	block[off..off+4].copy_from_slice(&ino.to_le_bytes());
-	block[off+4..off+6].copy_from_slice(&rec_len.to_le_bytes());
-	block[off+6] = name_len;
-	block[off+7] = file_type;
+	block[off..off + 4].copy_from_slice(&ino.to_le_bytes());
+	block[off + 4..off + 6].copy_from_slice(&rec_len.to_le_bytes());
+	block[off + 6] = name_len;
+	block[off + 7] = file_type;
 	let nlen = name_len as usize;
-	block[off+8..off+8+nlen].copy_from_slice(&name[..nlen]);
+	block[off + 8..off + 8 + nlen].copy_from_slice(&name[..nlen]);
 }

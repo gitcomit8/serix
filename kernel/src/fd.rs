@@ -25,8 +25,7 @@ pub struct OpenFile {
 /*
  * FD_TABLE - Global file descriptor table keyed by (task_id, fd)
  */
-static FD_TABLE: Mutex<BTreeMap<(u64, u64), Arc<OpenFile>>> =
-	Mutex::new(BTreeMap::new());
+static FD_TABLE: Mutex<BTreeMap<(u64, u64), Arc<OpenFile>>> = Mutex::new(BTreeMap::new());
 
 /*
  * NEXT_FD - Per-task next fd counter (simple global counter for now)
@@ -104,10 +103,13 @@ pub fn seek(task_id: u64, fd: u64, offset: usize) -> bool {
 pub fn insert_inode(task_id: u64, inode: Arc<dyn INode>) -> u64 {
 	let mut table = FD_TABLE.lock();
 	let fd = next_fd(task_id, &table);
-	table.insert((task_id, fd), Arc::new(OpenFile {
-		inode,
-		offset: Mutex::new(0),
-	}));
+	table.insert(
+		(task_id, fd),
+		Arc::new(OpenFile {
+			inode,
+			offset: Mutex::new(0),
+		}),
+	);
 	fd
 }
 
@@ -152,7 +154,11 @@ pub fn dup2(task_id: u64, old_fd: u64, new_fd: u64) -> Option<u64> {
 	if old_fd == new_fd {
 		/* Verify old_fd exists */
 		let table = FD_TABLE.lock();
-		return if table.contains_key(&(task_id, old_fd)) { Some(new_fd) } else { None };
+		return if table.contains_key(&(task_id, old_fd)) {
+			Some(new_fd)
+		} else {
+			None
+		};
 	}
 	let mut table = FD_TABLE.lock();
 	let file = table.get(&(task_id, old_fd))?.clone();
@@ -206,19 +212,28 @@ pub fn cleanup(task_id: u64) {
  * Must be called before the task uses read()/write() on stdio fds.
  */
 pub fn init_stdio(task_id: u64) {
-	use crate::stdio::{StdinINode, StderrINode, StdoutINode};
+	use crate::stdio::{StderrINode, StdinINode, StdoutINode};
 
 	let mut table = FD_TABLE.lock();
-	table.insert((task_id, 0), Arc::new(OpenFile {
-		inode: Arc::new(StdinINode),
-		offset: Mutex::new(0),
-	}));
-	table.insert((task_id, 1), Arc::new(OpenFile {
-		inode: Arc::new(StdoutINode),
-		offset: Mutex::new(0),
-	}));
-	table.insert((task_id, 2), Arc::new(OpenFile {
-		inode: Arc::new(StderrINode),
-		offset: Mutex::new(0),
-	}));
+	table.insert(
+		(task_id, 0),
+		Arc::new(OpenFile {
+			inode: Arc::new(StdinINode),
+			offset: Mutex::new(0),
+		}),
+	);
+	table.insert(
+		(task_id, 1),
+		Arc::new(OpenFile {
+			inode: Arc::new(StdoutINode),
+			offset: Mutex::new(0),
+		}),
+	);
+	table.insert(
+		(task_id, 2),
+		Arc::new(OpenFile {
+			inode: Arc::new(StderrINode),
+			offset: Mutex::new(0),
+		}),
+	);
 }

@@ -16,10 +16,10 @@ use alloc::vec::Vec;
 use core::arch::naked_asm;
 use loader::LoadableSegment;
 use spin::Mutex;
+use x86_64::VirtAddr;
 use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, Translate,
 };
-use x86_64::VirtAddr;
 
 /*
  * user_entry_trampoline - Ring 0 → Ring 3 bridge for newly spawned tasks

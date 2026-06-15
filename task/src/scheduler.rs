@@ -213,30 +213,30 @@ pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
  * Called with interrupts disabled (inside timer interrupt handler)
  * Safety: Must not be called concurrently - single-CPU invariant
  */
-pub fn pick_next_task()-> Option<Arc<Mutex<TaskCB>>> {
+pub fn pick_next_task() -> Option<Arc<Mutex<TaskCB>>> {
 	let mut rq = global().lock();
 	let next = rq.dequeue()?;
 	{
 		let mut task = next.lock();
 		task.set_state(TaskState::Running);
-		CURRENT_TASK.store(task.id.0,Ordering::Release)
+		CURRENT_TASK.store(task.id.0, Ordering::Release)
 	}
-	rq.current=Some(Arc::clone(&next));
+	rq.current = Some(Arc::clone(&next));
 	Some(next)
 }
 
 /*
-	reschedule_current - Re-enqueue the current task at the back of the queue
+   reschedule_current - Re-enqueue the current task at the back of the queue
 
-	Moves the running task back to Ready state and places it at the tail
-	of the run queue, implementing round-robin fairness
+   Moves the running task back to Ready state and places it at the tail
+   of the run queue, implementing round-robin fairness
 
-	Called before pick_next_task() to yield the current time slice
+   Called before pick_next_task() to yield the current time slice
 
-	Safety: Must not be called if no task is currently running
-			Must be called with interrupts disabled
- */
-pub fn reschedule_current(){
+   Safety: Must not be called if no task is currently running
+		   Must be called with interrupts disabled
+*/
+pub fn reschedule_current() {
 	let mut rq = global().lock();
 	if let Some(task) = rq.current.take() {
 		/* Skip re-enqueue for the boot placeholder (kstack == 0) */
@@ -248,31 +248,31 @@ pub fn reschedule_current(){
 }
 
 /*
-	schedule - Yield current task and switch to the next runnable task
+   schedule - Yield current task and switch to the next runnable task
 
-	This is the main scheduling entry point. It re-enqueues the current
-	task at the back of the run queue, then selects the next task.
-	If no other task is available, the current task continues.
+   This is the main scheduling entry point. It re-enqueues the current
+   task at the back of the run queue, then selects the next task.
+   If no other task is available, the current task continues.
 
-	NOTE: Context switch is NOT performed here - that is wired later
-		  THis function establishes the task selection logic only.
+   NOTE: Context switch is NOT performed here - that is wired later
+		 THis function establishes the task selection logic only.
 
-	Return: Some(next_task) selected for execution, None if queue was empty
-			before re-enqueue
+   Return: Some(next_task) selected for execution, None if queue was empty
+		   before re-enqueue
 
-	Safety: Must be called with interrupts disabled (timer IRQ handler context)
- */
-pub fn schedule()->Option<Arc<Mutex<TaskCB>>>{
+   Safety: Must be called with interrupts disabled (timer IRQ handler context)
+*/
+pub fn schedule() -> Option<Arc<Mutex<TaskCB>>> {
 	reschedule_current();
 	pick_next_task()
 }
 
 /*
-	global_or_none - Get global RunQueue reference without panicking
+   global_or_none - Get global RunQueue reference without panicking
 
-	Return: Some(&Mutex<RunQueue>) if initialized, None if init() not yet called
- */
-pub fn global_or_none() -> Option<&'static Mutex<RunQueue>>{
+   Return: Some(&Mutex<RunQueue>) if initialized, None if init() not yet called
+*/
+pub fn global_or_none() -> Option<&'static Mutex<RunQueue>> {
 	RUN_QUEUE.get()
 }
 
@@ -319,8 +319,7 @@ pub fn find_zombie_child(parent_id: u64, child_pid: i64) -> Option<Arc<Mutex<Tas
 	let mut rq = global().lock();
 	let pos = rq.zombies.iter().position(|z| {
 		let task = z.lock();
-		task.parent_id == parent_id
-			&& (child_pid == -1 || task.id.0 == child_pid as u64)
+		task.parent_id == parent_id && (child_pid == -1 || task.id.0 == child_pid as u64)
 	})?;
 	Some(rq.zombies.remove(pos))
 }

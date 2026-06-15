@@ -16,7 +16,7 @@ use super::ipc as proto;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use ipc::{Message, IPC_GLOBAL};
+use ipc::{IPC_GLOBAL, Message};
 use spin::Mutex;
 use vfs::{FileType, INode};
 

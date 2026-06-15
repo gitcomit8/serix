@@ -33,7 +33,7 @@ fn alloc_dma_page(hhdm_offset: u64) -> Option<*mut u8> {
 }
 
 /* Descriptor flags */
-pub const VIRTQ_DESC_F_NEXT: u16 = 1;  /* Descriptor is chained */
+pub const VIRTQ_DESC_F_NEXT: u16 = 1; /* Descriptor is chained */
 pub const VIRTQ_DESC_F_WRITE: u16 = 2; /* Device-writable (vs device-readable) */
 
 /*
@@ -195,15 +195,9 @@ impl Virtqueue {
 				write_volatile(&raw mut (*d).len, len);
 				if is_last {
 					/* Strip NEXT from last descriptor */
-					write_volatile(
-						&raw mut (*d).flags,
-						flags & !VIRTQ_DESC_F_NEXT,
-					);
+					write_volatile(&raw mut (*d).flags, flags & !VIRTQ_DESC_F_NEXT);
 				} else {
-					write_volatile(
-						&raw mut (*d).flags,
-						flags | VIRTQ_DESC_F_NEXT,
-					);
+					write_volatile(&raw mut (*d).flags, flags | VIRTQ_DESC_F_NEXT);
 				}
 				if !is_last {
 					idx = next;
@@ -216,20 +210,14 @@ impl Virtqueue {
 
 		/* Add head to available ring */
 		unsafe {
-			let avail_idx =
-				read_volatile(&raw const (*self.avail).idx);
-			let ring_entry = (self.avail as *mut u16)
-				.add(2 + (avail_idx % self.queue_size) as usize);
+			let avail_idx = read_volatile(&raw const (*self.avail).idx);
+			let ring_entry =
+				(self.avail as *mut u16).add(2 + (avail_idx % self.queue_size) as usize);
 			write_volatile(ring_entry, head);
 
 			/* Memory barrier before updating idx */
-			core::sync::atomic::fence(
-				core::sync::atomic::Ordering::Release,
-			);
-			write_volatile(
-				&raw mut (*self.avail).idx,
-				avail_idx.wrapping_add(1),
-			);
+			core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+			write_volatile(&raw mut (*self.avail).idx, avail_idx.wrapping_add(1));
 		}
 
 		Some(head)
@@ -243,21 +231,15 @@ impl Virtqueue {
 	 */
 	pub fn pop_used(&mut self) -> Option<(u32, u32)> {
 		unsafe {
-			core::sync::atomic::fence(
-				core::sync::atomic::Ordering::Acquire,
-			);
-			let used_idx =
-				read_volatile(&raw const (*self.used).idx);
+			core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+			let used_idx = read_volatile(&raw const (*self.used).idx);
 
 			if self.last_used_idx == used_idx {
 				return None;
 			}
 
-			let ring_entry = (self.used as *mut u8)
-				.add(4) as *const VirtqUsedElem;
-			let elem = ring_entry.add(
-				(self.last_used_idx % self.queue_size) as usize,
-			);
+			let ring_entry = (self.used as *mut u8).add(4) as *const VirtqUsedElem;
+			let elem = ring_entry.add((self.last_used_idx % self.queue_size) as usize);
 			let id = read_volatile(&raw const (*elem).id);
 			let len = read_volatile(&raw const (*elem).len);
 

@@ -7,8 +7,8 @@
 #![no_std]
 extern crate alloc;
 pub mod heap;
-pub mod slub;
 pub mod kstack;
+pub mod slub;
 
 use alloc::boxed::Box;
 use limine::memory_map::Entry;
@@ -57,7 +57,12 @@ pub fn init_page_allocator(
 	mapper: OffsetPageTable<'static>,
 	frame_alloc: StaticBootFrameAllocator,
 ) {
-	PAGE_ALLOC.call_once(|| Mutex::new(PageAllocator { mapper, frame_alloc }));
+	PAGE_ALLOC.call_once(|| {
+		Mutex::new(PageAllocator {
+			mapper,
+			frame_alloc,
+		})
+	});
 }
 
 /*

@@ -22,17 +22,17 @@ const SUPERBLOCK_SECTOR: u64 = 2;
  */
 #[allow(dead_code)]
 pub struct Superblock {
-	pub inodes_count:     u32,
-	pub blocks_count:     u32,
-	pub free_blocks:      u32,
-	pub free_inodes:      u32,
-	pub first_data_block: u32,   /* 1 for 1 KiB blocks, else 0 */
-	pub log_block_size:   u32,   /* block_size = 1024 << log_block_size */
+	pub inodes_count: u32,
+	pub blocks_count: u32,
+	pub free_blocks: u32,
+	pub free_inodes: u32,
+	pub first_data_block: u32, /* 1 for 1 KiB blocks, else 0 */
+	pub log_block_size: u32,   /* block_size = 1024 << log_block_size */
 	pub blocks_per_group: u32,
 	pub inodes_per_group: u32,
-	pub magic:            u16,   /* 0xEF53 */
-	pub inode_size:       u16,   /* 128 for ext2 rev 0, ≥128 for rev 1 */
-	pub first_ino:        u32,   /* first non-reserved inode (usually 11) */
+	pub magic: u16,      /* 0xEF53 */
+	pub inode_size: u16, /* 128 for ext2 rev 0, ≥128 for rev 1 */
+	pub first_ino: u32,  /* first non-reserved inode (usually 11) */
 }
 
 impl Superblock {
@@ -45,8 +45,12 @@ impl Superblock {
 		/* Superblock spans bytes 1024–2047, which is sectors 2 and 3 */
 		let mut s2 = [0u8; 512];
 		let mut s3 = [0u8; 512];
-		if !dev.read_block(SUPERBLOCK_SECTOR, &mut s2) { return None; }
-		if !dev.read_block(SUPERBLOCK_SECTOR + 1, &mut s3) { return None; }
+		if !dev.read_block(SUPERBLOCK_SECTOR, &mut s2) {
+			return None;
+		}
+		if !dev.read_block(SUPERBLOCK_SECTOR + 1, &mut s3) {
+			return None;
+		}
 
 		/* Concatenate into a 1024-byte view */
 		let mut raw = [0u8; 1024];
@@ -54,18 +58,20 @@ impl Superblock {
 		raw[512..].copy_from_slice(&s3);
 
 		let magic = u16::from_le_bytes([raw[56], raw[57]]);
-		if magic != EXT2_MAGIC { return None; }
+		if magic != EXT2_MAGIC {
+			return None;
+		}
 
-		let inodes_count     = u32::from_le_bytes(raw[0..4].try_into().ok()?);
-		let blocks_count     = u32::from_le_bytes(raw[4..8].try_into().ok()?);
-		let free_blocks      = u32::from_le_bytes(raw[12..16].try_into().ok()?);
-		let free_inodes      = u32::from_le_bytes(raw[16..20].try_into().ok()?);
+		let inodes_count = u32::from_le_bytes(raw[0..4].try_into().ok()?);
+		let blocks_count = u32::from_le_bytes(raw[4..8].try_into().ok()?);
+		let free_blocks = u32::from_le_bytes(raw[12..16].try_into().ok()?);
+		let free_inodes = u32::from_le_bytes(raw[16..20].try_into().ok()?);
 		let first_data_block = u32::from_le_bytes(raw[20..24].try_into().ok()?);
-		let log_block_size   = u32::from_le_bytes(raw[24..28].try_into().ok()?);
+		let log_block_size = u32::from_le_bytes(raw[24..28].try_into().ok()?);
 		let blocks_per_group = u32::from_le_bytes(raw[32..36].try_into().ok()?);
 		let inodes_per_group = u32::from_le_bytes(raw[40..44].try_into().ok()?);
-		let inode_size       = u16::from_le_bytes(raw[88..90].try_into().ok()?);
-		let first_ino        = u32::from_le_bytes(raw[84..88].try_into().ok()?);
+		let inode_size = u16::from_le_bytes(raw[88..90].try_into().ok()?);
+		let first_ino = u32::from_le_bytes(raw[84..88].try_into().ok()?);
 
 		Some(Superblock {
 			inodes_count,
@@ -90,8 +96,12 @@ impl Superblock {
 	pub fn write_free_counts(&self, dev: &dyn BlockDev) {
 		let mut s2 = [0u8; 512];
 		let mut s3 = [0u8; 512];
-		if !dev.read_block(SUPERBLOCK_SECTOR, &mut s2) { return; }
-		if !dev.read_block(SUPERBLOCK_SECTOR + 1, &mut s3) { return; }
+		if !dev.read_block(SUPERBLOCK_SECTOR, &mut s2) {
+			return;
+		}
+		if !dev.read_block(SUPERBLOCK_SECTOR + 1, &mut s3) {
+			return;
+		}
 
 		let mut raw = [0u8; 1024];
 		raw[..512].copy_from_slice(&s2);

@@ -7,10 +7,10 @@
  */
 
 extern crate alloc;
-use alloc::vec::Vec;
-use crate::BlockDev;
-use super::superblock::Superblock;
 use super::bgdt::BgDescTable;
+use super::superblock::Superblock;
+use crate::BlockDev;
+use alloc::vec::Vec;
 
 /* ------------------------------------------------------------------ */
 /*  On-disk inode (128 bytes for ext2 rev 0)                          */
@@ -20,19 +20,25 @@ pub const EXT2_S_IFREG: u16 = 0x8000;
 pub const EXT2_S_IFDIR: u16 = 0x4000;
 
 pub struct Inode {
-	pub mode:        u16,
-	pub links_count: u16,  /* must be ≥1 for allocated inodes (e2fsck) */
-	pub size:        u32,
-	pub blocks:      u32,  /* 512-byte units */
-	pub block:       [u32; 15],
-	pub ino:         u32,
+	pub mode: u16,
+	pub links_count: u16, /* must be ≥1 for allocated inodes (e2fsck) */
+	pub size: u32,
+	pub blocks: u32, /* 512-byte units */
+	pub block: [u32; 15],
+	pub ino: u32,
 }
 
 impl Inode {
 	/* is_dir / is_file helpers */
-	pub fn is_dir(&self)  -> bool { self.mode & 0xF000 == EXT2_S_IFDIR }
-	pub fn is_file(&self) -> bool { self.mode & 0xF000 == EXT2_S_IFREG }
-	pub fn size(&self)    -> usize { self.size as usize }
+	pub fn is_dir(&self) -> bool {
+		self.mode & 0xF000 == EXT2_S_IFDIR
+	}
+	pub fn is_file(&self) -> bool {
+		self.mode & 0xF000 == EXT2_S_IFREG
+	}
+	pub fn size(&self) -> usize {
+		self.size as usize
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -80,51 +86,60 @@ impl Inode {
 	 * wide (128 for ext2 rev 0); we parse only the first 128 bytes.
 	 */
 	pub fn read(dev: &dyn BlockDev, sb: &Superblock, bgdt: &BgDescTable, ino: u32) -> Option<Self> {
-		let group    = sb.inode_block_group(ino) as usize;
-		let idx      = sb.inode_local_index(ino) as usize;
-		let isz      = sb.inode_size as usize;
-		let bsz      = sb.block_size();
+		let group = sb.inode_block_group(ino) as usize;
+		let idx = sb.inode_local_index(ino) as usize;
+		let isz = sb.inode_size as usize;
+		let bsz = sb.block_size();
 
-		let bg        = bgdt.get(group);
+		let bg = bgdt.get(group);
 		let table_blk = bg.inode_table as u64;
 
 		/* Byte offset of this inode within the inode table */
-		let byte_off   = idx * isz;
-		let block_idx  = byte_off / bsz;
+		let byte_off = idx * isz;
+		let block_idx = byte_off / bsz;
 		let off_in_blk = byte_off % bsz;
 
 		let blk_data = read_block_bytes(dev, sb, (table_blk + block_idx as u64) as u32);
-		if blk_data.len() < off_in_blk + 128 { return None; }
+		if blk_data.len() < off_in_blk + 128 {
+			return None;
+		}
 
 		let r = &blk_data[off_in_blk..off_in_blk + 128];
-		let mode        = u16::from_le_bytes([r[0],  r[1]]);
+		let mode = u16::from_le_bytes([r[0], r[1]]);
 		let links_count = u16::from_le_bytes([r[26], r[27]]);
-		let size        = u32::from_le_bytes([r[4],  r[5],  r[6],  r[7]]);
-		let blocks      = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
+		let size = u32::from_le_bytes([r[4], r[5], r[6], r[7]]);
+		let blocks = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
 
 		let mut block = [0u32; 15];
 		for i in 0..15 {
 			let base = 40 + i * 4;
-			block[i] = u32::from_le_bytes([r[base], r[base+1], r[base+2], r[base+3]]);
+			block[i] = u32::from_le_bytes([r[base], r[base + 1], r[base + 2], r[base + 3]]);
 		}
 
-		Some(Inode { mode, links_count, size, blocks, block, ino })
+		Some(Inode {
+			mode,
+			links_count,
+			size,
+			blocks,
+			block,
+			ino,
+		})
 	}
 
 	/*
 	 * write - Flush this inode back to disk.
 	 */
 	pub fn write(&self, dev: &dyn BlockDev, sb: &Superblock, bgdt: &BgDescTable) {
-		let group    = sb.inode_block_group(self.ino) as usize;
-		let idx      = sb.inode_local_index(self.ino) as usize;
-		let isz      = sb.inode_size as usize;
-		let bsz      = sb.block_size();
+		let group = sb.inode_block_group(self.ino) as usize;
+		let idx = sb.inode_local_index(self.ino) as usize;
+		let isz = sb.inode_size as usize;
+		let bsz = sb.block_size();
 
-		let bg        = bgdt.get(group);
+		let bg = bgdt.get(group);
 		let table_blk = bg.inode_table as u64;
 
-		let byte_off   = idx * isz;
-		let block_idx  = byte_off / bsz;
+		let byte_off = idx * isz;
+		let block_idx = byte_off / bsz;
 		let off_in_blk = byte_off % bsz;
 
 		let mut blk_data = read_block_bytes(dev, sb, (table_blk + block_idx as u64) as u32);
@@ -136,7 +151,7 @@ impl Inode {
 		dst[28..32].copy_from_slice(&self.blocks.to_le_bytes());
 		for i in 0..15 {
 			let base = 40 + i * 4;
-			dst[base..base+4].copy_from_slice(&self.block[i].to_le_bytes());
+			dst[base..base + 4].copy_from_slice(&self.block[i].to_le_bytes());
 		}
 
 		write_block_bytes(dev, sb, (table_blk + block_idx as u64) as u32, &blk_data);
@@ -152,8 +167,8 @@ impl Inode {
 	 * Returns None if the block has not been allocated (sparse file / EOF).
 	 */
 	pub fn get_block(&self, dev: &dyn BlockDev, sb: &Superblock, n: u32) -> Option<u32> {
-		let bsz     = sb.block_size();
-		let ptrs    = (bsz / 4) as u32;   /* indirect block capacity */
+		let bsz = sb.block_size();
+		let ptrs = (bsz / 4) as u32; /* indirect block capacity */
 
 		/* Direct blocks: [0..11] */
 		if n < 12 {
@@ -165,7 +180,9 @@ impl Inode {
 		let n1 = n - 12;
 		if n1 < ptrs {
 			let ib = self.block[12];
-			if ib == 0 { return None; }
+			if ib == 0 {
+				return None;
+			}
 			let data = read_block_bytes(dev, sb, ib);
 			let b = u32_at(&data, n1 as usize);
 			return if b == 0 { None } else { Some(b) };
@@ -175,10 +192,14 @@ impl Inode {
 		let n2 = n1 - ptrs;
 		if n2 < ptrs * ptrs {
 			let dib = self.block[13];
-			if dib == 0 { return None; }
+			if dib == 0 {
+				return None;
+			}
 			let data1 = read_block_bytes(dev, sb, dib);
 			let ib = u32_at(&data1, (n2 / ptrs) as usize);
-			if ib == 0 { return None; }
+			if ib == 0 {
+				return None;
+			}
 			let data2 = read_block_bytes(dev, sb, ib);
 			let b = u32_at(&data2, (n2 % ptrs) as usize);
 			return if b == 0 { None } else { Some(b) };
@@ -187,13 +208,19 @@ impl Inode {
 		/* Triple indirect: block[14] */
 		let n3 = n2 - ptrs * ptrs;
 		let tib = self.block[14];
-		if tib == 0 { return None; }
+		if tib == 0 {
+			return None;
+		}
 		let data1 = read_block_bytes(dev, sb, tib);
 		let ib2 = u32_at(&data1, (n3 / (ptrs * ptrs)) as usize);
-		if ib2 == 0 { return None; }
+		if ib2 == 0 {
+			return None;
+		}
 		let data2 = read_block_bytes(dev, sb, ib2);
 		let ib = u32_at(&data2, ((n3 / ptrs) % ptrs) as usize);
-		if ib == 0 { return None; }
+		if ib == 0 {
+			return None;
+		}
 		let data3 = read_block_bytes(dev, sb, ib);
 		let b = u32_at(&data3, (n3 % ptrs) as usize);
 		if b == 0 { None } else { Some(b) }
@@ -213,7 +240,7 @@ impl Inode {
 		n: u32,
 		phys: u32,
 	) {
-		let bsz  = sb.block_size();
+		let bsz = sb.block_size();
 		let ptrs = (bsz / 4) as u32;
 
 		/* Direct */
@@ -308,10 +335,10 @@ impl Inode {
 
 fn u32_at(data: &[u8], idx: usize) -> u32 {
 	let off = idx * 4;
-	u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+	u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
 }
 
 fn write_u32_at(data: &mut [u8], idx: usize, val: u32) {
 	let off = idx * 4;
-	data[off..off+4].copy_from_slice(&val.to_le_bytes());
+	data[off..off + 4].copy_from_slice(&val.to_le_bytes());
 }

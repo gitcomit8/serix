@@ -28,12 +28,12 @@ use spin::Mutex;
 use vfs::INode;
 
 #[cfg(feature = "kernel")]
-pub mod fat32;
+pub mod block_cache;
 #[cfg(feature = "kernel")]
 pub mod ext2;
 pub mod ext4;
 #[cfg(feature = "kernel")]
-pub mod block_cache;
+pub mod fat32;
 #[cfg(feature = "kernel")]
 pub use block_cache::CachedBlockDev;
 
@@ -133,7 +133,9 @@ pub struct BlockDevINode(pub Arc<dyn BlockDev>);
 #[cfg(feature = "kernel")]
 impl INode for BlockDevINode {
 	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
-		if buf.is_empty() { return 0; }
+		if buf.is_empty() {
+			return 0;
+		}
 		let mut done = 0usize;
 		let mut pos = offset;
 		let mut sector_buf = [0u8; 512];
@@ -141,7 +143,9 @@ impl INode for BlockDevINode {
 		while done < buf.len() {
 			let sector = (pos / 512) as u64;
 			let sec_off = pos % 512;
-			if !self.0.read_block(sector, &mut sector_buf) { break; }
+			if !self.0.read_block(sector, &mut sector_buf) {
+				break;
+			}
 			let avail = 512 - sec_off;
 			let copy = core::cmp::min(avail, buf.len() - done);
 			buf[done..done + copy].copy_from_slice(&sector_buf[sec_off..sec_off + copy]);
@@ -152,7 +156,9 @@ impl INode for BlockDevINode {
 	}
 
 	fn write(&self, offset: usize, buf: &[u8]) -> usize {
-		if buf.is_empty() { return 0; }
+		if buf.is_empty() {
+			return 0;
+		}
 		let mut done = 0usize;
 		let mut pos = offset;
 		let mut sector_buf = [0u8; 512];
@@ -162,19 +168,25 @@ impl INode for BlockDevINode {
 			let sec_off = pos % 512;
 			/* Read-modify-write for partial sectors */
 			if sec_off != 0 || buf.len() - done < 512 {
-				if !self.0.read_block(sector, &mut sector_buf) { break; }
+				if !self.0.read_block(sector, &mut sector_buf) {
+					break;
+				}
 			}
 			let avail = 512 - sec_off;
 			let copy = core::cmp::min(avail, buf.len() - done);
 			sector_buf[sec_off..sec_off + copy].copy_from_slice(&buf[done..done + copy]);
-			if !self.0.write_block(sector, &sector_buf) { break; }
+			if !self.0.write_block(sector, &sector_buf) {
+				break;
+			}
 			done += copy;
 			pos += copy;
 		}
 		done
 	}
 
-	fn metadata(&self) -> vfs::FileType { vfs::FileType::Device }
+	fn metadata(&self) -> vfs::FileType {
+		vfs::FileType::Device
+	}
 
 	fn size(&self) -> usize {
 		(self.0.sector_count() * 512) as usize

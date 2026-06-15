@@ -7,9 +7,9 @@
  */
 
 extern crate alloc;
-use crate::BlockDev;
-use super::superblock::Superblock;
 use super::bgdt::BgDescTable;
+use super::superblock::Superblock;
+use crate::BlockDev;
 
 /* ------------------------------------------------------------------ */
 /*  Bitmap helpers                                                     */
@@ -77,7 +77,9 @@ fn write_block(dev: &dyn BlockDev, sb: &Superblock, blk: u32, data: &[u8]) {
 pub fn alloc_block(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTable) -> Option<u32> {
 	for g in 0..sb.num_block_groups() {
 		let bg = bgdt.get(g);
-		if bg.free_blocks == 0 { continue; }
+		if bg.free_blocks == 0 {
+			continue;
+		}
 		let bitmap_blk = bg.block_bitmap;
 
 		let mut bitmap = read_block(dev, sb, bitmap_blk);
@@ -102,7 +104,7 @@ pub fn alloc_block(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTab
  * free_block - Clear a block's bit in the bitmap.
  */
 pub fn free_block(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTable, block: u32) {
-	let g       = (block / sb.blocks_per_group) as usize;
+	let g = (block / sb.blocks_per_group) as usize;
 	let bit_idx = (block % sb.blocks_per_group) as usize;
 
 	let bitmap_blk = bgdt.get(g).block_bitmap;
@@ -129,7 +131,9 @@ pub fn free_block(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTabl
 pub fn alloc_inode(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTable) -> Option<u32> {
 	for g in 0..sb.num_block_groups() {
 		let bg = bgdt.get(g);
-		if bg.free_inodes == 0 { continue; }
+		if bg.free_inodes == 0 {
+			continue;
+		}
 		let bitmap_blk = bg.inode_bitmap;
 
 		let mut bitmap = read_block(dev, sb, bitmap_blk);
@@ -155,7 +159,7 @@ pub fn alloc_inode(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTab
  * free_inode - Clear an inode's bit in the bitmap.
  */
 pub fn free_inode(dev: &dyn BlockDev, sb: &mut Superblock, bgdt: &mut BgDescTable, ino: u32) {
-	let g       = sb.inode_block_group(ino) as usize;
+	let g = sb.inode_block_group(ino) as usize;
 	let bit_idx = sb.inode_local_index(ino) as usize;
 
 	let bitmap_blk = bgdt.get(g).inode_bitmap;

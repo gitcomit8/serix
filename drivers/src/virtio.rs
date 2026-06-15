@@ -103,9 +103,7 @@ const VIRTIO_BLK_VECTOR: u8 = 34;
  * Reads ISR status register (which acknowledges the interrupt),
  * sets the completion flag, and sends EOI.
  */
-extern "x86-interrupt" fn virtio_blk_interrupt_handler(
-	_frame: InterruptStackFrame,
-) {
+extern "x86-interrupt" fn virtio_blk_interrupt_handler(_frame: InterruptStackFrame) {
 	let isr_addr = ISR_CFG_ADDR.load(Ordering::Relaxed);
 	if isr_addr != 0 {
 		/* Reading ISR status acknowledges the interrupt */
@@ -114,7 +112,9 @@ extern "x86-interrupt" fn virtio_blk_interrupt_handler(
 		}
 	}
 	VIRTIO_BLK_COMPLETE.store(true, Ordering::Release);
-	unsafe { apic::send_eoi(); }
+	unsafe {
+		apic::send_eoi();
+	}
 }
 
 /*
@@ -138,14 +138,12 @@ pub fn register_interrupt() {
 
 		unsafe {
 			apic::ioapic::map_irq(irq, VIRTIO_BLK_VECTOR);
-			idt::register_interrupt_handler(
-				VIRTIO_BLK_VECTOR,
-				virtio_blk_interrupt_handler,
-			);
+			idt::register_interrupt_handler(VIRTIO_BLK_VECTOR, virtio_blk_interrupt_handler);
 		}
 		hal::serial_println!(
 			"VirtIO: IRQ {} → vector {}, interrupt registered",
-			irq, VIRTIO_BLK_VECTOR,
+			irq,
+			VIRTIO_BLK_VECTOR,
 		);
 	}
 }
@@ -196,11 +194,7 @@ impl VirtioBlock {
 	 *
 	 * Return: Some(VirtioBlock) on success, None on failure
 	 */
-	pub unsafe fn init<F>(
-		dev: PciDevice,
-		mut map_mmio: F,
-		hhdm_offset: u64,
-	) -> Option<Self>
+	pub unsafe fn init<F>(dev: PciDevice, mut map_mmio: F, hhdm_offset: u64) -> Option<Self>
 	where
 		F: FnMut(u64, u64) -> *mut u8,
 	{
@@ -208,9 +202,7 @@ impl VirtioBlock {
 			return None;
 		}
 
-		hal::serial_println!(
-			"VirtIO: Found device (ID: {:#x})", dev.device_id
-		);
+		hal::serial_println!("VirtIO: Found device (ID: {:#x})", dev.device_id);
 		dev.enable_bus_master();
 
 		/* Walk all vendor-specific capabilities */
@@ -228,26 +220,20 @@ impl VirtioBlock {
 			let length = dev.read_u32(offset + 12);
 
 			if let Some((bar_phys, _)) = dev.get_bar(bar_idx) {
-				let base = map_mmio(
-					bar_phys + offset_in_bar as u64,
-					length as u64,
-				);
+				let base = map_mmio(bar_phys + offset_in_bar as u64, length as u64);
 				match cfg_type {
 					VIRTIO_PCI_CAP_COMMON_CFG => {
-						common_cfg_ptr =
-							Some(base as *mut VirtioCommonCfg);
-						hal::serial_println!(
-							"VirtIO: Common Cfg at {:#p}", base
-						);
+						common_cfg_ptr = Some(base as *mut VirtioCommonCfg);
+						hal::serial_println!("VirtIO: Common Cfg at {:#p}", base);
 					}
 					VIRTIO_PCI_CAP_NOTIFY_CFG => {
 						notify_cfg_base = base;
 						/* Multiplier at cap offset + 16 */
-						notify_off_multiplier =
-							dev.read_u32(offset + 16);
+						notify_off_multiplier = dev.read_u32(offset + 16);
 						hal::serial_println!(
 							"VirtIO: Notify Cfg at {:#p}, mult={}",
-							base, notify_off_multiplier
+							base,
+							notify_off_multiplier
 						);
 					}
 					VIRTIO_PCI_CAP_ISR_CFG => {
@@ -332,21 +318,16 @@ impl VirtioBlock {
 
 		/* Select queue 0 */
 		write_volatile(&raw mut (*cfg).queue_select, 0);
-		let queue_size =
-			read_volatile(&raw const (*cfg).queue_size);
+		let queue_size = read_volatile(&raw const (*cfg).queue_size);
 
 		if queue_size == 0 {
 			hal::serial_println!("VirtIO: Queue size is 0");
 			return false;
 		}
-		hal::serial_println!(
-			"VirtIO: Queue 0 size = {}", queue_size
-		);
+		hal::serial_println!("VirtIO: Queue 0 size = {}", queue_size);
 
 		/* Allocate virtqueue via SLUB */
-		let vq = match Virtqueue::allocate(
-			queue_size, self.hhdm_offset
-		) {
+		let vq = match Virtqueue::allocate(queue_size, self.hhdm_offset) {
 			Some(vq) => vq,
 			None => {
 				hal::serial_println!("VirtIO: Queue alloc failed");
@@ -355,34 +336,15 @@ impl VirtioBlock {
 		};
 
 		/* Program queue addresses into device */
-		write_volatile(
-			&raw mut (*cfg).queue_desc_lo,
-			vq.desc_phys as u32,
-		);
-		write_volatile(
-			&raw mut (*cfg).queue_desc_hi,
-			(vq.desc_phys >> 32) as u32,
-		);
-		write_volatile(
-			&raw mut (*cfg).queue_avail_lo,
-			vq.avail_phys as u32,
-		);
-		write_volatile(
-			&raw mut (*cfg).queue_avail_hi,
-			(vq.avail_phys >> 32) as u32,
-		);
-		write_volatile(
-			&raw mut (*cfg).queue_used_lo,
-			vq.used_phys as u32,
-		);
-		write_volatile(
-			&raw mut (*cfg).queue_used_hi,
-			(vq.used_phys >> 32) as u32,
-		);
+		write_volatile(&raw mut (*cfg).queue_desc_lo, vq.desc_phys as u32);
+		write_volatile(&raw mut (*cfg).queue_desc_hi, (vq.desc_phys >> 32) as u32);
+		write_volatile(&raw mut (*cfg).queue_avail_lo, vq.avail_phys as u32);
+		write_volatile(&raw mut (*cfg).queue_avail_hi, (vq.avail_phys >> 32) as u32);
+		write_volatile(&raw mut (*cfg).queue_used_lo, vq.used_phys as u32);
+		write_volatile(&raw mut (*cfg).queue_used_hi, (vq.used_phys >> 32) as u32);
 
 		/* Read notify offset for this queue */
-		let _queue_notify_off =
-			read_volatile(&raw const (*cfg).queue_notify_off);
+		let _queue_notify_off = read_volatile(&raw const (*cfg).queue_notify_off);
 
 		/* Enable the queue */
 		write_volatile(&raw mut (*cfg).queue_enable, 1);
@@ -400,10 +362,7 @@ impl VirtioBlock {
 
 		/* Set DRIVER_OK — device is now live */
 		let s = read_volatile(&raw const (*cfg).device_status);
-		write_volatile(
-			&raw mut (*cfg).device_status,
-			s | STATUS_DRIVER_OK,
-		);
+		write_volatile(&raw mut (*cfg).device_status, s | STATUS_DRIVER_OK);
 
 		hal::serial_println!("VirtIO: DRIVER_OK — device live");
 		true
@@ -417,12 +376,9 @@ impl VirtioBlock {
 		notify_cfg_base: *mut u8,
 		notify_off_multiplier: u32,
 	) {
-		let queue_notify_off =
-			read_volatile(&raw const (*common_cfg).queue_notify_off)
-				as u32;
-		let notify_addr = notify_cfg_base.add(
-			(queue_notify_off * notify_off_multiplier) as usize,
-		) as *mut u16;
+		let queue_notify_off = read_volatile(&raw const (*common_cfg).queue_notify_off) as u32;
+		let notify_addr =
+			notify_cfg_base.add((queue_notify_off * notify_off_multiplier) as usize) as *mut u16;
 		write_volatile(notify_addr, 0);
 	}
 
@@ -436,11 +392,7 @@ impl VirtioBlock {
 	 *
 	 * Return: Ok(()) on success, Err(BlockError) on failure
 	 */
-	pub fn read_sector(
-		&mut self,
-		sector: u64,
-		buf: &mut [u8; 512],
-	) -> Result<(), BlockError> {
+	pub fn read_sector(&mut self, sector: u64, buf: &mut [u8; 512]) -> Result<(), BlockError> {
 		let vq = self.queue.as_mut().ok_or(BlockError::IoError)?;
 
 		let dma = if self.dma_buf.is_null() {
@@ -457,26 +409,19 @@ impl VirtioBlock {
 
 			let base_phys = dma as u64 - self.hhdm_offset;
 			let hdr_phys = base_phys;
-			let data_phys = base_phys
-				+ core::mem::offset_of!(BlkDmaBuffer, data) as u64;
-			let status_phys = base_phys
-				+ core::mem::offset_of!(BlkDmaBuffer, status) as u64;
+			let data_phys = base_phys + core::mem::offset_of!(BlkDmaBuffer, data) as u64;
+			let status_phys = base_phys + core::mem::offset_of!(BlkDmaBuffer, status) as u64;
 
 			let chain = [
 				(hdr_phys, 16, 0u16), /* header: device-readable */
-				(data_phys, 512,
-					crate::virtqueue::VIRTQ_DESC_F_WRITE),
-				(status_phys, 1,
-					crate::virtqueue::VIRTQ_DESC_F_WRITE),
+				(data_phys, 512, crate::virtqueue::VIRTQ_DESC_F_WRITE),
+				(status_phys, 1, crate::virtqueue::VIRTQ_DESC_F_WRITE),
 			];
 
-			let head = vq.push_chain(&chain)
-				.ok_or(BlockError::IoError)?;
+			let head = vq.push_chain(&chain).ok_or(BlockError::IoError)?;
 
 			/* Notify device */
-			core::sync::atomic::fence(
-				core::sync::atomic::Ordering::SeqCst,
-			);
+			core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 			Self::notify_queue(
 				self.common_cfg,
 				self.notify_cfg_base,
@@ -499,9 +444,7 @@ impl VirtioBlock {
 			}
 
 			/* Copy data to caller buffer */
-			core::ptr::copy_nonoverlapping(
-				(*dma).data.as_ptr(), buf.as_mut_ptr(), 512,
-			);
+			core::ptr::copy_nonoverlapping((*dma).data.as_ptr(), buf.as_mut_ptr(), 512);
 
 			vq.free_chain(head);
 		}
@@ -516,11 +459,7 @@ impl VirtioBlock {
 	 *
 	 * Return: Ok(()) on success, Err(BlockError) on failure
 	 */
-	pub fn write_sector(
-		&mut self,
-		sector: u64,
-		buf: &[u8; 512],
-	) -> Result<(), BlockError> {
+	pub fn write_sector(&mut self, sector: u64, buf: &[u8; 512]) -> Result<(), BlockError> {
 		let vq = self.queue.as_mut().ok_or(BlockError::IoError)?;
 
 		let dma = if self.dma_buf.is_null() {
@@ -536,30 +475,22 @@ impl VirtioBlock {
 			(*dma).status = 0xFF;
 
 			/* Copy data into DMA buffer */
-			core::ptr::copy_nonoverlapping(
-				buf.as_ptr(), (*dma).data.as_mut_ptr(), 512,
-			);
+			core::ptr::copy_nonoverlapping(buf.as_ptr(), (*dma).data.as_mut_ptr(), 512);
 
 			let base_phys = dma as u64 - self.hhdm_offset;
 			let hdr_phys = base_phys;
-			let data_phys = base_phys
-				+ core::mem::offset_of!(BlkDmaBuffer, data) as u64;
-			let status_phys = base_phys
-				+ core::mem::offset_of!(BlkDmaBuffer, status) as u64;
+			let data_phys = base_phys + core::mem::offset_of!(BlkDmaBuffer, data) as u64;
+			let status_phys = base_phys + core::mem::offset_of!(BlkDmaBuffer, status) as u64;
 
 			let chain = [
-				(hdr_phys, 16, 0u16), /* header: device-readable */
+				(hdr_phys, 16, 0u16),   /* header: device-readable */
 				(data_phys, 512, 0u16), /* data: device-readable */
-				(status_phys, 1,
-					crate::virtqueue::VIRTQ_DESC_F_WRITE),
+				(status_phys, 1, crate::virtqueue::VIRTQ_DESC_F_WRITE),
 			];
 
-			let head = vq.push_chain(&chain)
-				.ok_or(BlockError::IoError)?;
+			let head = vq.push_chain(&chain).ok_or(BlockError::IoError)?;
 
-			core::sync::atomic::fence(
-				core::sync::atomic::Ordering::SeqCst,
-			);
+			core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 			Self::notify_queue(
 				self.common_cfg,
 				self.notify_cfg_base,
@@ -595,9 +526,7 @@ impl VirtioBlock {
 		if self.device_cfg.is_null() {
 			return 0;
 		}
-		unsafe {
-			read_volatile(self.device_cfg as *const u64)
-		}
+		unsafe { read_volatile(self.device_cfg as *const u64) }
 	}
 }
 
@@ -611,7 +540,7 @@ struct VirtioBlkReq {
 	sector: u64,
 }
 
-const VIRTIO_BLK_T_IN: u32 = 0;  /* Read */
+const VIRTIO_BLK_T_IN: u32 = 0; /* Read */
 const VIRTIO_BLK_T_OUT: u32 = 1; /* Write */
 const VIRTIO_BLK_S_OK: u8 = 0;
 

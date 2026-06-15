@@ -17,9 +17,7 @@
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{
-	FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
-};
+use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB};
 
 use crate::PageAllocator;
 
@@ -32,15 +30,15 @@ const NUM_SIZE_CLASSES: usize = 9;
  * to the next size class. Requests larger than 1MiB are rejected.
  */
 const SIZE_CLASSES: [usize; NUM_SIZE_CLASSES] = [
-	0x1000,    /*   4 KiB */
-	0x2000,    /*   8 KiB */
-	0x4000,    /*  16 KiB */
-	0x8000,    /*  32 KiB */
-	0x10000,   /*  64 KiB */
-	0x20000,   /* 128 KiB */
-	0x40000,   /* 256 KiB */
-	0x80000,   /* 512 KiB */
-	0x100000,  /*   1 MiB */
+	0x1000,   /*   4 KiB */
+	0x2000,   /*   8 KiB */
+	0x4000,   /*  16 KiB */
+	0x8000,   /*  32 KiB */
+	0x10000,  /*  64 KiB */
+	0x20000,  /* 128 KiB */
+	0x40000,  /* 256 KiB */
+	0x80000,  /* 512 KiB */
+	0x100000, /*   1 MiB */
 ];
 
 /*
@@ -150,14 +148,10 @@ impl SlubAllocator {
 			let vaddr = VirtAddr::new(va_start + (i as u64) * 4096);
 			let page = Page::<Size4KiB>::containing_address(vaddr);
 			let frame = frame_alloc.allocate_frame()?;
-			let flags = PageTableFlags::PRESENT
-				| PageTableFlags::WRITABLE
-				| PageTableFlags::NO_EXECUTE;
+			let flags =
+				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 			unsafe {
-				mapper
-					.map_to(page, frame, flags, frame_alloc)
-					.ok()?
-					.flush();
+				mapper.map_to(page, frame, flags, frame_alloc).ok()?.flush();
 			}
 		}
 
@@ -212,11 +206,7 @@ pub fn alloc_kernel_object(size: usize) -> Option<*mut u8> {
 	if size < 4096 {
 		let layout = core::alloc::Layout::from_size_align(size, 8).ok()?;
 		let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-		if ptr.is_null() {
-			None
-		} else {
-			Some(ptr)
-		}
+		if ptr.is_null() { None } else { Some(ptr) }
 	} else {
 		SLUB.get()?.lock().alloc(size)
 	}

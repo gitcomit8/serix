@@ -106,11 +106,17 @@ impl INode for PipeReadEnd {
 		}
 	}
 
-	fn write(&self, _offset: usize, _buf: &[u8]) -> usize { 0 }
+	fn write(&self, _offset: usize, _buf: &[u8]) -> usize {
+		0
+	}
 
-	fn metadata(&self) -> FileType { FileType::File }
+	fn metadata(&self) -> FileType {
+		FileType::File
+	}
 
-	fn size(&self) -> usize { self.0.lock().count }
+	fn size(&self) -> usize {
+		self.0.lock().count
+	}
 }
 
 impl Drop for PipeReadEnd {
@@ -120,7 +126,9 @@ impl Drop for PipeReadEnd {
 }
 
 impl INode for PipeWriteEnd {
-	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize { 0 }
+	fn read(&self, _offset: usize, _buf: &mut [u8]) -> usize {
+		0
+	}
 
 	fn write(&self, _offset: usize, buf: &[u8]) -> usize {
 		let mut inner = self.0.lock();
@@ -137,7 +145,9 @@ impl INode for PipeWriteEnd {
 		n
 	}
 
-	fn metadata(&self) -> FileType { FileType::File }
+	fn metadata(&self) -> FileType {
+		FileType::File
+	}
 }
 
 impl Drop for PipeWriteEnd {
