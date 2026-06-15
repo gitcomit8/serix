@@ -11,7 +11,9 @@
  */
 
 use spin::Mutex;
-use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
+use x86_64::structures::paging::{
+	FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::heap::StaticBootFrameAllocator;
@@ -70,7 +72,8 @@ impl KStackAllocator {
 			let vaddr = VirtAddr::new(base + (i as u64) * 4096);
 			let page = Page::<Size4KiB>::containing_address(vaddr);
 			let frame = frame_alloc.allocate_frame()?;
-			let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+			let flags =
+				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
 			unsafe {
 				mapper.map_to(page, frame, flags, frame_alloc).ok()?.flush();

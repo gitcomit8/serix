@@ -5,8 +5,8 @@
  * print! and println! work in no_std userspace binaries.
  */
 
-use core::fmt::{self, Write};
 use crate::{STDOUT, write as sys_write};
+use core::fmt::{self, Write};
 
 struct StdoutWriter;
 

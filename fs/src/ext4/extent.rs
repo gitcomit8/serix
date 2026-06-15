@@ -15,10 +15,10 @@
  */
 
 extern crate alloc;
-use alloc::vec::Vec;
-use crate::BlockDev;
-use super::superblock::Superblock;
 use super::bgdt::BgDescTable;
+use super::superblock::Superblock;
+use crate::BlockDev;
+use alloc::vec::Vec;
 
 const EXTENT_MAGIC: u16 = 0xF30A;
 
@@ -45,14 +45,18 @@ fn write_blk(dev: &dyn BlockDev, sb: &Superblock, blk: u32, data: &[u8]) {
 	}
 }
 
-fn u16_le(b: &[u8], off: usize) -> u16 { u16::from_le_bytes([b[off], b[off+1]]) }
-fn u32_le(b: &[u8], off: usize) -> u32 { u32::from_le_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
+fn u16_le(b: &[u8], off: usize) -> u16 {
+	u16::from_le_bytes([b[off], b[off + 1]])
+}
+fn u32_le(b: &[u8], off: usize) -> u32 {
+	u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
 
 /* inode.block[0..14] as raw bytes (60 bytes) */
 fn inode_block_bytes(block: &[u32; 15]) -> [u8; 60] {
 	let mut raw = [0u8; 60];
 	for i in 0..15 {
-		raw[i*4..i*4+4].copy_from_slice(&block[i].to_le_bytes());
+		raw[i * 4..i * 4 + 4].copy_from_slice(&block[i].to_le_bytes());
 	}
 	raw
 }
@@ -62,27 +66,24 @@ fn inode_block_bytes(block: &[u32; 15]) -> [u8; 60] {
  *
  * Returns None for sparse regions or if the tree depth > 2.
  */
-pub fn get_block(
-	dev: &dyn BlockDev,
-	sb: &Superblock,
-	block: &[u32; 15],
-	n: u32,
-) -> Option<u32> {
+pub fn get_block(dev: &dyn BlockDev, sb: &Superblock, block: &[u32; 15], n: u32) -> Option<u32> {
 	let raw = inode_block_bytes(block);
 	resolve_in_node(dev, sb, &raw, n)
 }
 
 fn resolve_in_node(dev: &dyn BlockDev, sb: &Superblock, node: &[u8], n: u32) -> Option<u32> {
-	if u16_le(node, 0) != EXTENT_MAGIC { return None; }
+	if u16_le(node, 0) != EXTENT_MAGIC {
+		return None;
+	}
 	let entries = u16_le(node, 2) as usize;
-	let depth   = u16_le(node, 6);
+	let depth = u16_le(node, 6);
 
 	if depth == 0 {
 		/* Leaf node: search extents at offsets 12, 24, 36, ... */
 		for i in 0..entries {
-			let off      = 12 + i * 12;
+			let off = 12 + i * 12;
 			let ee_block = u32_le(node, off);
-			let ee_len   = u16_le(node, off + 4);
+			let ee_len = u16_le(node, off + 4);
 			let ee_start = u32_le(node, off + 8); /* start_lo; ignore start_hi */
 			if n >= ee_block && n < ee_block + ee_len as u32 {
 				let delta = n - ee_block;
@@ -94,7 +95,7 @@ fn resolve_in_node(dev: &dyn BlockDev, sb: &Superblock, node: &[u8], n: u32) -> 
 		/* Internal node: find the right child index block */
 		let mut chosen: Option<u32> = None;
 		for i in 0..entries {
-			let off      = 12 + i * 12;
+			let off = 12 + i * 12;
 			let ei_block = u32_le(node, off);
 			if n >= ei_block {
 				chosen = Some(u32_le(node, off + 4)); /* leaf_lo */
@@ -133,45 +134,49 @@ pub fn set_block(
 		raw[2..4].copy_from_slice(&0u16.to_le_bytes()); /* entries = 0 */
 		raw[4..6].copy_from_slice(&4u16.to_le_bytes()); /* max = 4 inline */
 		raw[6..8].copy_from_slice(&0u16.to_le_bytes()); /* depth = 0 */
-		raw[8..12].copy_from_slice(&0u32.to_le_bytes());/* generation */
+		raw[8..12].copy_from_slice(&0u32.to_le_bytes()); /* generation */
 	}
 
 	let entries = u16_le(&raw, 2) as usize;
-	let max     = u16_le(&raw, 4) as usize;
-	let depth   = u16_le(&raw, 6);
+	let max = u16_le(&raw, 4) as usize;
+	let depth = u16_le(&raw, 6);
 
 	if depth == 0 && entries < max {
 		/* Try to extend the last extent if it is contiguous */
 		if entries > 0 {
-			let last_off   = 12 + (entries - 1) * 12;
-			let ee_block   = u32_le(&raw, last_off);
-			let ee_len     = u16_le(&raw, last_off + 4);
-			let ee_start   = u32_le(&raw, last_off + 8);
-			if n == ee_block + ee_len as u32 && phys == ee_start + ee_len as u32
-				&& ee_len < 0x7FFF
+			let last_off = 12 + (entries - 1) * 12;
+			let ee_block = u32_le(&raw, last_off);
+			let ee_len = u16_le(&raw, last_off + 4);
+			let ee_start = u32_le(&raw, last_off + 8);
+			if n == ee_block + ee_len as u32 && phys == ee_start + ee_len as u32 && ee_len < 0x7FFF
 			{
 				/* Extend in place */
 				let new_len = (ee_len + 1).to_le_bytes();
 				raw[last_off + 4] = new_len[0];
 				raw[last_off + 5] = new_len[1];
-				for i in 0..15 { block[i] = u32_le(&raw, i * 4); }
+				for i in 0..15 {
+					block[i] = u32_le(&raw, i * 4);
+				}
 				return true;
 			}
 		}
 		/* Append new extent */
 		let new_off = 12 + entries * 12;
-		raw[new_off..new_off+4].copy_from_slice(&n.to_le_bytes());
-		raw[new_off+4..new_off+6].copy_from_slice(&1u16.to_le_bytes());
-		raw[new_off+6..new_off+8].copy_from_slice(&0u16.to_le_bytes()); /* start_hi */
-		raw[new_off+8..new_off+12].copy_from_slice(&phys.to_le_bytes());
+		raw[new_off..new_off + 4].copy_from_slice(&n.to_le_bytes());
+		raw[new_off + 4..new_off + 6].copy_from_slice(&1u16.to_le_bytes());
+		raw[new_off + 6..new_off + 8].copy_from_slice(&0u16.to_le_bytes()); /* start_hi */
+		raw[new_off + 8..new_off + 12].copy_from_slice(&phys.to_le_bytes());
 		let new_entries = (entries + 1) as u16;
 		raw[2..4].copy_from_slice(&new_entries.to_le_bytes());
-		for i in 0..15 { block[i] = u32_le(&raw, i * 4); }
+		for i in 0..15 {
+			block[i] = u32_le(&raw, i * 4);
+		}
 		true
 	} else if depth == 0 && entries >= max {
 		/* Inline area full: allocate a tree block and promote */
 		let tree_blk = match super::bitmap_alloc::alloc_block(dev, sb, bgdt) {
-			Some(b) => b, None => return false,
+			Some(b) => b,
+			None => return false,
 		};
 		/* Copy existing extents into the new tree block */
 		let mut tree_data = alloc::vec![0u8; sb.block_size()];
@@ -182,10 +187,10 @@ pub fn set_block(
 		tree_data[12..12 + entries * 12].copy_from_slice(&raw[12..12 + entries * 12]);
 		/* Append new extent in tree block */
 		let new_off = 12 + entries * 12;
-		tree_data[new_off..new_off+4].copy_from_slice(&n.to_le_bytes());
-		tree_data[new_off+4..new_off+6].copy_from_slice(&1u16.to_le_bytes());
-		tree_data[new_off+6..new_off+8].copy_from_slice(&0u16.to_le_bytes());
-		tree_data[new_off+8..new_off+12].copy_from_slice(&phys.to_le_bytes());
+		tree_data[new_off..new_off + 4].copy_from_slice(&n.to_le_bytes());
+		tree_data[new_off + 4..new_off + 6].copy_from_slice(&1u16.to_le_bytes());
+		tree_data[new_off + 6..new_off + 8].copy_from_slice(&0u16.to_le_bytes());
+		tree_data[new_off + 8..new_off + 12].copy_from_slice(&phys.to_le_bytes());
 		let cnt = (entries + 1) as u16;
 		tree_data[2..4].copy_from_slice(&cnt.to_le_bytes());
 		write_blk(dev, sb, tree_blk, &tree_data);
@@ -197,24 +202,26 @@ pub fn set_block(
 		new_raw[6..8].copy_from_slice(&1u16.to_le_bytes()); /* depth = 1 */
 		new_raw[12..16].copy_from_slice(&0u32.to_le_bytes()); /* ei_block = 0 */
 		new_raw[16..20].copy_from_slice(&tree_blk.to_le_bytes()); /* leaf_lo */
-		for i in 0..15 { block[i] = u32_le(&new_raw, i * 4); }
+		for i in 0..15 {
+			block[i] = u32_le(&new_raw, i * 4);
+		}
 		true
 	} else {
 		/* depth > 1: locate the right child index block and recurse */
 		/* For simplicity, append to the last leaf block found */
-		let last_off  = 12 + (entries.saturating_sub(1)) * 12;
+		let last_off = 12 + (entries.saturating_sub(1)) * 12;
 		let child_blk = u32_le(&raw, last_off + 4);
 		let mut child_data = read_blk(dev, sb, child_blk);
 		let child_entries = u16_le(&child_data, 2) as usize;
-		let child_max     = u16_le(&child_data, 4) as usize;
+		let child_max = u16_le(&child_data, 4) as usize;
 		if child_entries >= child_max {
 			return false; /* tree too deep — not supported */
 		}
 		let new_off = 12 + child_entries * 12;
-		child_data[new_off..new_off+4].copy_from_slice(&n.to_le_bytes());
-		child_data[new_off+4..new_off+6].copy_from_slice(&1u16.to_le_bytes());
-		child_data[new_off+6..new_off+8].copy_from_slice(&0u16.to_le_bytes());
-		child_data[new_off+8..new_off+12].copy_from_slice(&phys.to_le_bytes());
+		child_data[new_off..new_off + 4].copy_from_slice(&n.to_le_bytes());
+		child_data[new_off + 4..new_off + 6].copy_from_slice(&1u16.to_le_bytes());
+		child_data[new_off + 6..new_off + 8].copy_from_slice(&0u16.to_le_bytes());
+		child_data[new_off + 8..new_off + 12].copy_from_slice(&phys.to_le_bytes());
 		let cnt = (child_entries + 1) as u16;
 		child_data[2..4].copy_from_slice(&cnt.to_le_bytes());
 		write_blk(dev, sb, child_blk, &child_data);

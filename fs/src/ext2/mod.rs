@@ -6,21 +6,21 @@
  */
 
 extern crate alloc;
+use crate::{BlockDev, FsDriver};
 use alloc::sync::Arc;
 use spin::Mutex;
 use vfs::INode;
-use crate::{BlockDev, FsDriver};
 
-pub mod superblock;
 pub mod bgdt;
-pub mod inode;
-pub mod dir;
 pub mod bitmap_alloc;
+pub mod dir;
+pub mod inode;
 pub mod inode_impl;
+pub mod superblock;
 
-use superblock::Superblock;
 use bgdt::BgDescTable;
 use inode_impl::{Ext2DirINode, Ext2State};
+use superblock::Superblock;
 
 /* ------------------------------------------------------------------ */
 /*  Ext2Driver                                                         */
@@ -29,7 +29,9 @@ use inode_impl::{Ext2DirINode, Ext2State};
 struct Ext2Driver;
 
 impl FsDriver for Ext2Driver {
-	fn name(&self) -> &'static str { "ext2" }
+	fn name(&self) -> &'static str {
+		"ext2"
+	}
 
 	/*
 	 * probe - Check magic at byte 1024 (sector 2, offset 56 within sector).
@@ -39,7 +41,9 @@ impl FsDriver for Ext2Driver {
 	 */
 	fn probe(&self, dev: &dyn BlockDev) -> bool {
 		let mut buf = [0u8; 512];
-		if !dev.read_block(2, &mut buf) { return false; }
+		if !dev.read_block(2, &mut buf) {
+			return false;
+		}
 		u16::from_le_bytes([buf[56], buf[57]]) == superblock::EXT2_MAGIC
 	}
 
@@ -47,8 +51,8 @@ impl FsDriver for Ext2Driver {
 	 * mount - Parse superblock + BGDT, return root directory INode (inode 2).
 	 */
 	fn mount(&self, dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>> {
-		let dev  = Arc::new(crate::CachedBlockDev::new(dev)) as Arc<dyn BlockDev>;
-		let sb   = Superblock::read(dev.as_ref())?;
+		let dev = Arc::new(crate::CachedBlockDev::new(dev)) as Arc<dyn BlockDev>;
+		let sb = Superblock::read(dev.as_ref())?;
 		let bgdt = BgDescTable::read(dev.as_ref(), &sb);
 		let state = Arc::new(Mutex::new(Ext2State { dev, sb, bgdt }));
 		Some(Arc::new(Ext2DirINode { ino: 2, state }))

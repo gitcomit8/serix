@@ -3,11 +3,11 @@
  *
  * Implements Local APIC timer for periodic interrupts and timekeeping.
  */
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::{lapic_reg, send_eoi};
+use core::sync::atomic::{AtomicU64, Ordering};
 use task;
-use x86_64::structures::idt::InterruptStackFrame;
 use task::scheduler::TIME_SLICE_TICKS;
+use x86_64::structures::idt::InterruptStackFrame;
 
 /* Timer configuration constants */
 pub const TIMER_VECTOR: u8 = 0x31;
@@ -18,13 +18,12 @@ pub const TIMER_INITIAL_COUNT: u32 = 100_000; /* Timer interval */
 static mut TICKS: u64 = 0;
 
 /*
-	TICK_COUNT - Monotonic tick counter incremented on every timer interrupt
+   TICK_COUNT - Monotonic tick counter incremented on every timer interrupt
 
-	Used to gate scheduling to once per TIME_SLICE_TICKS ticks
-	Wrapping add is intentional - overflow is harmless here
- */
+   Used to gate scheduling to once per TIME_SLICE_TICKS ticks
+   Wrapping add is intentional - overflow is harmless here
+*/
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
-
 
 /*
  * timer_interrupt - Timer interrupt handler
@@ -48,7 +47,7 @@ extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
  * Preempts the current task and sends EOI to LAPIC.
  */
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-	let ticks = TICK_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+	let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
 	if ticks % TIME_SLICE_TICKS == 0 {
 		task::schedule();

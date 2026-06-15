@@ -11,8 +11,10 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use ulib::{STDOUT, exit, read, serix_close, serix_getpid, serix_getppid, serix_open, serix_spawn,
-	serix_wait, write};
+use ulib::{
+	STDOUT, exit, read, serix_close, serix_getpid, serix_getppid, serix_open, serix_spawn,
+	serix_wait, write,
+};
 
 /*
  * panic - User panic handler

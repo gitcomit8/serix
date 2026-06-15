@@ -10,30 +10,38 @@
  */
 
 extern crate alloc;
-use alloc::vec::Vec;
-use crate::BlockDev;
-use super::superblock::Superblock;
 use super::bgdt::BgDescTable;
+use super::superblock::Superblock;
+use crate::BlockDev;
+use alloc::vec::Vec;
 
 pub const EXT4_S_IFREG: u16 = 0x8000;
 pub const EXT4_S_IFDIR: u16 = 0x4000;
 pub const EXT4_EXTENTS_FL: u32 = 0x0008_0000;
 
 pub struct Inode {
-	pub mode:		u16,
-	pub links_count:	u16,
-	pub size:		u32,
-	pub blocks:		u32,   /* 512-byte units */
-	pub flags:		u32,
-	pub block:		[u32; 15],  /* extent tree root or direct/indirect */
-	pub ino:		u32,
+	pub mode: u16,
+	pub links_count: u16,
+	pub size: u32,
+	pub blocks: u32, /* 512-byte units */
+	pub flags: u32,
+	pub block: [u32; 15], /* extent tree root or direct/indirect */
+	pub ino: u32,
 }
 
 impl Inode {
-	pub fn is_dir(&self)		-> bool { self.mode & 0xF000 == EXT4_S_IFDIR }
-	pub fn is_file(&self)		-> bool { self.mode & 0xF000 == EXT4_S_IFREG }
-	pub fn uses_extents(&self)	-> bool { self.flags & EXT4_EXTENTS_FL != 0 }
-	pub fn size(&self)		-> usize { self.size as usize }
+	pub fn is_dir(&self) -> bool {
+		self.mode & 0xF000 == EXT4_S_IFDIR
+	}
+	pub fn is_file(&self) -> bool {
+		self.mode & 0xF000 == EXT4_S_IFREG
+	}
+	pub fn uses_extents(&self) -> bool {
+		self.flags & EXT4_EXTENTS_FL != 0
+	}
+	pub fn size(&self) -> usize {
+		self.size as usize
+	}
 
 	fn read_block_bytes(dev: &dyn BlockDev, sb: &Superblock, blk: u32) -> Vec<u8> {
 		let spb = sb.sectors_per_block();
@@ -59,39 +67,49 @@ impl Inode {
 	}
 
 	pub fn read(dev: &dyn BlockDev, sb: &Superblock, bgdt: &BgDescTable, ino: u32) -> Option<Self> {
-		let group  = sb.inode_block_group(ino) as usize;
-		let idx    = sb.inode_local_index(ino) as usize;
-		let isz    = sb.inode_size as usize;
-		let bsz    = sb.block_size();
-		let bg     = bgdt.get(group);
-		let byte_off   = idx * isz;
-		let block_idx  = byte_off / bsz;
+		let group = sb.inode_block_group(ino) as usize;
+		let idx = sb.inode_local_index(ino) as usize;
+		let isz = sb.inode_size as usize;
+		let bsz = sb.block_size();
+		let bg = bgdt.get(group);
+		let byte_off = idx * isz;
+		let block_idx = byte_off / bsz;
 		let off_in_blk = byte_off % bsz;
-		let blk_data   = Self::read_block_bytes(dev, sb, bg.inode_table + block_idx as u32);
-		if blk_data.len() < off_in_blk + 128 { return None; }
+		let blk_data = Self::read_block_bytes(dev, sb, bg.inode_table + block_idx as u32);
+		if blk_data.len() < off_in_blk + 128 {
+			return None;
+		}
 		let r = &blk_data[off_in_blk..off_in_blk + 128];
 
-		let mode        = u16::from_le_bytes([r[0],  r[1]]);
+		let mode = u16::from_le_bytes([r[0], r[1]]);
 		let links_count = u16::from_le_bytes([r[26], r[27]]);
-		let size        = u32::from_le_bytes([r[4],  r[5],  r[6],  r[7]]);
-		let blocks      = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
-		let flags       = u32::from_le_bytes([r[32], r[33], r[34], r[35]]);
-		let mut block   = [0u32; 15];
+		let size = u32::from_le_bytes([r[4], r[5], r[6], r[7]]);
+		let blocks = u32::from_le_bytes([r[28], r[29], r[30], r[31]]);
+		let flags = u32::from_le_bytes([r[32], r[33], r[34], r[35]]);
+		let mut block = [0u32; 15];
 		for i in 0..15 {
 			let base = 40 + i * 4;
-			block[i] = u32::from_le_bytes([r[base], r[base+1], r[base+2], r[base+3]]);
+			block[i] = u32::from_le_bytes([r[base], r[base + 1], r[base + 2], r[base + 3]]);
 		}
-		Some(Inode { mode, links_count, size, blocks, flags, block, ino })
+		Some(Inode {
+			mode,
+			links_count,
+			size,
+			blocks,
+			flags,
+			block,
+			ino,
+		})
 	}
 
 	pub fn write(&self, dev: &dyn BlockDev, sb: &Superblock, bgdt: &BgDescTable) {
-		let group      = sb.inode_block_group(self.ino) as usize;
-		let idx        = sb.inode_local_index(self.ino) as usize;
-		let isz        = sb.inode_size as usize;
-		let bsz        = sb.block_size();
-		let bg         = bgdt.get(group);
-		let byte_off   = idx * isz;
-		let block_idx  = byte_off / bsz;
+		let group = sb.inode_block_group(self.ino) as usize;
+		let idx = sb.inode_local_index(self.ino) as usize;
+		let isz = sb.inode_size as usize;
+		let bsz = sb.block_size();
+		let bg = bgdt.get(group);
+		let byte_off = idx * isz;
+		let block_idx = byte_off / bsz;
 		let off_in_blk = byte_off % bsz;
 		let mut blk_data = Self::read_block_bytes(dev, sb, bg.inode_table + block_idx as u32);
 		let dst = &mut blk_data[off_in_blk..off_in_blk + 128];
@@ -102,7 +120,7 @@ impl Inode {
 		dst[32..36].copy_from_slice(&self.flags.to_le_bytes());
 		for i in 0..15 {
 			let base = 40 + i * 4;
-			dst[base..base+4].copy_from_slice(&self.block[i].to_le_bytes());
+			dst[base..base + 4].copy_from_slice(&self.block[i].to_le_bytes());
 		}
 		Self::write_block_bytes(dev, sb, bg.inode_table + block_idx as u32, &blk_data);
 	}

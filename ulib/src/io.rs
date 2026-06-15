@@ -6,8 +6,8 @@
  */
 
 extern crate alloc;
-use alloc::string::String;
 use crate::{STDIN, STDOUT, read, write as sys_write};
+use alloc::string::String;
 
 /*
  * read_line - Read a line from stdin with echo

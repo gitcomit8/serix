@@ -10,8 +10,8 @@
 #![feature(abi_x86_interrupt)]
 #![no_std]
 extern crate alloc;
+pub mod block;
 pub mod console;
 pub mod pci;
-pub mod block;
 pub mod virtio;
 pub mod virtqueue;
