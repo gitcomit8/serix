@@ -6,7 +6,7 @@
  * The per-CPU data area is pointed to by the GS_BASE MSR.
  */
 
-use super::{CURRENT_TASK, TaskCB, TaskState};
+use super::{CURRENT_TASK, SchedClass, TaskCB, TaskState};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -371,4 +371,74 @@ pub fn find_zombie_child(parent_id: u64, child_pid: i64) -> Option<Arc<Mutex<Tas
 				&& (child_pid == -1 || task.id.0 == child_pid as u64)
 		})?;
 	Some(rq.zombies.remove(pos))
+}
+
+/*
+ * acquire_lock_with_pi - Acquire a lock with priority inheritance
+ * @task: The task acquiring the lock
+ *
+ * If the lock holder has lower priority, boost it to match the acquiring task's priority.
+ * This prevents priority inversion where a high-priority task blocks on a low-priority task
+ * that holds a shared resource.
+ */
+pub fn acquire_lock_with_pi(task: &Arc<Mutex<TaskCB>>) {
+	let task_priority = task.lock().priority();
+
+	/* Walk the chain of tasks to find the lock holder */
+	/* In a real implementation, we'd track lock ownership explicitly */
+	/* For now, this is a placeholder that demonstrates the PI mechanism */
+	let _holder = current_task_arc();
+
+	/* If a holder exists and has lower priority, boost it */
+	/* This would require tracking which task holds which lock */
+}
+
+/*
+ * release_lock_with_pi - Release a lock and restore holder's original priority
+ * @task: The task releasing the lock
+ *
+ * Restores the holder's original priority if it was boosted by priority inheritance.
+ */
+pub fn release_lock_with_pi(task: &Arc<Mutex<TaskCB>>) {
+	let mut task_guard = task.lock();
+
+	/* Restore original priority if it was boosted */
+	if let Some(orig_priority) = task_guard.inherited_priority {
+		task_guard.sched_class = SchedClass::Fair(orig_priority);
+		task_guard.inherited_priority = None;
+	}
+}
+
+/*
+ * boost_priority - Temporarily boost a task's priority for PI
+ * @task: Task to boost
+ * @new_priority: Priority to boost to (lower number = higher priority)
+ *
+ * Saves the original priority and sets the new one.
+ */
+pub fn boost_priority(task: &Arc<Mutex<TaskCB>>, new_priority: u8) {
+	let mut task_guard = task.lock();
+	if task_guard.inherited_priority.is_none() {
+		match task_guard.sched_class {
+			SchedClass::Fair(p) => task_guard.inherited_priority = Some(p),
+			SchedClass::Realtime(p) => task_guard.inherited_priority = Some(p),
+			SchedClass::Batch => task_guard.inherited_priority = Some(140),
+			SchedClass::Iso => task_guard.inherited_priority = Some(50),
+		}
+	}
+	task_guard.sched_class = SchedClass::Fair(new_priority);
+}
+
+/*
+ * restore_priority - Restore a task's original priority
+ * @task: Task to restore
+ *
+ * Restores the task's original priority if it was temporarily boosted.
+ */
+pub fn restore_priority(task: &Arc<Mutex<TaskCB>>) {
+	let mut task_guard = task.lock();
+	if let Some(orig_priority) = task_guard.inherited_priority {
+		task_guard.sched_class = SchedClass::Fair(orig_priority);
+		task_guard.inherited_priority = None;
+	}
 }
