@@ -269,6 +269,7 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
 		cspace: alloc::vec::Vec::new(),
+			virtual_runtime: 0,
 	};
 
 	/* 9. Initialise stdio fds */

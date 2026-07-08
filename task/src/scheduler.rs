@@ -1,11 +1,9 @@
 /*
- * scheduler.rs - Run Queue and Scheduler Infrastructure
+ * scheduler.rs - Per-CPU Run Queue and Scheduler Infrastructure
  *
- * Provides the RunQueue type for managing runnable tasks on a single CPU
- * This is infrastructure only - timer wiring and context switch integration
- * will happen later
- *
- * TODO(SMP): Replace global RunQueue with per-CPU run queues indexed via GS_BASE
+ * Each logical processor maintains its own run queue, eliminating
+ * cross-core lock contention and enabling true SMP scheduling.
+ * The per-CPU data area is pointed to by the GS_BASE MSR.
  */
 
 use super::{CURRENT_TASK, TaskCB, TaskState};
@@ -18,34 +16,27 @@ use spin::{Mutex, Once};
 /*
  * TIME_SLICE_TICKS - Number of timer ticks per scheduling quantum
  *
- * Each task runs for this many ticks before the scheduler is invoked.
- * At ~625 Hz timer frequency (100_00 initial count / 16 divider),
+ * At ~625 Hz timer frequency (100_000 initial count / 16 divider),
  * 10 ticks = 16 ms per time slice.
- *
- * TODO(SMP): May need per-CPU adjustment for load balancing
  */
 pub const TIME_SLICE_TICKS: u64 = 10;
 
 /*
- * struct RunQueue - Single-CPU run queue for ready tasks
- * @queue: Deque fo tasks ready to run (front = next to run)
- * @current: Currently running task (None during early boot)
+ * struct RunQueue - Per-CPU run queue for ready tasks
+ * @cpu_id: ID of the CPU that owns this queue
+ * @queue: Deque of tasks ready to run (front = next to run)
+ * @current: Currently running task on this CPU
+ * @zombies: Tasks that have exited but not yet reaped by wait4
  *
  * Holds Arc<Mutex<TaskCB>> so tasks have stable heap addresses
  * regardless of queue reordering. The Mutex allows state mutation
- * (Ready <-> Running) under the run queue lock
- *
- * TODO(SMP): Per-CPU run queues with GS_BASE
+ * (Ready <-> Running) under the run queue lock.
  */
 pub struct RunQueue {
 	queue: VecDeque<Arc<Mutex<TaskCB>>>,
 	pub current: Option<Arc<Mutex<TaskCB>>>,
-	/* zombies - Tasks that have exited but not yet been reaped by wait4 */
 	pub zombies: Vec<Arc<Mutex<TaskCB>>>,
 }
-
-/* Global single-CPU run queue */
-static RUN_QUEUE: Once<Mutex<RunQueue>> = Once::new();
 
 impl RunQueue {
 	/*
@@ -66,7 +57,7 @@ impl RunQueue {
 	 * @task: Arc-wrapped task to enqueue
 	 *
 	 * Sets task state to Ready before inserting. The task will be
-	 * selected by dequeue() in FIFO order
+	 * selected by dequeue() in FIFO order.
 	 *
 	 * Safety: Caller must hold RunQueue lock
 	 */
@@ -99,6 +90,7 @@ impl RunQueue {
 	pub fn peek(&self) -> Option<&Arc<Mutex<TaskCB>>> {
 		self.queue.front()
 	}
+
 	/*
 	 * is_empty - Check whether the run queue has no tasks
 	 *
@@ -118,37 +110,70 @@ impl RunQueue {
 	}
 }
 
+/* Per-CPU run queue array, one entry per CPU (max 16) */
+static PER_CPU_RUN_QUEUES: Once<[Once<Mutex<RunQueue>>; 16]> = Once::new();
+
+/* Per-CPU data area (set by kernel during init) */
+static mut PER_CPU_DATA_BASE: usize = 0;
+
 /*
- * init - Initialize the global run queue
+ * init - Initialize per-CPU scheduling infrastructure
+ * @per_cpu_data_base: Virtual address of the per-CPU data array
+ * @cpu_id: ID of the current CPU (0 = BSP)
  *
- * Must be called once during kernel startup before any tasks are enqueued.
- * Subsequent calls are no-ops (spin::Once guarantees single init).
+ * Sets up the per-CPU run queue and records the PerCpuData base
+ * address so context switch code can find it via GS_BASE.
  */
-pub fn init() {
-	RUN_QUEUE.call_once(|| Mutex::new(RunQueue::new()));
+pub fn init(per_cpu_data_base: usize, cpu_id: u8) {
+	PER_CPU_RUN_QUEUES.call_once(|| {
+		let mut arr = [const { Once::new() }; 16];
+		arr[cpu_id as usize].call_once(|| Mutex::new(RunQueue::new()));
+		arr
+	});
+	unsafe {
+		PER_CPU_DATA_BASE = per_cpu_data_base;
+		// Point PerCpuData.run_queue (offset 40) at the per-CPU Mutex<RunQueue>
+		let queues_arr = PER_CPU_RUN_QUEUES.get().unwrap();
+		let rq_ptr = &*queues_arr[cpu_id as usize].get().unwrap() as *const Mutex<RunQueue> as usize;
+		core::ptr::write_volatile((per_cpu_data_base + 40) as *mut usize, rq_ptr);
+	}
 }
 
 /*
- * global - Get reference to the global run queue
+ * per_cpu_data_base - Read the per-CPU data area base address
  *
- * Panics if init() has not been called.
- *
- * Return: Reference to the global Mutex<RunQueue>
+ * Return: Virtual address of PerCpuData, or 0 if not initialized
  */
-pub fn global() -> &'static Mutex<RunQueue> {
-	RUN_QUEUE
+pub fn per_cpu_data_base() -> usize {
+	unsafe { PER_CPU_DATA_BASE }
+}
+
+/*
+ * get_per_cpu_run_queue - Get reference to per-CPU run queue
+ * @cpu_id: CPU ID
+ *
+ * Panics if init_per_cpu() has not been called for this CPU.
+ *
+ * Return: Reference to the per-CPU Mutex<RunQueue>
+ */
+pub fn get_per_cpu_run_queue(cpu_id: u8) -> &'static Mutex<RunQueue> {
+	let once_ref = PER_CPU_RUN_QUEUES
 		.get()
-		.expect("RunQueue not initialized — call scheduler::init() first")
+		.expect("Per-CPU run queues not initialized — call init_per_cpu() first");
+	let once_inner = &once_ref[cpu_id as usize];
+	once_inner.get().expect("Per-CPU run queue not initialized — call init_per_cpu() for CPU")
 }
 
 /*
- * enqueue_task - Enqueue a task into the global run queue
+ * enqueue_task - Enqueue a task into the current CPU's run queue
  * @task: Arc-wrapped task to enqueue
  *
- * Convenience wrapper around global().lock().enqueue().
+ * Convenience wrapper around get_per_cpu_run_queue().lock().enqueue().
  */
 pub fn enqueue_task(task: Arc<Mutex<TaskCB>>) {
-	global().lock().enqueue(task);
+	get_per_cpu_run_queue(super::scheduler::current_cpu_id())
+		.lock()
+		.enqueue(task);
 }
 
 /*
@@ -162,7 +187,22 @@ pub fn enqueue_task(task: Arc<Mutex<TaskCB>>) {
  *         lock is already held.
  */
 pub fn wake_task(task: Arc<Mutex<TaskCB>>) {
-	global().lock().enqueue(task);
+	get_per_cpu_run_queue(super::scheduler::current_cpu_id())
+		.lock()
+		.enqueue(task);
+}
+
+/*
+ * current_cpu_id - Read the LAPIC ID of the current CPU via MSR 0x1B
+ *
+ * Return: CPU ID as u8
+ */
+pub fn current_cpu_id() -> u8 {
+	let mut apic_id: u64;
+	unsafe {
+		core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_id, lateout("edx") _);
+	}
+	(apic_id & 0xFF) as u8
 }
 
 /*
@@ -183,7 +223,7 @@ pub fn current_task_id() -> u64 {
  *         RunQueue lock is already held.
  */
 pub fn current_task_arc() -> Option<Arc<Mutex<TaskCB>>> {
-	global().lock().current.clone()
+	get_per_cpu_run_queue(current_cpu_id()).lock().current.clone()
 }
 
 /*
@@ -199,11 +239,11 @@ pub fn current_task_arc() -> Option<Arc<Mutex<TaskCB>>> {
  *         Caller must ensure the task is eventually re-enqueued or destroyed.
  */
 pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
-	global().lock().current.take()
+	get_per_cpu_run_queue(current_cpu_id()).lock().current.take()
 }
 
 /*
- * pick_next_task() - Select the next task to run from the run queue
+ * pick_next_task() - Select the next task to run from the per-CPU run queue
  *
  * Dequeues the front task and transitions it to Running state.
  * Updates CURRENT_TASK atomic with the selected task's ID.
@@ -214,30 +254,32 @@ pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
  * Safety: Must not be called concurrently - single-CPU invariant
  */
 pub fn pick_next_task() -> Option<Arc<Mutex<TaskCB>>> {
-	let mut rq = global().lock();
+	let cpu_id = current_cpu_id();
+	let mut rq = get_per_cpu_run_queue(cpu_id).lock();
 	let next = rq.dequeue()?;
 	{
 		let mut task = next.lock();
 		task.set_state(TaskState::Running);
-		CURRENT_TASK.store(task.id.0, Ordering::Release)
+		CURRENT_TASK.store(task.id.0, Ordering::Release);
 	}
 	rq.current = Some(Arc::clone(&next));
 	Some(next)
 }
 
 /*
-   reschedule_current - Re-enqueue the current task at the back of the queue
-
-   Moves the running task back to Ready state and places it at the tail
-   of the run queue, implementing round-robin fairness
-
-   Called before pick_next_task() to yield the current time slice
-
-   Safety: Must not be called if no task is currently running
-		   Must be called with interrupts disabled
-*/
+ * reschedule_current - Re-enqueue the current task at the back of the queue
+ *
+ * Moves the running task back to Ready state and places it at the tail
+ * of the per-CPU run queue, implementing round-robin fairness.
+ *
+ * Called before pick_next_task() to yield the current time slice.
+ *
+ * Safety: Must not be called if no task is currently running.
+ *         Must be called with interrupts disabled.
+ */
 pub fn reschedule_current() {
-	let mut rq = global().lock();
+	let cpu_id = current_cpu_id();
+	let mut rq = get_per_cpu_run_queue(cpu_id).lock();
 	if let Some(task) = rq.current.take() {
 		/* Skip re-enqueue for the boot placeholder (kstack == 0) */
 		let dominated = task.lock().kstack.as_u64() == 0;
@@ -248,53 +290,55 @@ pub fn reschedule_current() {
 }
 
 /*
-   schedule - Yield current task and switch to the next runnable task
-
-   This is the main scheduling entry point. It re-enqueues the current
-   task at the back of the run queue, then selects the next task.
-   If no other task is available, the current task continues.
-
-   NOTE: Context switch is NOT performed here - that is wired later
-		 THis function establishes the task selection logic only.
-
-   Return: Some(next_task) selected for execution, None if queue was empty
-		   before re-enqueue
-
-   Safety: Must be called with interrupts disabled (timer IRQ handler context)
-*/
+ * schedule - Yield current task and switch to the next runnable task
+ *
+ * This is the main scheduling entry point. It re-enqueues the current
+ * task at the back of the per-CPU run queue, then selects the next task.
+ * If no other task is available, the current task continues.
+ *
+ * NOTE: Context switch is NOT performed here - that is wired later.
+ *       This function establishes the task selection logic only.
+ *
+ * Return: Some(next_task) selected for execution, None if queue was empty
+ *         before re-enqueue
+ *
+ * Safety: Must be called with interrupts disabled (timer IRQ handler context)
+ */
 pub fn schedule() -> Option<Arc<Mutex<TaskCB>>> {
 	reschedule_current();
 	pick_next_task()
 }
 
 /*
-   global_or_none - Get global RunQueue reference without panicking
-
-   Return: Some(&Mutex<RunQueue>) if initialized, None if init() not yet called
-*/
-pub fn global_or_none() -> Option<&'static Mutex<RunQueue>> {
-	RUN_QUEUE.get()
+ * global_or_none - Get per-CPU RunQueue reference without panicking
+ *
+ * Return: Some(&Mutex<RunQueue>) if initialized for this CPU, None otherwise
+ */
+pub fn global_or_none(cpu_id: u8) -> Option<&'static Mutex<RunQueue>> {
+	let arr = PER_CPU_RUN_QUEUES.get()?;
+	let once_ref = arr.get(cpu_id as usize)?;
+	once_ref.get()
 }
 
 /*
  * push_zombie - Move a task to the zombie list after exit
  * @task: Arc to the exited task
- *
- * Zombies are held here until a parent calls wait4 to reap them.
  */
 pub fn push_zombie(task: Arc<Mutex<TaskCB>>) {
-	global().lock().zombies.push(task);
+	get_per_cpu_run_queue(current_cpu_id()).lock().zombies.push(task);
 }
 
 /*
  * find_task_by_id - Look up any live task by numeric ID
  * @id: TaskId value to find
  *
- * Searches the current task and the run queue. Does not search zombies.
+ * Searches the current task and the run queue on the current CPU.
+ * Does not search zombies.
  * Return: Some(Arc) if found, None otherwise.
  */
 pub fn find_task_by_id(id: u64) -> Option<Arc<Mutex<TaskCB>>> {
-	let rq = global().lock();
+	let cpu_id = current_cpu_id();
+	let rq = get_per_cpu_run_queue(cpu_id).lock();
 	if let Some(ref current) = rq.current {
 		if current.lock().id.0 == id {
 			return Some(Arc::clone(current));
@@ -316,10 +360,15 @@ pub fn find_task_by_id(id: u64) -> Option<Arc<Mutex<TaskCB>>> {
  * Return: Some(Arc) of the zombie TaskCB if found and removed, None otherwise.
  */
 pub fn find_zombie_child(parent_id: u64, child_pid: i64) -> Option<Arc<Mutex<TaskCB>>> {
-	let mut rq = global().lock();
-	let pos = rq.zombies.iter().position(|z| {
-		let task = z.lock();
-		task.parent_id == parent_id && (child_pid == -1 || task.id.0 == child_pid as u64)
-	})?;
+	let cpu_id = current_cpu_id();
+	let mut rq = get_per_cpu_run_queue(cpu_id).lock();
+	let pos = rq
+		.zombies
+		.iter()
+		.position(|z| {
+			let task = z.lock();
+			task.parent_id == parent_id
+				&& (child_pid == -1 || task.id.0 == child_pid as u64)
+		})?;
 	Some(rq.zombies.remove(pos))
 }

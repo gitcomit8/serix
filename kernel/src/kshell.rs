@@ -535,6 +535,7 @@ pub fn spawn_kshell() -> Result<u64, &'static str> {
 		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
 		cspace: alloc::vec::Vec::new(),
+			virtual_runtime: 0,
 	};
 
 	task::scheduler::enqueue_task(alloc::sync::Arc::new(spin::Mutex::new(tcb)));
