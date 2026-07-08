@@ -76,7 +76,7 @@ disk:
 		echo "disk.img already ext2, skipping format"; \
 	fi
 
-QEMU_COMMON = -m 4G -boot d -cdrom $(ISO) \
+QEMU_COMMON = -m 4G -smp 4 -boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
 	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off
 
