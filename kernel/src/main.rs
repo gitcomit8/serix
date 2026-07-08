@@ -353,7 +353,7 @@ pub extern "C" fn _start() -> ! {
 	});
 
 	unsafe {
-		gdt::init_per_cpu();
+		gdt::init_per_cpu(0); /* BSP is CPU 0 */
 		hal::cpu::enable_sse();
 		/* Enable APIC and disable legacy PIC */
 		apic::enable();
@@ -542,7 +542,9 @@ pub extern "C" fn _start() -> ! {
 
 	/* Initialize global task scheduler */
 	Scheduler::init_global();
-	task::scheduler::init();
+	unsafe {
+		task::scheduler::init(core::ptr::addr_of!(gdt::PER_CPU_DATA) as usize, 0);
+	}
 	serial_println!("Kernel task registered");
 	fb_println!("Scheduler: initialized");
 
@@ -574,7 +576,7 @@ pub extern "C" fn _start() -> ! {
 		ext4_reply_port.id()
 	);
 
-	task::scheduler::global().lock().current = Some(boot_task);
+	task::scheduler::get_per_cpu_run_queue(0).lock().current = Some(boot_task);
 
 	/* Spawn the ext4 filesystem daemon */
 	match crate::process::spawn_user_process("/ext4d", 0) {

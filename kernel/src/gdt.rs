@@ -123,26 +123,63 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
 	}
 }
 
+pub const PER_CPU_DATA_MAX_CPUS: usize = 16;
+
 #[repr(C)]
 pub struct PerCpuData {
-	pub scratch: u64,         // 0x00
-	pub kernel_stack: u64,    // 0x08
-	pub user_stack_save: u64, // 0x10
+	pub scratch: u64,
+	pub kernel_stack: u64,
+	pub user_stack_save: u64,
+	pub cpu_id: u8,
+	pub current_task_id: u64,
+	pub run_queue: *const u8, // Pointer to per-CPU RunQueue
+	pub tss_rsp0_save: u64,   // Save area for old TSS.RSP0
 }
 
-static mut PER_CPU_DATA: PerCpuData = PerCpuData {
-	scratch: 0,
-	kernel_stack: 0,
-	user_stack_save: 0,
+impl PerCpuData {
+	const CPU_ID_OFFSET: u64 = 24;
+	const CURRENT_TASK_ID_OFFSET: u64 = 32;
+	const RUN_QUEUE_OFFSET: u64 = 40;
+	const TSS_RSP0_SAVE_OFFSET: u64 = 48;
+}
+
+pub static mut PER_CPU_DATA: [PerCpuData; PER_CPU_DATA_MAX_CPUS] = {
+	const INIT: PerCpuData = PerCpuData {
+		scratch: 0,
+		kernel_stack: 0,
+		user_stack_save: 0,
+		cpu_id: 0,
+		current_task_id: 0,
+		run_queue: core::ptr::null(),
+		tss_rsp0_save: 0,
+	};
+	[INIT; PER_CPU_DATA_MAX_CPUS]
 };
 
-pub unsafe fn init_per_cpu() {
-	let addr = core::ptr::addr_of!(PER_CPU_DATA) as u64;
-	KernelGsBase::write(VirtAddr::new(addr));
+pub fn per_cpu_data(cpu_id: usize) -> &'static mut PerCpuData {
+	unsafe { &mut PER_CPU_DATA[cpu_id] }
 }
+
+pub unsafe fn init_per_cpu(cpu_id: usize) {
+	PER_CPU_DATA[cpu_id].cpu_id = cpu_id as u8;
+	let addr = core::ptr::addr_of!(PER_CPU_DATA[cpu_id]) as u64;
+	if cpu_id == 0 {
+		KernelGsBase::write(VirtAddr::new(addr));
+	}
+}
+
+/// Read LAPIC ID of the current CPU via MSR 0x1B.
+/// Returns the APIC ID which matches BSP/AP numbering.
+pub unsafe fn current_cpu_id() -> u8 {
+	let mut apic_id: u64;
+	core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_id, lateout("edx") _);
+	(apic_id & 0xFF) as u8
+}
+
 
 pub fn set_syscall_stack(stack_top: VirtAddr) {
 	unsafe {
-		PER_CPU_DATA.kernel_stack = stack_top.as_u64();
+		let cpu_id = current_cpu_id() as usize;
+		PER_CPU_DATA[cpu_id].kernel_stack = stack_top.as_u64();
 	}
 }
