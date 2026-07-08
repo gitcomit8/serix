@@ -15,6 +15,7 @@ mod gdt;
 mod kshell;
 pub mod pipe;
 pub mod process;
+pub mod smp;
 pub mod stdio;
 mod syscall;
 
@@ -605,6 +606,23 @@ pub extern "C" fn _start() -> ! {
 	unsafe {
 		/* Initialize timer hardware — starts preemptive scheduling */
 		apic::timer::init_hardware();
+
+		/* Wake Application Processors (APs) for SMP */
+		let bsp_id = apic::smp::read_apic_id();
+		apic::smp::set_bsp_id(bsp_id);
+		serial_println!("BSP LAPIC ID: {}", bsp_id);
+
+		/* Enumerate and wake APs */
+		let ap_count = apic::smp::enumerate_apics();
+		if ap_count > 0 {
+			serial_println!("Waking {} AP(s)...", ap_count);
+			for ap_id in 0..ap_count {
+				apic::smp::wakeup_ap(ap_id as u8, smp::AP_BOOTSTRAP_ADDR);
+			}
+			fb_println!("SMP: {} AP(s) woken", ap_count);
+		} else {
+			fb_println!("SMP: No APs detected (single-core mode)");
+		}
 	}
 	fb_println!("Timer: LAPIC ~625 Hz started");
 	fb_println!("");

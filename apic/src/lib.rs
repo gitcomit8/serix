@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use hal::serial_println;
 
 pub mod ioapic;
+pub mod smp;
 pub mod timer;
 
 /*
