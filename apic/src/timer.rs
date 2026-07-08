@@ -45,11 +45,16 @@ extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
  * @_stack_frame: Interrupt stack frame (unused)
  *
  * Preempts the current task and sends EOI to LAPIC.
+ * Updates virtual runtime of the preempted task before scheduling.
  */
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
 	let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
 	if ticks % TIME_SLICE_TICKS == 0 {
+		/* Update virtual runtime of the preempted task */
+		if let Some(arc) = task::scheduler::current_task_arc() {
+			task::wfq::update_virtual_runtime(&mut *arc.lock());
+		}
 		task::schedule();
 	}
 	// EOI after scheduler - not before - so the CPU doesn't accept
