@@ -19,6 +19,7 @@ pub mod yield_now;
 use crate::async_task::AsyncTask;
 use crate::context_switch::context_switch;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
@@ -284,6 +285,10 @@ pub struct TaskCB {
 	pub cspace: Vec<capability::CapabilityHandle>,
 	/* virtual_runtime: Accumulated virtual CPU time (ns) for WFQ */
 	pub virtual_runtime: u64,
+	/* inherited_priority: Temporarily boosted priority from priority inheritance */
+	pub inherited_priority: Option<u8>,
+	/* blocked_on: Task we're blocked on (for priority inheritance) */
+	pub blocked_on: Option<Arc<Mutex<TaskCB>>>,
 }
 
 /*
@@ -353,6 +358,8 @@ impl TaskCB {
 			waiting_for_child: false,
 			cspace: Vec::new(),
 			virtual_runtime: 0,
+			inherited_priority: None,
+			blocked_on: None,
 		}
 	}
 
@@ -377,6 +384,8 @@ impl TaskCB {
 			waiting_for_child: false,
 			cspace: Vec::new(),
 			virtual_runtime: 0,
+			inherited_priority: None,
+			blocked_on: None,
 		}
 	}
 

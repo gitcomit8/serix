@@ -168,6 +168,10 @@ impl Port {
 	 * blocks it, and retries upon waking. Handles spurious wakes by
 	 * looping until a message is actually available.
 	 *
+	 * With priority inheritance: if a previous sender is identified via
+	 * the message header, the sender's priority is boosted to match the
+	 * blocking receiver's priority to prevent priority inversion.
+	 *
 	 * Return: The received Message
 	 *
 	 * Safety: Must be called with interrupts disabled.
@@ -177,6 +181,17 @@ impl Port {
 		loop {
 			/* Fast path: message already available */
 			if let Some(msg) = self.queue.lock().pop_front() {
+				/* Apply priority inheritance to sender if available */
+				if msg.sender_id != 0 {
+					if let Some(sender) = task::scheduler::find_task_by_id(msg.sender_id) {
+						let receiver = task::current_task_arc().unwrap();
+						let recv_prio = receiver.lock().priority();
+						let sender_prio = sender.lock().priority();
+						if sender_prio < recv_prio {
+							task::scheduler::boost_priority(&sender, recv_prio);
+						}
+					}
+				}
 				return msg;
 			}
 
