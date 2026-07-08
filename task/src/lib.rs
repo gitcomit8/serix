@@ -13,6 +13,7 @@ pub mod context_switch;
 pub mod executor;
 pub mod scheduler;
 pub mod waker;
+pub mod wfq;
 pub mod yield_now;
 
 use crate::async_task::AsyncTask;
@@ -281,6 +282,8 @@ pub struct TaskCB {
 	pub children: Vec<u64>,
 	pub waiting_for_child: bool,
 	pub cspace: Vec<capability::CapabilityHandle>,
+	/* virtual_runtime: Accumulated virtual CPU time (ns) for WFQ */
+	pub virtual_runtime: u64,
 }
 
 /*
@@ -349,6 +352,7 @@ impl TaskCB {
 			children: Vec::new(),
 			waiting_for_child: false,
 			cspace: Vec::new(),
+			virtual_runtime: 0,
 		}
 	}
 
@@ -372,6 +376,7 @@ impl TaskCB {
 			children: Vec::new(),
 			waiting_for_child: false,
 			cspace: Vec::new(),
+			virtual_runtime: 0,
 		}
 	}
 
@@ -628,11 +633,12 @@ impl Scheduler {
 		 and use, and no other CPU can touch the queue
 */
 pub fn schedule() {
-	use crate::scheduler::{global_or_none, pick_next_task, reschedule_current};
+	use crate::scheduler::{current_cpu_id, global_or_none, pick_next_task, reschedule_current};
 	use alloc::sync::Arc;
 	use spin::Mutex;
 
-	let rq_ref = match global_or_none() {
+	let cpu_id = current_cpu_id();
+	let rq_ref = match global_or_none(cpu_id) {
 		Some(r) => r,
 		None => return,
 	};
@@ -727,7 +733,7 @@ pub fn block_current_and_switch() {
 		Some(t) => t,
 		None => {
 			/* No other task — put ourselves back as current */
-			crate::scheduler::global().lock().current = Some(old_arc);
+			crate::scheduler::get_per_cpu_run_queue(crate::scheduler::current_cpu_id()).lock().current = Some(old_arc);
 			return;
 		}
 	};
