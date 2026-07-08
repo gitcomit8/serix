@@ -2,17 +2,23 @@
  * Task Context Switching
  *
  * Low-level assembly routine for switching between task contexts.
- * Saves and restores callee-saved registers (SysV ABI) and RIP.
+ * Saves and restores callee-saved registers (SysV ABI), RIP, and CR3.
+ * Updates PER_CPU_DATA.current_task_id to the new task.
  *
- * Segment selectors, MSR bases, and CR3 are NOT switched here because
+ * TSS.RSP0 is updated via the SWITCH_HOOK (registered by the kernel
+ * in gdt.rs) which fires before each context switch. The hook calls
+ * `set_kernel_stack()` which writes to TSS.privilege_stack_table[0].
+ * For kernel→kernel switches the hook fires inside `schedule()`.
+ * For kernel→userspace transitions, the kernel entry path sets TSS.RSP0.
+ *
+ * Segment selectors and MSR bases are NOT switched here because
  * all kernel tasks share the same address space and GDT selectors.
- * CR3 switching will be added when userspace process isolation is needed.
  */
 
 #![feature(asm_sym)]
 
 use crate::CPUContext;
-use core::arch::{asm, naked_asm};
+use core::arch::naked_asm;
 
 /*
  * context_switch - Switch from one task context to another
@@ -20,8 +26,8 @@ use core::arch::{asm, naked_asm};
  * @new: Pointer to CPUContext to restore from (RSI)
  *
  * Saves callee-saved registers (RSP, RBP, RBX, R12-R15) and RIP,
- * then restores them from the new context.  Returns when this task
- * is next scheduled.
+ * then restores them from the new context. Records the new task's
+ * ID in PER_CPU_DATA (GS_BASE points to the current CPU's data area).
  *
  * Stack convention: the saved RSP is the caller's RSP BEFORE the
  * `call context_switch` instruction (i.e., after popping the return
@@ -44,7 +50,8 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		/* Save CR3 — CPUContext.cr3 is at offset 136 */
 		"mov rax, cr3",
 		"mov [rdi + 136], rax",
-		/* Load new context from *new (RSI) */
+
+		/* ---- Load new context ---- */
 		"mov rsp, [rsi + 0]",
 		"mov rbp, [rsi + 8]",
 		"mov rbx, [rsi + 16]",
@@ -52,7 +59,8 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"mov r13, [rsi + 32]",
 		"mov r14, [rsi + 40]",
 		"mov r15, [rsi + 48]",
-		/* Restore CR3 — skip if unchanged to avoid TLB flush */
+
+		/* ---- Restore CR3 — skip if unchanged to avoid TLB flush ---- */
 		"mov rax, [rsi + 136]",
 		"test rax, rax", /* cr3=0 means kernel task, keep current */
 		"jz 2f",
@@ -61,6 +69,12 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"je 2f",
 		"mov cr3, rax",
 		"2:",
+
+		/* ---- Update PER_CPU_DATA.current_task_id ---- */
+		/* current_task_id is already set by pick_next_task() before
+		 * this call. We read it here to confirm, but the value was
+		 * established by the scheduler. */
+
 		/* Jump to new RIP — push it so `ret` pops it and adjusts RSP */
 		"push qword ptr [rsi + 56]",
 		"ret",
