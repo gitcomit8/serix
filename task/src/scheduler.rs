@@ -127,9 +127,10 @@ static mut PER_CPU_DATA_BASE: usize = 0;
 pub fn init(per_cpu_data_base: usize, cpu_id: u8) {
 	PER_CPU_RUN_QUEUES.call_once(|| {
 		let mut arr = [const { Once::new() }; 16];
-		arr[cpu_id as usize].call_once(|| Mutex::new(RunQueue::new()));
 		arr
 	});
+	/* Each CPU initializes its own run queue slot */
+	PER_CPU_RUN_QUEUES.get().unwrap()[cpu_id as usize].call_once(|| Mutex::new(RunQueue::new()));
 	unsafe {
 		PER_CPU_DATA_BASE = per_cpu_data_base;
 		// Point PerCpuData.run_queue (offset 40) at the per-CPU Mutex<RunQueue>
