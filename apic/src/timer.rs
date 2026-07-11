@@ -94,6 +94,25 @@ pub unsafe fn init_hardware() {
 }
 
 /*
+ * mask_timer - Mask the APIC timer interrupt
+ *
+ * Sets bit 16 in the LVT timer register to disable timer interrupts.
+ * Used on APs before init to prevent premature timer interrupts.
+ */
+pub unsafe fn mask_timer() {
+	lapic_reg(0x350).write_volatile(0x10000); /* Mask bit */
+}
+
+/*
+ * unmask_timer - Unmask the APIC timer interrupt
+ *
+ * Clears bit 16 in the LVT timer register to enable timer interrupts.
+ */
+pub unsafe fn unmask_timer() {
+	lapic_reg(0x350).write_volatile(TIMER_VECTOR as u32 | 0x20000);
+}
+
+/*
  * ticks - Get current tick count
  *
  * Returns the number of timer ticks since boot.
