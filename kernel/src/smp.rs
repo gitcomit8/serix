@@ -1,23 +1,31 @@
 /*
  * SMP (Symmetric Multiprocessing) Support
  *
- * Provides support for bringing up Application Processors (APs) via the
- * INIT-SIPI-SIPI sequence. Each AP is initialized independently with its
- * own per-CPU data, GDT, IDT, and scheduler context.
+ * Provides synchronization primitives for AP boot management.
+ * The AP_READY_PTR flag signals to AP callbacks that BSP initialization
+ * is complete and they may proceed with per-CPU setup.
  */
 
-/* Physical address where the AP bootstrap code is loaded */
-pub const AP_BOOTSTRAP_ADDR: u64 = 0x1000;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/* Signal to APs that BSP init is complete */
+pub static AP_READY_PTR: AtomicBool = AtomicBool::new(false);
 
 /*
- * wakeup_all_aps - Wake all detected APs
- *
- * Iterates over all detected APs and sends the INIT-SIPI-SIPI sequence.
- * The AP bootstrap code at AP_BOOTSTRAP_ADDR is loaded into low memory.
+ * set_ap_ready - Mark a specific AP as initialized
+ * @id: LAPIC ID of the AP
  */
-pub unsafe fn wakeup_all_aps() {
-	let ap_count = apic::smp::enumerate_apics();
-	for ap_id in 0..ap_count {
-		apic::smp::wakeup_ap(ap_id as u8, AP_BOOTSTRAP_ADDR);
-	}
+pub fn set_ap_ready(id: u8) {
+	/* Currently unused — APs self-report via the callback */
+	let _ = id;
+}
+
+/*
+ * bsp_signal_aps - Signal all APs that init is complete
+ *
+ * Called by the BSP after all kernel subsystems are initialized.
+ * APs waiting on AP_READY_PTR will proceed.
+ */
+pub fn bsp_signal_aps() {
+	AP_READY_PTR.store(true, Ordering::Release);
 }
