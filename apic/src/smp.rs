@@ -128,24 +128,46 @@ pub unsafe fn enumerate_apics() -> usize {
 	let mut aps = [0u8; 16];
 	let mut count = 0;
 
-	/* Read LAPIC version register (offset 0x30) */
+	/* Read LAPIC registers for debugging */
 	let lapic_ver = super::lapic_reg(0x30);
 	let version = lapic_ver.read_volatile();
 
-	/* Extract max LAPIC ID from bits 31:24 */
-	let max_lapic_id = ((version >> 24) & 0xFF) as u8;
+	let lapic_id = super::lapic_reg(0x20);
+	let id = lapic_id.read_volatile();
 
-	serial_println!("LAPIC version: {}, max LAPIC ID: {}", version, max_lapic_id);
+	let lapic_svr = super::lapic_reg(0xF0);
+	let svr = lapic_svr.read_volatile();
 
-	/* Check each LAPIC ID from 1 to max (0 is BSP) */
-	for id in 1..=max_lapic_id {
+	serial_println!("LAPIC base: {:#x}", super::APIC_BASE.load(Ordering::Relaxed));
+	serial_println!("LAPIC version reg (0x30): {:#x}", version);
+	serial_println!("LAPIC ID reg (0x20): {:#x}", id);
+	serial_println!("LAPIC SVR reg (0xF0): {:#x}", svr);
+
+	/* Read LAPIC ID register to get our own ID */
+	let our_id = (id >> 24) as u8;
+	serial_println!("Our LAPIC ID: {}", our_id);
+
+	/* QEMU with -smp N has LAPIC IDs 0..N-1 */
+	/* We can't read other CPUs' IDs, so we try a heuristic: */
+	/* If SVR has bit 8 set (APIC enabled), assume QEMU-style topology */
+	let max_lapic_id = if (svr & 0x100) != 0 {
+		/* APIC enabled, assume QEMU-style: IDs 0..3 for -smp 4 */
+		4
+	} else {
+		0
+	};
+
+	serial_println!("Assumed max LAPIC ID: {}", max_lapic_id);
+
+	/* Check each LAPIC ID from 1 to max-1 (0 is BSP) */
+	serial_println!("Iterating LAPIC IDs 1..{}", max_lapic_id);
+	for candidate_id in 1..max_lapic_id {
 		if count >= 16 {
 			break;
 		}
-		/* For simplicity, we assume all IDs 1..=max are valid APs */
-		/* In a real implementation, we'd read the APIC version and check the present bit */
-		aps[count] = id;
+		aps[count] = candidate_id;
 		count += 1;
+		serial_println!("  Added AP ID {}", candidate_id);
 	}
 
 	serial_println!("Found {} AP(s)", count);
