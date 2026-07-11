@@ -25,7 +25,7 @@ use drivers::virtio::VirtioBlock;
 use graphics::{draw_memory_map, fb_println, fill_screen_blue};
 use hal::serial_println;
 use limine::BaseRevision;
-use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
+use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest, MpRequest};
 use loader::LoadableSegment;
 use memory::heap::{StaticBootFrameAllocator, init_heap};
 use spin::{Mutex, Once};
@@ -44,9 +44,74 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 static FRAMEBUFFER_REQ: FramebufferRequest = FramebufferRequest::new();
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 static HHDM_REQ: HhdmRequest = HhdmRequest::new();
+static MP_REQ: MpRequest = MpRequest::new();
 
 /* Embedded ext4d daemon ELF (built before kernel via Makefile) */
 static EXT4D_ELF: &[u8] = include_bytes!("../../target/x86_64-unknown-none/release/ext4d");
+
+/*
+ * ap_init_callback - Limine callback for each AP
+ *
+ * Called by Limine when an AP is booted. Each AP reads its CPU index
+ * from the Cpu.extra field (set by BSP during registration), initializes
+ * per-CPU data, allocates a kernel stack, sets up the scheduler, and
+ * enters the idle loop.
+ *
+ * Uses AP_READY flag for synchronization: APs spin-wait until the BSP
+ * signals that kernel initialization is complete.
+ *
+ * NOTE: This function must NEVER RETURN.
+ */
+#[unsafe(no_mangle)]
+extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
+	use core::arch::asm;
+	use gdt::{init_per_cpu, set_kernel_stack, PER_CPU_DATA};
+	use task::scheduler;
+
+	/* CPU index set by BSP in Cpu.extra */
+	let cpu_id = cpu.extra.load(core::sync::atomic::Ordering::Relaxed) as usize;
+
+	/* Mask timer interrupt — prevent premature timer IRQ before init complete */
+	unsafe { apic::timer::mask_timer() };
+
+	/* Wait for BSP to signal kernel init is complete */
+	while !unsafe { smp::AP_READY_PTR.load(core::sync::atomic::Ordering::Acquire) } {
+		core::hint::spin_loop();
+	}
+
+	/* Initialize per-CPU data */
+	unsafe {
+		init_per_cpu(cpu_id);
+	}
+
+	/* Allocate a kernel stack for this AP */
+	let stack_top = memory::kstack::alloc_kernel_stack(4096)
+		.expect("Failed to allocate AP kernel stack");
+
+	/* Set kernel stack and TSS.RSP0 */
+	set_kernel_stack(stack_top);
+
+	/* Initialize scheduler for this CPU */
+	unsafe {
+		scheduler::init(core::ptr::addr_of!(PER_CPU_DATA) as usize, cpu_id as u8);
+	}
+
+	/* Enable interrupts for this AP */
+	x86_64::instructions::interrupts::enable();
+
+	/* Unmask timer interrupt — now safe to receive timer IRQs */
+	unsafe { apic::timer::unmask_timer() };
+
+	/* Mark this AP as ready in the SMP module */
+	unsafe { smp::set_ap_ready(cpu_id as u8) };
+
+	serial_println!("AP {} initialized, entering idle loop", cpu_id);
+
+	/* Enter idle loop — timer interrupts drive preemptive scheduling */
+	loop {
+		x86_64::instructions::hlt();
+	}
+}
 
 /*
  * panic - Kernel panic handler
@@ -607,23 +672,36 @@ pub extern "C" fn _start() -> ! {
 		/* Initialize timer hardware — starts preemptive scheduling */
 		apic::timer::init_hardware();
 
-		/* Wake Application Processors (APs) for SMP */
-		let bsp_id = apic::smp::read_apic_id();
-		apic::smp::set_bsp_id(bsp_id);
-		serial_println!("BSP LAPIC ID: {}", bsp_id);
+		/* Get CPU count from Limine MP response and register AP callback */
+		if let Some(mp_response) = MP_REQ.get_response() {
+			let total_cpus = mp_response.cpus().len();
+			let bsp_id = apic::smp::read_apic_id();
+			serial_println!("BSP LAPIC ID: {}, Total CPUs: {}", bsp_id, total_cpus);
 
-		/* Enumerate and wake APs */
-		let ap_count = apic::smp::enumerate_apics();
-		if ap_count > 0 {
-			serial_println!("Waking {} AP(s)...", ap_count);
-			for ap_id in 0..ap_count {
-				apic::smp::wakeup_ap(ap_id as u8, smp::AP_BOOTSTRAP_ADDR);
+			/* Write ap_init_callback to each AP's goto_address, set CPU index in extra */
+			for (i, cpu) in mp_response.cpus().iter().enumerate() {
+				if i == 0 {
+					/* BSP — skip, BSP is already executing */
+					continue;
+				}
+				cpu.extra.store(i as u64, core::sync::atomic::Ordering::Relaxed);
+				cpu.goto_address.write(ap_init_callback);
 			}
-			fb_println!("SMP: {} AP(s) woken", ap_count);
+
+			if total_cpus > 1 {
+				fb_println!("SMP: {} CPUs detected (Limine MP)", total_cpus);
+			} else {
+				fb_println!("SMP: Single-core mode");
+			}
 		} else {
-			fb_println!("SMP: No APs detected (single-core mode)");
+			serial_println!("No MP response — single-core mode");
+			fb_println!("SMP: No MP response (single-core mode)");
 		}
 	}
+
+	/* Signal APs that BSP init is complete — they will proceed with per-CPU setup */
+	smp::bsp_signal_aps();
+
 	fb_println!("Timer: LAPIC ~625 Hz started");
 	fb_println!("");
 	fb_println!("Serix OS v0.0.6 ready.");
