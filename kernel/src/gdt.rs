@@ -163,9 +163,7 @@ pub fn per_cpu_data(cpu_id: usize) -> &'static mut PerCpuData {
 pub unsafe fn init_per_cpu(cpu_id: usize) {
 	PER_CPU_DATA[cpu_id].cpu_id = cpu_id as u8;
 	let addr = core::ptr::addr_of!(PER_CPU_DATA[cpu_id]) as u64;
-	if cpu_id == 0 {
-		KernelGsBase::write(VirtAddr::new(addr));
-	}
+	KernelGsBase::write(VirtAddr::new(addr));
 }
 
 /// Read LAPIC ID of the current CPU via MSR 0x1B.
