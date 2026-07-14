@@ -10,6 +10,7 @@ extern crate alloc;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 use hal::serial_println;
 use spin::Mutex;
 use spin::lock_api::RwLock;
@@ -18,37 +19,9 @@ use task::TaskCB;
 /*
  * IPC Constants
  */
-pub const MAX_MSG_SIZE: usize = 128;
+pub use ipc_types::MAX_MSG_SIZE;
+pub use ipc_types::Message;
 pub const PORT_QUEUE_LEN: usize = 32;
-
-/*
- * struct Message - Standard IPC message format
- * @sender_id: Sender task ID
- * @id: Message ID/type
- * @len: Message data length
- * @data: Message payload
- *
- * Fits in registers or small stack buffer.
- */
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct Message {
-	pub sender_id: u64,
-	pub id: u64,
-	pub len: u64,
-	pub data: [u8; MAX_MSG_SIZE],
-}
-
-impl Default for Message {
-	fn default() -> Self {
-		Self {
-			sender_id: 0,
-			id: 0,
-			len: 0,
-			data: [0; MAX_MSG_SIZE],
-		}
-	}
-}
 
 /*
  * struct Port - Communication port
@@ -61,6 +34,8 @@ pub struct Port {
 	pub owner_id: u64,
 	queue: Mutex<VecDeque<Message>>,
 	waiting_receivers: Mutex<VecDeque<Arc<spin::Mutex<TaskCB>>>>,
+	/* Notification bitmask for async notification ports */
+	notification_bitmask: AtomicU64,
 }
 
 impl Port {
@@ -77,6 +52,7 @@ impl Port {
 			owner_id,
 			queue: Mutex::new(VecDeque::with_capacity(PORT_QUEUE_LEN)),
 			waiting_receivers: Mutex::new(VecDeque::new()),
+			notification_bitmask: AtomicU64::new(0),
 		}
 	}
 
@@ -94,8 +70,13 @@ impl Port {
 	 * @msg: Message to send
 	 *
 	 * Performs capability validation against the current task's C-space.
-	 * If any tasks are blocked waiting for messages on this port,
-	 * the first waiter is woken and re-enqueued on the RunQueue.
+	 *
+	 * Fastpath: If a task is blocked waiting on this port, directly inject
+	 * the message into its TaskCB (bypassing the queue) and wake it.
+	 * This avoids the extra wake/schedule cycle.
+	 *
+	 * Slowpath: Enqueue the message and wake the first blocked receiver
+	 * via the normal run queue mechanism.
 	 *
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
@@ -109,7 +90,17 @@ impl Port {
 		let cap_store = capability::global_cap_store().lock();
 		check_send_capability(&task_cspace, self.id, &cap_store)?;
 
-		/* 2. Enqueue Message */
+		/* 2. Try fastpath: check for blocked receiver */
+		let waiter = self.waiting_receivers.lock().pop_front();
+		if let Some(receiver) = waiter {
+			/* Fastpath: inject message directly into receiver's TaskCB */
+			let msg_arc = Arc::new(msg);
+			task::inject_direct_message(&receiver, msg_arc);
+			task::wake_task(receiver);
+			return Ok(());
+		}
+
+		/* 3. Slowpath: enqueue message */
 		let mut q = self.queue.lock();
 		if q.len() >= PORT_QUEUE_LEN {
 			return Err("Port queue full");
@@ -117,7 +108,7 @@ impl Port {
 		q.push_back(msg);
 		drop(q);
 
-		/* 3. Wake first waiting receiver */
+		/* 4. Wake first waiting receiver (if any arrived between our checks) */
 		let waiter = self.waiting_receivers.lock().pop_front();
 		if let Some(t) = waiter {
 			task::wake_task(t);
@@ -129,13 +120,28 @@ impl Port {
 	/*
 	 * send_kernel - Push a message (Bypasses cap check)
 	 *
-	 * Intended ONLY for Ring 0 trusted kernel subsystems
-	 * Does not require a capability ticker
+	 * Intended ONLY for Ring 0 trusted kernel subsystems.
+	 * Does not require a capability ticker.
+	 *
+	 * Fastpath: If a task is blocked waiting on this port, directly inject
+	 * the message into its TaskCB (bypassing the queue) and wake it.
+	 *
+	 * Slowpath: Enqueue the message and wake the first blocked receiver.
 	 *
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
 	pub fn send_kernel(&self, msg: Message) -> Result<(), &'static str> {
-		/* Enqueue Message directly */
+		/* Try fastpath: check for blocked receiver */
+		let waiter = self.waiting_receivers.lock().pop_front();
+		if let Some(receiver) = waiter {
+			/* Fastpath: inject message directly into receiver's TaskCB */
+			let msg_arc = Arc::new(msg);
+			task::inject_direct_message(&receiver, msg_arc);
+			task::wake_task(receiver);
+			return Ok(());
+		}
+
+		/* Slowpath: enqueue message */
 		let mut q = self.queue.lock();
 		if q.len() >= PORT_QUEUE_LEN {
 			return Err("Port queue full");
@@ -162,13 +168,58 @@ impl Port {
 	}
 
 	/*
+	 * notify - Set notification bitmask and wake blocked receiver
+	 *
+	 * Used by async notification ports. Sets the event bitmask via atomic OR,
+	 * then wakes the first blocked receiver (same mechanism as the IPC fastpath).
+	 * The receiver will see the bitmask via check_notification().
+	 *
+	 * @bitmask: Event bitmask to set
+	 */
+	pub fn notify(&self, bitmask: u64) {
+		self.notification_bitmask.fetch_or(bitmask, Ordering::Relaxed);
+
+		/* Wake first blocked receiver, if any */
+		let waiter = self.waiting_receivers.lock().pop_front();
+		if let Some(receiver) = waiter {
+			task::wake_task(receiver);
+		}
+	}
+
+	/*
+	 * check_notification - Read and clear the notification bitmask
+	 *
+	 * Returns the current bitmask and clears it atomically.
+	 * Called by receive_blocking() to check for async notifications
+	 * before falling back to the message queue.
+	 *
+	 * Return: Notification bitmask (0 if none pending)
+	 */
+	pub fn check_notification(&self) -> u64 {
+		self.notification_bitmask.swap(0, Ordering::Relaxed)
+	}
+
+	/*
+	 * is_notification_port - Check if this port is an async notification port
+	 *
+	 * Return: true if the port was created as a notification port
+	 */
+	pub fn is_notification_port(&self) -> bool {
+		/* Notification ports have a non-zero initial bitmask set by create_notification_port */
+		false /* Default ports are not notification ports; set by create_notification_port */
+	}
+
+	/*
 	 * receive_blocking - Block until a message is available
 	 *
 	 * If the queue is empty, places the current task on the wait queue,
 	 * blocks it, and retries upon waking. Handles spurious wakes by
 	 * looping until a message is actually available.
 	 *
-	 * With priority inheritance: if a previous sender is identified via
+	 * Fastpath: Checks for a direct message injected by the IPC fastpath
+	 * (send() when receiver is blocked). This bypasses the queue entirely.
+	 *
+	 * Priority inheritance: if a previous sender is identified via
 	 * the message header, the sender's priority is boosted to match the
 	 * blocking receiver's priority to prevent priority inversion.
 	 *
@@ -179,7 +230,35 @@ impl Port {
 	 */
 	pub fn receive_blocking(&self) -> Message {
 		loop {
-			/* Fast path: message already available */
+			/* Fastpath 1: direct message injected by send() fastpath */
+			if let Some(msg) = task::consume_direct_message() {
+				/* Apply priority inheritance to sender if available */
+				if msg.sender_id != 0 {
+					if let Some(sender) = task::scheduler::find_task_by_id(msg.sender_id) {
+						let receiver = task::current_task_arc().unwrap();
+						let recv_prio = receiver.lock().priority();
+						let sender_prio = sender.lock().priority();
+						if sender_prio < recv_prio {
+							task::scheduler::boost_priority(&sender, recv_prio);
+						}
+					}
+				}
+				return msg;
+			}
+
+			/* Fastpath 1.5: async notification bitmask */
+			let notif = self.check_notification();
+			if notif != 0 {
+				/* Notification received — return a synthetic message with the bitmask */
+				return Message {
+					sender_id: 0,
+					id: notif,
+					len: 0,
+					data: [0u8; MAX_MSG_SIZE],
+				};
+			}
+
+			/* Fastpath 2: message already available in queue */
 			if let Some(msg) = self.queue.lock().pop_front() {
 				/* Apply priority inheritance to sender if available */
 				if msg.sender_id != 0 {
@@ -325,6 +404,43 @@ impl IpcSpace {
 	pub fn get_port(&self, id: u64) -> Option<Arc<Port>> {
 		let ports = self.ports.read();
 		ports.get(&id).cloned()
+	}
+
+	/*
+	 * create_notification_port - Create an async notification port
+	 * @id: Port identifier
+	 * @bitmask: Initial event bitmask to listen for
+	 *
+	 * Creates a port that supports async notifications via notify()/check_notification().
+	 * Grants a CapabilityType::AsyncNotification handle to the creator.
+	 *
+	 * Return: Tuple of (Arc<Port>, CapabilityHandle) for the notification capability
+	 */
+	pub fn create_notification_port(&self, id: u64, bitmask: u64) -> (Arc<Port>, capability::CapabilityHandle) {
+		let mut ports = self.ports.write();
+		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
+		let port = Arc::new(Port::new(id, owner_id));
+		/* Set initial notification bitmask */
+		port.notification_bitmask.store(bitmask, Ordering::Relaxed);
+		ports.insert(id, port.clone());
+
+		let handle = capability::CapabilityHandle::generate();
+		let cap = capability::Capability {
+			cap_type: capability::CapabilityType::AsyncNotification {
+				port_id: id,
+			},
+			handle,
+		};
+
+		/* Add to global capability store */
+		capability::global_cap_store().lock().add_capability(cap);
+
+		/* Add to current task's cspace */
+		if let Some(task_arc) = task::scheduler::current_task_arc() {
+			task_arc.lock().cspace.push(handle);
+		}
+
+		(port, handle)
 	}
 }
 
