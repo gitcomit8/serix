@@ -86,6 +86,9 @@ pub enum CapabilityType {
 		can_send: bool,
 		can_recv: bool,
 	},
+	AsyncNotification {
+		port_id: u64,
+	},
 }
 
 /*
