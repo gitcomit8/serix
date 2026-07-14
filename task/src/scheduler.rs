@@ -7,7 +7,7 @@
  */
 
 use super::{CURRENT_TASK, SchedClass, TaskCB, TaskState};
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -375,23 +375,84 @@ pub fn find_zombie_child(parent_id: u64, child_pid: i64) -> Option<Arc<Mutex<Tas
 }
 
 /*
+ * Lock Registry — tracks which task holds which lock for priority inheritance.
+ *
+ * Keys are the raw pointer address of the lock (as usize).
+ * Values are Arc<Mutex<TaskCB>> of the task currently holding the lock.
+ *
+ * This is a global registry because locks can be shared across CPUs and tasks.
+ * All access must be done with interrupts disabled (timer IRQ context).
+ */
+static LOCK_REGISTRY: Once<Mutex<BTreeMap<usize, Arc<Mutex<TaskCB>>>>> = Once::new();
+
+/*
+ * lock_registry - Get the global lock registry
+ *
+ * Return: Reference to the lock registry
+ */
+fn lock_registry() -> &'static Mutex<BTreeMap<usize, Arc<Mutex<TaskCB>>>> {
+	LOCK_REGISTRY.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+/*
+ * lock_register - Register a lock holder in the registry
+ * @lock_ptr: Raw pointer address of the lock
+ * @holder: Task that acquired the lock
+ *
+ * Safety: Caller must ensure lock_ptr is valid and points to a real lock.
+ */
+pub fn lock_register(lock_ptr: usize, holder: Arc<Mutex<TaskCB>>) {
+	let reg = lock_registry();
+	reg.lock().insert(lock_ptr, holder);
+}
+
+/*
+ * lock_unregister - Remove a lock from the registry
+ * @lock_ptr: Raw pointer address of the lock
+ *
+ * Returns the holder task if it was registered, None otherwise.
+ */
+pub fn lock_unregister(lock_ptr: usize) -> Option<Arc<Mutex<TaskCB>>> {
+	lock_registry().lock().remove(&lock_ptr)
+}
+
+/*
+ * lock_find_holder - Find the task holding a given lock
+ * @lock_ptr: Raw pointer address of the lock
+ *
+ * Return: Some(Arc<Mutex<TaskCB>>) of the holder, None if no one holds it.
+ */
+pub fn lock_find_holder(lock_ptr: usize) -> Option<Arc<Mutex<TaskCB>>> {
+	lock_registry().lock().get(&lock_ptr).cloned()
+}
+
+/*
  * acquire_lock_with_pi - Acquire a lock with priority inheritance
+ * @lock_ptr: Raw pointer address of the lock being acquired
  * @task: The task acquiring the lock
  *
- * If the lock holder has lower priority, boost it to match the acquiring task's priority.
- * This prevents priority inversion where a high-priority task blocks on a low-priority task
- * that holds a shared resource.
+ * If the lock is already held by a lower-priority task, boost that task's
+ * priority to match the acquiring task's priority. This prevents priority
+ * inversion where a high-priority task blocks on a low-priority task that
+ * holds a shared resource.
+ *
+ * The caller is responsible for actually acquiring the lock (e.g., via
+ * spin::Mutex::lock()). This function only handles the priority boost.
+ *
+ * After acquiring the lock, call lock_register() to record ownership.
  */
-pub fn acquire_lock_with_pi(task: &Arc<Mutex<TaskCB>>) {
+pub fn acquire_lock_with_pi(lock_ptr: usize, task: &Arc<Mutex<TaskCB>>) {
 	let task_priority = task.lock().priority();
 
-	/* Walk the chain of tasks to find the lock holder */
-	/* In a real implementation, we'd track lock ownership explicitly */
-	/* For now, this is a placeholder that demonstrates the PI mechanism */
-	let _holder = current_task_arc();
+	/* Check if any task currently holds this lock */
+	if let Some(holder) = lock_find_holder(lock_ptr) {
+		let holder_priority = holder.lock().priority();
 
-	/* If a holder exists and has lower priority, boost it */
-	/* This would require tracking which task holds which lock */
+		/* If holder has lower priority (higher number), boost it */
+		if holder_priority > task_priority {
+			boost_priority(&holder, task_priority);
+		}
+	}
 }
 
 /*
@@ -399,6 +460,7 @@ pub fn acquire_lock_with_pi(task: &Arc<Mutex<TaskCB>>) {
  * @task: The task releasing the lock
  *
  * Restores the holder's original priority if it was boosted by priority inheritance.
+ * The caller must call lock_unregister() to remove the lock from the registry.
  */
 pub fn release_lock_with_pi(task: &Arc<Mutex<TaskCB>>) {
 	let mut task_guard = task.lock();
@@ -441,5 +503,42 @@ pub fn restore_priority(task: &Arc<Mutex<TaskCB>>) {
 	if let Some(orig_priority) = task_guard.inherited_priority {
 		task_guard.sched_class = SchedClass::Fair(orig_priority);
 		task_guard.inherited_priority = None;
+	}
+}
+
+/*
+ * inject_direct_message - Inject a message directly into a task's TaskCB
+ * @receiver: The task that will receive the message
+ * @msg: The message to inject
+ *
+ * Used by the IPC fastpath to bypass the message queue when the receiver
+ * is blocked at receive_blocking(). The message is stored in the task's
+ * direct_msg field and flagged as valid.
+ *
+ * The receiver will see this message on the next loop iteration of
+ * receive_blocking() before checking the queue.
+ */
+pub fn inject_direct_message(receiver: &Arc<Mutex<TaskCB>>, msg: Arc<ipc_types::Message>) {
+	let mut task = receiver.lock();
+	task.direct_msg = Some((*msg).clone());
+	task.direct_msg_valid = true;
+}
+
+/*
+ * consume_direct_message - Check and consume a direct message from the current task
+ *
+ * Returns Some(msg) if a direct message is pending, None otherwise.
+ * Clears the direct_msg_valid flag after reading.
+ *
+ * Called by receive_blocking() to check for fastpath messages.
+ */
+pub fn consume_direct_message() -> Option<ipc_types::Message> {
+	let current = current_task_arc()?;
+	let mut task = current.lock();
+	if task.direct_msg_valid {
+		task.direct_msg_valid = false;
+		task.direct_msg.take()
+	} else {
+		None
 	}
 }
