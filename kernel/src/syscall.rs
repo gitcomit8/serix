@@ -68,6 +68,8 @@ pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
 pub const SYS_RECV_BLOCK: u64 = 32;
 pub const SYS_CREATE_PORT: u64 = 33;
+pub const SYS_CREATE_NOTIFICATION_PORT: u64 = 34;
+pub const SYS_NOTIFY: u64 = 35;
 
 /* Error codes (negative errno values represented as u64) */
 pub const ERRNO_EBADF: u64 = u64::MAX - 8; /* Bad file descriptor (errno 9) */
@@ -737,6 +739,59 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			port_id
+		}
+		SYS_CREATE_NOTIFICATION_PORT => {
+			/*
+			 * Create Async Notification Port
+			 * arg1: Pointer to output buffer for capability handle (16 bytes)
+			 * arg2: Initial event bitmask to listen for
+			 * Returns: Port ID on success, errno on error
+			 *
+			 * Creates a port that supports async notifications via notify()/check_notification().
+			 * The calling task receives a CapabilityType::AsyncNotification handle.
+			 */
+			let cap_ptr = arg1 as *mut u64;
+			let bitmask = arg2;
+
+			if !is_user_accessible(cap_ptr as *const u8, 16) {
+				return ERRNO_EFAULT;
+			}
+
+			let port_id = {
+				static NEXT_PORT_ID: core::sync::atomic::AtomicU64 =
+					core::sync::atomic::AtomicU64::new(1000);
+				NEXT_PORT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+			};
+
+			let (_port, cap_handle) = ipc::IPC_GLOBAL.create_notification_port(port_id, bitmask);
+
+			unsafe {
+				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
+				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+			}
+
+			port_id
+		}
+		SYS_NOTIFY => {
+			/*
+			 * Send Async Notification
+			 * arg1: Port ID to notify
+			 * arg2: Event bitmask
+			 * Returns: 0 on success, errno on error
+			 *
+			 * Sets the event bitmask on the target port and wakes any
+			 * blocked receiver. The receiver will see the bitmask via
+			 * check_notification() in receive_blocking().
+			 */
+			let port_id = arg1;
+			let event_mask = arg2;
+
+			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
+				port.notify(event_mask);
+				0
+			} else {
+				ERRNO_ENOENT
+			}
 		}
 		SYS_DUP => {
 			let task_id = task::scheduler::current_task_id();
