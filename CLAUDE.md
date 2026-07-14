@@ -226,3 +226,15 @@ Kernel initialization is hardcoded in `kernel/src/main.rs::_start()`. To change 
 - Dynamic linking or `execve()`
 - fork/clone/waitpid()
 - Signal handling
+
+
+# Claude Code Token Optimization Rules
+- ALWAYS use explicit `offset` and `limit` arguments when using the `Read` tool on files larger than 100 lines. Never ingest a whole file if only modifying a specific function.
+- When running `grep` via bash, always pipe the output through `head` (e.g., `grep -n "pattern" ... | head -n 50`) to avoid token-dense output dumps.
+- Avoid raw `cat` commands on large files. Use the built-in `Read` or `Grep` tools instead.
+- If a command generates long log or build outputs, pipe it into `tail -n 100` or filter for explicit keywords.
+
+
+#NOTE
+Always use the user's name in response
+The user's name is Ayaan
