@@ -36,6 +36,8 @@ const SYS_SEND: usize = 30;
 const SYS_RECV: usize = 31;
 const SYS_RECV_BLOCK: usize = 32;
 const SYS_CREATE_PORT: usize = 33;
+const SYS_CREATE_NOTIFICATION_PORT: usize = 34;
+const SYS_NOTIFY: usize = 35;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -430,4 +432,30 @@ pub fn serix_pipe(fds: &mut [u64; 2]) -> isize {
  */
 pub fn serix_create_port(cap_handle: &mut [u64; 2]) -> i64 {
 	unsafe { syscall1(SYS_CREATE_PORT, cap_handle.as_mut_ptr() as usize) as i64 }
+}
+
+/*
+ * serix_create_notification_port - Create an async notification port
+ * @cap_handle: Output buffer for capability handle (16 bytes / 2 u64)
+ * @bitmask: Initial event bitmask to listen for
+ *
+ * Creates a port that supports async notifications via notify()/check_notification().
+ *
+ * Return: Port ID on success, negative errno on error
+ */
+pub fn serix_create_notification_port(cap_handle: &mut [u64; 2], bitmask: u64) -> i64 {
+	unsafe { syscall2(SYS_CREATE_NOTIFICATION_PORT, cap_handle.as_mut_ptr() as usize, bitmask as usize) as i64 }
+}
+
+/*
+ * serix_notify - Send an async notification to a port
+ * @port: Port ID to notify
+ * @event_mask: Event bitmask
+ *
+ * Sets the event bitmask on the target port and wakes any blocked receiver.
+ *
+ * Return: 0 on success, negative errno on error
+ */
+pub fn serix_notify(port: u64, event_mask: u64) -> i64 {
+	unsafe { syscall2(SYS_NOTIFY, port as usize, event_mask as usize) as i64 }
 }
