@@ -8,3 +8,4 @@ spin = "0.10.0"
 task = { path = "../task" }
 capability = { path = "../capability" }
 hal = { path = "../hal" }
+ipc_types = { path = "../ipc_types" }
