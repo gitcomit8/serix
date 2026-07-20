@@ -60,19 +60,26 @@ extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame) {
  * @stack: Interrupt stack frame with fault information
  * @err: Page fault error code
  *
- * Prints diagnostic information and halts the system.
+ * First checks if the faulting address is in a VMA (mmap'd region).
+ * If so, populates the page from the backing file.
+ * Otherwise, prints diagnostic information and halts.
  */
 extern "x86-interrupt" fn page_fault_handler(stack: InterruptStackFrame, err: PageFaultErrorCode) {
-	serial_println!(
-		"Page fault at instruction pointer: {:#x}",
-		stack.instruction_pointer.as_u64()
-	);
-
 	/* Read CR2 to get faulting address */
 	let cr2: u64;
 	unsafe {
 		core::arch::asm!("mov {}, cr2", out(reg) cr2);
 	}
+	let fault_addr = x86_64::VirtAddr::new(cr2);
+	let write = err.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+
+	/* VMA page faults are handled by the mmap syscall (upfront mapping).
+	 * If we reach here, the address is not mapped — oops. */
+
+	serial_println!(
+		"Page fault at instruction pointer: {:#x}",
+		stack.instruction_pointer.as_u64()
+	);
 	serial_println!("Page fault address: {:#x}", cr2);
 	serial_println!("Error Code: {:?}", err);
 

@@ -28,4 +28,5 @@ pub const MSG_MKDIR: u64 = 6;
 pub const MSG_CREATE: u64 = 7;
 pub const MSG_UNLINK: u64 = 8;
 pub const MSG_SIZE: u64 = 9;
+pub const MSG_RMDIR: u64 = 10;
 pub const MAX_DATA: usize = 112;

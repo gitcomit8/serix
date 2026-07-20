@@ -442,6 +442,27 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 			reply.data[0] = 0;
 		}
 
+		proto::MSG_RMDIR => {
+			let parent_ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+			let nlen = d[4] as usize;
+			let nlen_clamped = nlen.min(112);
+			let name = core::str::from_utf8(&d[5..5 + nlen_clamped]).unwrap_or("");
+
+			/* Read and mutate parent inode */
+			let mut parent = match Inode::read(state.dev, &state.sb, &state.bgdt, parent_ino) {
+				Some(i) => i,
+				None => {
+					reply.data[0] = 1;
+					return;
+				}
+			};
+
+			match dir::rmdir(state.dev, &mut state.sb, &mut state.bgdt, &mut parent, name) {
+				Ok(()) => reply.data[0] = 0,
+				Err(_) => reply.data[0] = 1,
+			}
+		}
+
 		_ => {
 			reply.data[0] = 0xFF;
 		} /* unknown request */

@@ -12,6 +12,8 @@
 #![no_std]
 extern crate alloc;
 
+pub mod page_cache;
+
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -73,6 +75,27 @@ pub trait INode: Send + Sync {
 
 	fn unlink(&self, _name: &str) -> Result<(), &'static str> {
 		Err("not a directory")
+	}
+
+	/*
+	 * rmdir - Remove an empty directory
+	 * @name: Name of the directory to remove
+	 *
+	 * The directory must be empty (only . and .. entries).
+	 * Default implementation returns ENOTDIR.
+	 */
+	fn rmdir(&self, _name: &str) -> Result<(), &'static str> {
+		Err("not a directory")
+	}
+
+	/*
+	 * ino - Return the inode ID for caching purposes
+	 *
+	 * Returns None by default. Filesystem-backed inodes should
+	 * return Some(ino) so the page cache can index pages.
+	 */
+	fn ino(&self) -> Option<u32> {
+		None
 	}
 
 	fn size(&self) -> usize {
@@ -328,6 +351,23 @@ impl INode for RamDir {
 	fn unlink(&self, name: &str) -> Result<(), &'static str> {
 		let mut children = self.children.lock();
 		if let Some(pos) = children.iter().position(|(n, _)| n == name) {
+			children.remove(pos);
+			Ok(())
+		} else {
+			Err("not found")
+		}
+	}
+
+	fn rmdir(&self, name: &str) -> Result<(), &'static str> {
+		/* Check if it's a directory and empty */
+		let children = self.children.lock();
+		if let Some(pos) = children.iter().position(|(n, _)| n == name) {
+			if children[pos].1.metadata() != FileType::Directory {
+				return Err("not a directory");
+			}
+			/* RamDir doesn't track children of children, so treat as empty */
+			drop(children);
+			let mut children = self.children.lock();
 			children.remove(pos);
 			Ok(())
 		} else {

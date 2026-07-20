@@ -9,6 +9,9 @@ extern crate alloc;
 pub mod heap;
 pub mod kstack;
 pub mod slub;
+pub mod vma;
+
+pub const PAGE_SIZE: usize = 4096;
 
 use alloc::boxed::Box;
 use limine::memory_map::Entry;

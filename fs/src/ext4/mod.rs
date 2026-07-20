@@ -6,6 +6,8 @@ pub mod bgdt;
 pub mod bitmap_alloc;
 pub mod dir;
 pub mod extent;
+pub mod format;
+pub mod htree;
 pub mod inode;
 pub mod ipc;
 #[cfg(feature = "kernel")]

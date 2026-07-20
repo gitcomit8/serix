@@ -68,6 +68,14 @@ pub fn lookup_in_dir(
 	dir_ino: &Inode,
 	name: &str,
 ) -> Option<u32> {
+	/* Try HTree first if directory is indexed */
+	if super::htree::is_htree_indexed(dev, sb, dir_ino) {
+		if let Some(ino) = super::htree::lookup_htree(dev, sb, dir_ino, name) {
+			return Some(ino);
+		}
+	}
+
+	/* Fall back to linear scan */
 	let bsz = sb.block_size();
 	let n_blks = (dir_ino.size() + bsz - 1) / bsz;
 	for bi in 0..n_blks as u32 {
@@ -241,4 +249,85 @@ fn write_dir_entry(b: &mut [u8], off: usize, ino: u32, rec: u16, nlen: u8, ft: u
 	b[off + 6] = nlen;
 	b[off + 7] = ft;
 	b[off + 8..off + 8 + nlen as usize].copy_from_slice(&name[..nlen as usize]);
+}
+
+/*
+ * rmdir - Remove an empty directory
+ *
+ * 1. Lookup child inode by name
+ * 2. Verify child is a directory and empty (only . and ..)
+ * 3. Free all data blocks of the child directory
+ * 4. Decrement parent's link count and remove entry from parent
+ * 5. Decrement child's link count (. entry) and free inode
+ * 6. Update parent's used_dirs counter
+ */
+pub fn rmdir(
+	dev: &dyn BlockDev,
+	sb: &mut Superblock,
+	bgdt: &mut BgDescTable,
+	dir_ino: &mut Inode,
+	name: &str,
+) -> Result<(), &'static str> {
+	let bsz = sb.block_size();
+
+	/* 1. Lookup child inode */
+	let child_ino = lookup_in_dir(dev, sb, bgdt, dir_ino, name).ok_or("entry not found")?;
+
+	/* 2. Read child inode and verify it's a directory */
+	let child = Inode::read(dev, sb, bgdt, child_ino).ok_or("cannot read child inode")?;
+	if !child.is_dir() {
+		return Err("not a directory");
+	}
+
+	/* 3. Check if directory is empty (only . and ..) */
+	let n_blks = (child.size() + bsz - 1) / bsz;
+	let mut entry_count = 0u32;
+	for bi in 0..n_blks as u32 {
+		let phys = match extent::get_block(dev, sb, &child.block, bi) {
+			Some(p) => p,
+			None => continue,
+		};
+		let block = read_block(dev, sb, phys);
+		for_each_entry(&block, |_, ino, _, _| {
+			if ino != 0 {
+				entry_count += 1;
+			}
+			true
+		});
+	}
+	if entry_count > 2 {
+		return Err("directory not empty");
+	}
+
+	/* 4. Free all data blocks of the child directory */
+	for bi in 0..n_blks as u32 {
+		if let Some(phys) = extent::get_block(dev, sb, &child.block, bi) {
+			super::bitmap_alloc::free_block(dev, sb, bgdt, phys);
+		}
+	}
+
+	/* 5. Remove directory entry from parent */
+	let parent_ino = dir_ino.ino;
+	let parent = Inode::read(dev, sb, bgdt, parent_ino).ok_or("cannot read parent inode")?;
+	if !remove_entry(dev, sb, bgdt, &parent, name) {
+		return Err("failed to remove entry from parent");
+	}
+
+	/* 6. Decrement parent's link count */
+	let mut parent_mut = Inode::read(dev, sb, bgdt, parent_ino).ok_or("cannot re-read parent")?;
+	parent_mut.links_count = parent_mut.links_count.saturating_sub(1);
+	parent_mut.write(dev, sb, bgdt);
+
+	/* 7. Decrement child's link count (. entry) and free inode */
+	let mut child_mut = Inode::read(dev, sb, bgdt, child_ino).ok_or("cannot re-read child")?;
+	child_mut.links_count = child_mut.links_count.saturating_sub(1);
+	child_mut.write(dev, sb, bgdt);
+	super::bitmap_alloc::free_inode(dev, sb, bgdt, child_ino);
+
+	/* 8. Update parent's used_dirs counter */
+	let g = sb.inode_block_group(parent_ino) as usize;
+	bgdt.get_mut(g).used_dirs = bgdt.get(g).used_dirs.saturating_sub(1);
+	bgdt.write_entry(dev, sb, g);
+
+	Ok(())
 }
