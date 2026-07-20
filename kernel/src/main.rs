@@ -584,6 +584,12 @@ pub extern "C" fn _start() -> ! {
 	serial_println!("VFS: mount table initialized");
 	fb_println!("VFS: / and /dev/ ready");
 
+		/* Initialize page cache (256 pages = 1 MiB) */
+		vfs::page_cache::init_page_cache(256);
+		serial_println!("VFS: page cache initialized (256 pages)");
+		/* Initialize VMA manager for mmap */
+		unsafe { memory::vma::init_vma_manager() };
+
 	/* Expose VirtIO block device as /dev/sda */
 	let sda: alloc::sync::Arc<dyn INode> =
 		alloc::sync::Arc::new(fs::BlockDevINode(alloc::sync::Arc::new(fs::VirtioBlockDev)));

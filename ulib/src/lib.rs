@@ -31,6 +31,10 @@ const SYS_GETDENTS: usize = 18;
 
 const SYS_MKDIR: usize = 20;
 const SYS_UNLINK: usize = 21;
+const SYS_RMDIR: usize = 22;
+
+const SYS_MMAP: usize = 90;
+const SYS_MUNMAP: usize = 91;
 
 const SYS_SEND: usize = 30;
 const SYS_RECV: usize = 31;
@@ -239,6 +243,39 @@ pub fn serix_mkdir(path: &str) -> isize {
  */
 pub fn serix_unlink(path: &str) -> isize {
 	unsafe { syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize }
+}
+
+/*
+ * serix_rmdir - Remove an empty directory
+ * @path: Absolute path of directory to remove
+ *
+ * Return: 0 on success, negative errno on error
+ */
+pub fn serix_rmdir(path: &str) -> isize {
+	unsafe { syscall2(SYS_RMDIR, path.as_ptr() as usize, path.len()) as isize }
+}
+
+/*
+ * serix_mmap - Memory-map a file
+ * @fd: File descriptor to map
+ * @offset: Mapping offset (page-aligned)
+ * @length: Mapping length
+ *
+ * Return: virtual address on success, negative errno on error
+ */
+pub fn serix_mmap(fd: usize, offset: usize, length: usize) -> isize {
+	unsafe { syscall3(SYS_MMAP, fd, offset, length) as isize }
+}
+
+/*
+ * serix_munmap - Unmap a VMA region
+ * @addr: Start address of mapping
+ * @length: Length of mapping
+ *
+ * Return: 0 on success, negative errno on error
+ */
+pub fn serix_munmap(addr: usize, length: usize) -> isize {
+	unsafe { syscall2(SYS_MUNMAP, addr, length) as isize }
 }
 
 pub fn exit(code: i32) -> ! {

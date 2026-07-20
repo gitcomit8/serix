@@ -63,6 +63,11 @@ pub const SYS_GETDENTS: u64 = 18;
 
 pub const SYS_MKDIR: u64 = 20;
 pub const SYS_UNLINK: u64 = 21;
+pub const SYS_RMDIR: u64 = 22;
+
+/* Memory management group (90-99): */
+pub const SYS_MMAP: u64 = 90;
+pub const SYS_MUNMAP: u64 = 91;
 
 pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
@@ -959,6 +964,125 @@ extern "C" fn syscall_dispatcher(
 					Err(_) => ERRNO_ENOENT,
 				},
 				None => ERRNO_ENOENT,
+			}
+		}
+
+		SYS_RMDIR => {
+			let ptr = arg1 as *const u8;
+			let len = arg2 as usize;
+
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+			let path = match core::str::from_utf8(slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let (parent_path, name) = match path.rfind('/') {
+				Some(0) => ("/", &path[1..]),
+				Some(pos) => (&path[..pos], &path[pos + 1..]),
+				None => ("/", path),
+			};
+
+			match vfs::lookup_path(parent_path) {
+				Some(dir) => match dir.rmdir(name) {
+					Ok(()) => 0,
+					Err(_) => ERRNO_ENOTDIR,
+				},
+				None => ERRNO_ENOENT,
+			}
+		}
+
+		SYS_MMAP => {
+			/*
+			 * Memory-map a file.
+			 * arg1: file descriptor
+			 * arg2: mapping offset (must be page-aligned)
+			 * arg3: mapping length
+			 * Returns: virtual address on success, errno on failure
+			 */
+			let fd = arg1 as u64;
+			let offset = arg2;
+			let length = arg3 as usize;
+
+			if length == 0 {
+				return ERRNO_EINVAL;
+			}
+
+			let task_id = task::scheduler::current_task_id();
+			let file = match crate::fd::get(task_id, fd) {
+				Some(f) => f,
+				None => return ERRNO_EBADF,
+			};
+
+			/* Allocate VMA region */
+			let vma_mgr = match memory::vma::get_vma_manager() {
+				Some(m) => m,
+				None => return ERRNO_ENOMEM,
+			};
+
+			let start = match memory::vma::allocate_vma_region(length) {
+				Some(addr) => addr,
+				None => return ERRNO_ENOMEM,
+			};
+
+			/* Create VMA */
+			let perms = memory::vma::VmaPermissions::new(true, true, false);
+			let vma = memory::vma::Vma::new(
+				start,
+				start + (length as u64),
+				perms,
+				offset as u64,
+			);
+			vma_mgr.add_vma(vma);
+
+			/* Map pages: read each page from file and map it */
+			let n_pages = (length + memory::PAGE_SIZE - 1) / memory::PAGE_SIZE;
+			for i in 0..n_pages {
+				let page_addr = start.as_u64() + (i as u64 * memory::PAGE_SIZE as u64);
+				let page_vaddr = x86_64::VirtAddr::new(page_addr);
+				let file_off = offset + (i as u64 * memory::PAGE_SIZE as u64);
+
+				/* Read page from file */
+				let mut page_data = [0u8; memory::PAGE_SIZE];
+				let n = file.inode.read(file_off as usize, &mut page_data);
+				if n == 0 {
+					/* EOF or read error */
+					vma_mgr.remove_vma(start.as_u64());
+					return ERRNO_EINVAL;
+				}
+
+				if let Err(_) = memory::vma::map_file_page(page_vaddr, &page_data, perms) {
+					/* Partial mapping: remove VMA on failure */
+					vma_mgr.remove_vma(start.as_u64());
+					return ERRNO_ENOMEM;
+				}
+			}
+
+			start.as_u64()
+		}
+
+		SYS_MUNMAP => {
+			/*
+			 * Unmap a VMA region.
+			 * arg1: start address
+			 * arg2: length
+			 * Returns: 0 on success, errno on failure
+			 */
+			let start = arg1;
+			let length = arg2 as usize;
+
+			let vma_mgr = match memory::vma::get_vma_manager() {
+				Some(m) => m,
+				None => return ERRNO_EINVAL,
+			};
+
+			if vma_mgr.remove_vma(start).is_some() {
+				0
+			} else {
+				ERRNO_EINVAL
 			}
 		}
 

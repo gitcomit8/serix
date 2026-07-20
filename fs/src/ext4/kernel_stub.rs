@@ -119,6 +119,10 @@ impl INode for Ext4FileStub {
 		let resp = send_and_recv(mk_req(proto::MSG_SIZE, self.ino, &[]));
 		u32::from_le_bytes([resp.data[0], resp.data[1], resp.data[2], resp.data[3]]) as usize
 	}
+
+		fn ino(&self) -> Option<u32> {
+			Some(self.ino)
+		}
 }
 
 impl INode for Ext4DirStub {
@@ -131,6 +135,10 @@ impl INode for Ext4DirStub {
 	fn metadata(&self) -> FileType {
 		FileType::Directory
 	}
+
+		fn ino(&self) -> Option<u32> {
+			Some(self.ino)
+		}
 
 	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
 		let nb = name.as_bytes();
@@ -238,6 +246,20 @@ impl INode for Ext4DirStub {
 			Err("unlink failed")
 		}
 	}
+
+		fn rmdir(&self, name: &str) -> Result<(), &'static str> {
+		let nb = name.as_bytes();
+		let nlen = nb.len().min(112);
+		let mut d = [0u8; 1 + 112];
+		d[0] = nlen as u8;
+		d[1..1 + nlen].copy_from_slice(&nb[..nlen]);
+		let resp = send_and_recv(mk_req(proto::MSG_RMDIR, self.ino, &d));
+		if resp.data[0] == 0 {
+			Ok(())
+		} else {
+			Err("rmdir failed")
+		}
+		}
 
 	fn insert(&self, _: &str, _: Arc<dyn INode>) -> Result<(), &'static str> {
 		Err("use create_file or mkdir for ext4 directories")
