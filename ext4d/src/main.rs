@@ -14,10 +14,52 @@
 extern crate alloc;
 extern crate ulib;
 
-use alloc::vec::Vec;
+/* ------------------------------------------------------------------ */
+/*  Userspace bump allocator (64 KiB)                                  */
+/* ------------------------------------------------------------------ */
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+const HEAP_SIZE: usize = 65536;
+
+#[repr(align(16))]
+struct HeapStorage([u8; HEAP_SIZE]);
+
+static mut HEAP: HeapStorage = HeapStorage([0u8; HEAP_SIZE]);
+static HEAP_POS: AtomicUsize = AtomicUsize::new(0);
+
+struct BumpAllocator;
+
+unsafe impl GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        loop {
+            let pos = HEAP_POS.load(Ordering::Relaxed);
+            let aligned = (pos + layout.align() - 1) & !(layout.align() - 1);
+            let new_pos = aligned + layout.size();
+            if new_pos > HEAP_SIZE {
+                return core::ptr::null_mut();
+            }
+            if HEAP_POS
+                .compare_exchange(pos, new_pos, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                return unsafe { core::ptr::addr_of_mut!(HEAP).cast::<u8>().add(aligned) };
+            }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        /* bump allocator: dealloc is a no-op */
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: BumpAllocator = BumpAllocator;
+
 use fs::ext4::{
 	bgdt::BgDescTable, bitmap_alloc, dir, extent, inode::Inode, ipc as proto,
-	superblock::Superblock,
+	journal::Journal, superblock::Superblock,
 };
 #[allow(unused_imports)]
 use fs::BlockDev;
@@ -64,6 +106,7 @@ struct State<'a> {
 	dev: &'a FdBlockDev,
 	sb: Superblock,
 	bgdt: BgDescTable,
+	journal: Journal,
 }
 
 /*
@@ -170,6 +213,9 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 		}
 
 		proto::MSG_WRITE => {
+			/* Begin journal transaction */
+			state.journal.begin_transaction(state.dev);
+
 			let ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
 			let offset = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
 			let len = u16::from_le_bytes([d[8], d[9]]) as usize;
@@ -234,7 +280,13 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 			if new_end > inode.size() {
 				inode.size = new_end as u32;
 			}
+			/* Buffer inode metadata for journaling */
+			let mut inode_buf = alloc::vec![0u8; bsz];
+			inode.serialize(&mut inode_buf);
+			state.journal.journal_write(ino, inode_buf);
 			inode.write(state.dev, &state.sb, &state.bgdt);
+			/* Commit journal transaction */
+			state.journal.commit_transaction(state.dev);
 			reply.data[0..4].copy_from_slice(&(avail as u32).to_le_bytes());
 		}
 
@@ -422,13 +474,20 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 						return;
 					}
 				};
-			let child = match Inode::read(state.dev, &state.sb, &state.bgdt, child_ino) {
+			let mut child = match Inode::read(state.dev, &state.sb, &state.bgdt, child_ino) {
 				Some(i) => i,
 				None => {
 					reply.data[0] = 1;
 					return;
 				}
 			};
+
+			/* Link-count check: refuse to unlink if links_count is already 0 */
+			if child.links_count == 0 {
+				reply.data[0] = 1;
+				return;
+			}
+
 			let bsz = state.sb.block_size();
 			let n_blks = (child.size() + bsz - 1) / bsz;
 			for b in 0..n_blks as u32 {
@@ -436,6 +495,11 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 					bitmap_alloc::free_block(state.dev, &mut state.sb, &mut state.bgdt, phys);
 				}
 			}
+
+			/* Decrement child's link count and write back */
+			child.links_count = child.links_count.saturating_sub(1);
+			child.write(state.dev, &state.sb, &state.bgdt);
+
 			bitmap_alloc::free_inode(state.dev, &mut state.sb, &mut state.bgdt, child_ino);
 			let parent2 = Inode::read(state.dev, &state.sb, &state.bgdt, parent_ino).unwrap();
 			dir::remove_entry(state.dev, &state.sb, &state.bgdt, &parent2, name);
@@ -493,10 +557,36 @@ fn main() -> ! {
 		None => ulib::exit(2),
 	};
 	let bgdt = BgDescTable::read(&dev, &sb);
+
+	/* Initialize journal from on-disk superblock */
+	let journal_start = match sb.journal_block() {
+		Some(jb) => jb,
+		None => {
+			ulib::exit(3);
+		}
+	};
+	let mut journal = Journal::new(sb.block_size() as u32, journal_start, proto::JOURNAL_BLOCKS);
+
+	/* Read journal superblock from disk */
+	let mut jsb_buf = [0u8; 512];
+	let spb = sb.sectors_per_block();
+	let sec = sb.block_to_sector(journal_start as u64);
+	let mut o = 0usize;
+	for s in 0..spb as usize {
+		let mut sec_buf = [0u8; 512];
+		dev.read_block(sec + s as u64, &mut sec_buf);
+		jsb_buf[o..o + 512].copy_from_slice(&sec_buf);
+		o += 512;
+	}
+	if let Some(jsb) = Journal::deserialize_jsb(&jsb_buf) {
+		journal.sb = jsb;
+	}
+
 	let mut state = State {
 		dev: &dev,
 		sb,
 		bgdt,
+		journal,
 	};
 
 	/* Main service loop */

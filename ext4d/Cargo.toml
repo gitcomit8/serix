@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 ulib = { path = "../ulib" }
-fs   = { path = "../fs", default-features = false }
+fs   = { path = "../fs" }
 vfs  = { path = "../vfs" }
 
 [profile.release]
@@ -13,3 +13,4 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
