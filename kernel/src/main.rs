@@ -591,8 +591,10 @@ pub extern "C" fn _start() -> ! {
 		unsafe { memory::vma::init_vma_manager() };
 
 	/* Expose VirtIO block device as /dev/sda */
+	let sda_dev = alloc::sync::Arc::new(fs::VirtioBlockDev);
+	fs::register_block_device("/dev/sda", alloc::sync::Arc::clone(&sda_dev) as alloc::sync::Arc<dyn fs::BlockDev>);
 	let sda: alloc::sync::Arc<dyn INode> =
-		alloc::sync::Arc::new(fs::BlockDevINode(alloc::sync::Arc::new(fs::VirtioBlockDev)));
+		alloc::sync::Arc::new(fs::BlockDevINode(sda_dev));
 	if let Some(dev_dir) = vfs::lookup_path("/dev/") {
 		dev_dir.insert("sda", sda).ok();
 		serial_println!("VFS: /dev/sda available");

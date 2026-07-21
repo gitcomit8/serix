@@ -64,6 +64,7 @@ pub const SYS_GETDENTS: u64 = 18;
 pub const SYS_MKDIR: u64 = 20;
 pub const SYS_UNLINK: u64 = 21;
 pub const SYS_RMDIR: u64 = 22;
+pub const SYS_FORMAT: u64 = 23;
 
 /* Memory management group (90-99): */
 pub const SYS_MMAP: u64 = 90;
@@ -87,6 +88,7 @@ pub const ERRNO_EINVAL: u64 = u64::MAX - 21; /* Invalid argument (errno 22) */
 pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
 pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
 pub const ERRNO_EPERM: u64 = u64::MAX - 1; /* Operation not permitted (errno 1) */
+pub const ERRNO_ENOTBLK: u64 = u64::MAX - 15; /* Not a block device (errno 16) */
 
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
@@ -271,7 +273,7 @@ extern "C" fn syscall_dispatcher(
 	arg2: u64,
 	arg3: u64,
 	arg4: u64,
-	_arg5: u64,
+	arg5: u64,
 ) -> u64 {
 	match nr {
 		SYS_READ => {
@@ -992,6 +994,47 @@ extern "C" fn syscall_dispatcher(
 					Err(_) => ERRNO_ENOTDIR,
 				},
 				None => ERRNO_ENOENT,
+			}
+		}
+
+		SYS_FORMAT => {
+			/*
+			 * Format a block device with ext4 filesystem.
+			 * arg1: device path (e.g., "/dev/sda")
+			 * arg2: block_size (must be power of 2, 1024-65536)
+			 * arg3: inode_count (must be >= 512)
+			 * arg4: block_count (must be >= 1024)
+			 * Returns: 0 on success, errno on failure
+			 */
+			let path_ptr = arg1 as *const u8;
+			let path_len = arg2 as usize;
+
+			if !is_user_accessible(path_ptr, path_len) {
+				return ERRNO_EFAULT;
+			}
+			let path_slice = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+			let dev_path = match core::str::from_utf8(path_slice) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			let block_size = arg3 as usize;
+			let inode_count = arg4 as u32;
+			let block_count = arg5 as u32;
+
+			/* Look up the block device by path */
+			let block_dev = match fs::lookup_block_device(dev_path) {
+				Some(dev) => dev,
+				None => return ERRNO_ENOTBLK,
+			};
+
+			/* Call format_device */
+			match fs::ext4::format::format_device(&*block_dev, block_size, inode_count, block_count) {
+				Ok(()) => 0,
+				Err(e) => {
+					hal::serial_println!("[SYS_FORMAT] Error: {}", e);
+					ERRNO_EINVAL
+				}
 			}
 		}
 
