@@ -316,9 +316,10 @@ fn lookup_in_leaf(block: &[u8], name: &[u8]) -> Option<u32> {
 /*
  * lookup_htree - HTree-based directory lookup
  *
- * 1. Compute hash of the name
- * 2. Traverse the hash tree to find the leaf block
- * 3. Linear scan the leaf for the matching name
+ * 1. Read hash_version from dx_root header
+ * 2. Compute hash of the name using hash_name()
+ * 3. Traverse the hash tree to find the leaf block
+ * 4. Linear scan the leaf for the matching name
  *
  * Returns the inode number of the entry, or None if not found.
  */
@@ -339,8 +340,19 @@ pub fn lookup_htree(
 
 	let first_data_blk = extent::get_block(dev, sb, &dir_ino.block, 0)?;
 
-	/* Traverse the HTree */
-	let leaf_blk = traverse_tree(dev, sb, dir_ino, 0, first_data_blk)?;
+	/* Read the first block to extract hash_version from dx_root */
+	let first_block = read_dir_block(dev, sb, first_data_blk);
+	let (hash_version, _indexed) = match parse_dx_root(&first_block) {
+		Some((hv, _, _)) => (hv, true),
+		None => return None, /* Not an indexed directory */
+	};
+	let _ = _indexed; /* Used implicitly: if we got here, directory is indexed */
+
+	/* Compute the hash of the name using the directory's hash version */
+	let target_hash = hash_name(name_bytes, hash_version);
+
+	/* Traverse the HTree with the computed hash */
+	let leaf_blk = traverse_tree(dev, sb, dir_ino, target_hash, first_data_blk)?;
 
 	/* Read the leaf block and scan for the name */
 	let leaf = read_dir_block(dev, sb, leaf_blk);
