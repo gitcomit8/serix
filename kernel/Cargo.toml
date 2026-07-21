@@ -10,7 +10,7 @@ apic = { path = "../apic" }
 graphics = { path = "../graphics", features = ["global-console"] }
 hal = { path = "../hal" }
 idt = { path = "../idt" }
-memory = { path = "../memory" }
+memory = { path = "../memory", features = ["global-allocator"] }
 util = { path = "../util" }
 task = { path = "../task" }
 capability = { path = "../capability" }
@@ -20,4 +20,4 @@ vfs = { path = "../vfs" }
 ipc = { path = "../ipc" }
 loader = { path = "../loader" }
 keyboard = { path = "../keyboard" }
-fs = { path = "../fs" }
+fs = { path = "../fs", features = ["kernel"] }
