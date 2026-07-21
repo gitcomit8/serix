@@ -7,3 +7,12 @@
 .idea/
 Cargo.lock
 iso_root/*
+
+# Build artifacts
+serix.iso
+disk.img
+
+# Tool state (Claude Code, Remember MCP, RTK)
+.rtk/
+.claude/
+.remember/
