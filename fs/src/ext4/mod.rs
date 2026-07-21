@@ -10,6 +10,7 @@ pub mod format;
 pub mod htree;
 pub mod inode;
 pub mod ipc;
+pub mod journal;
 #[cfg(feature = "kernel")]
 pub mod kernel_stub;
 pub mod superblock;
