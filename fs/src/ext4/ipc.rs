@@ -30,3 +30,4 @@ pub const MSG_UNLINK: u64 = 8;
 pub const MSG_SIZE: u64 = 9;
 pub const MSG_RMDIR: u64 = 10;
 pub const MAX_DATA: usize = 112;
+pub const JOURNAL_BLOCKS: u32 = 64;

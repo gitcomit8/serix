@@ -8,6 +8,8 @@
 use crate::BlockDev;
 
 pub const EXT4_MAGIC: u16 = 0xEF53;
+/* Compatible features */
+pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
 /* Incompatible features we must understand to mount read-write */
 pub const INCOMPAT_EXTENTS: u32 = 0x0040;
 pub const INCOMPAT_64BIT: u32 = 0x0080; /* we reject this */
@@ -94,6 +96,18 @@ impl Superblock {
 
 	pub fn bgdt_block(&self) -> u64 {
 		(self.first_data_block + 1) as u64
+	}
+
+	/* Calculate the journal block position (after inode table) */
+	pub fn journal_block(&self) -> Option<u32> {
+		/* Inode table blocks = inode_count * inode_size / block_size */
+		let inode_size = 256u32;
+		let inode_table_blocks = ((self.inodes_count as u32) * inode_size / self.block_size() as u32)
+			.max(1);
+		/* BGDT is at first_data_block + 1, block bitmap at BGDT+1, inode bitmap at BGDT+2 */
+		let bgdt = self.first_data_block + 1;
+		let inode_table_block = bgdt + 3; /* BGDT + block_bitmap + inode_bitmap */
+		Some(inode_table_block + inode_table_blocks)
 	}
 
 	pub fn inode_block_group(&self, ino: u32) -> u32 {
