@@ -192,3 +192,27 @@ impl INode for BlockDevINode {
 		(self.0.sector_count() * 512) as usize
 	}
 }
+
+/* ------------------------------------------------------------------ */
+/*  Block device registry (kernel only)                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Block device registry — maps VFS paths (e.g., "/dev/sda") to
+ * Arc<dyn BlockDev>. Used by SYS_FORMAT to look up block devices
+ * without needing to downcast INode trait objects.
+ */
+#[cfg(feature = "kernel")]
+static BLOCK_DEVICES: spin::Mutex<alloc::collections::BTreeMap<alloc::string::String, Arc<dyn BlockDev>>> =
+	spin::Mutex::new(alloc::collections::BTreeMap::new());
+
+#[cfg(feature = "kernel")]
+pub fn register_block_device(path: &str, dev: Arc<dyn BlockDev>) {
+	let mut reg = BLOCK_DEVICES.lock();
+	reg.insert(alloc::string::String::from(path), dev);
+}
+
+#[cfg(feature = "kernel")]
+pub fn lookup_block_device(path: &str) -> Option<Arc<dyn BlockDev>> {
+	BLOCK_DEVICES.lock().get(path).cloned()
+}
