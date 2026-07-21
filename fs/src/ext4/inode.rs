@@ -102,6 +102,19 @@ impl Inode {
 		})
 	}
 
+	/* Serialize the inode to a buffer (first 128 bytes) */
+	pub fn serialize(&self, buf: &mut [u8]) {
+		buf[0..2].copy_from_slice(&self.mode.to_le_bytes());
+		buf[4..8].copy_from_slice(&self.size.to_le_bytes());
+		buf[26..28].copy_from_slice(&self.links_count.to_le_bytes());
+		buf[28..32].copy_from_slice(&self.blocks.to_le_bytes());
+		buf[32..36].copy_from_slice(&self.flags.to_le_bytes());
+		for i in 0..15 {
+			let base = 40 + i * 4;
+			buf[base..base + 4].copy_from_slice(&self.block[i].to_le_bytes());
+		}
+	}
+
 	pub fn write(&self, dev: &dyn BlockDev, sb: &Superblock, bgdt: &BgDescTable) {
 		let group = sb.inode_block_group(self.ino) as usize;
 		let idx = sb.inode_local_index(self.ino) as usize;
@@ -113,15 +126,7 @@ impl Inode {
 		let off_in_blk = byte_off % bsz;
 		let mut blk_data = Self::read_block_bytes(dev, sb, bg.inode_table + block_idx as u32);
 		let dst = &mut blk_data[off_in_blk..off_in_blk + 128];
-		dst[0..2].copy_from_slice(&self.mode.to_le_bytes());
-		dst[26..28].copy_from_slice(&self.links_count.to_le_bytes());
-		dst[4..8].copy_from_slice(&self.size.to_le_bytes());
-		dst[28..32].copy_from_slice(&self.blocks.to_le_bytes());
-		dst[32..36].copy_from_slice(&self.flags.to_le_bytes());
-		for i in 0..15 {
-			let base = 40 + i * 4;
-			dst[base..base + 4].copy_from_slice(&self.block[i].to_le_bytes());
-		}
+		self.serialize(dst);
 		Self::write_block_bytes(dev, sb, bg.inode_table + block_idx as u32, &blk_data);
 	}
 }
