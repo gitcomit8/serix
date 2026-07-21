@@ -313,9 +313,12 @@ pub fn rmdir(
 		return Err("failed to remove entry from parent");
 	}
 
-	/* 6. Decrement parent's link count */
+	/* 6. Decrement parent's link count (validated) */
 	let mut parent_mut = Inode::read(dev, sb, bgdt, parent_ino).ok_or("cannot re-read parent")?;
-	parent_mut.links_count = parent_mut.links_count.saturating_sub(1);
+	if parent_mut.links_count == 0 {
+		return Err("corrupted: parent link count is zero");
+	}
+	parent_mut.links_count -= 1;
 	parent_mut.write(dev, sb, bgdt);
 
 	/* 7. Decrement child's link count (. entry) and free inode */
