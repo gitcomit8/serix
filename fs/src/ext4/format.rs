@@ -79,6 +79,8 @@ pub struct LayoutResult {
 	pub inode_bitmap_block: u32,
 	pub inode_table_block: u32,
 	pub inode_table_blocks: u32,
+	pub journal_block: u32,
+	pub journal_blocks: u32,
 	pub first_data_block: u32,
 	pub first_ino: u32,
 }
@@ -108,8 +110,13 @@ pub fn calculate_layout(
 		.max(1);
 	let inode_table_block = inode_bitmap_block + 1;
 
-	/* First data block: after inode table */
-	let first_data_block = inode_table_block + inode_table_blocks;
+	/* Journal: fixed JOURNAL_BLOCKS after inode table */
+	use super::journal::JOURNAL_BLOCKS;
+	let journal_block = inode_table_block + inode_table_blocks;
+	let journal_blocks = JOURNAL_BLOCKS;
+
+	/* First data block: after journal */
+	let first_data_block = journal_block + journal_blocks;
 
 	LayoutResult {
 		block_size,
@@ -123,6 +130,8 @@ pub fn calculate_layout(
 		inode_bitmap_block,
 		inode_table_block,
 		inode_table_blocks,
+		journal_block,
+		journal_blocks,
 		first_data_block,
 		first_ino: 11, /* reserved inodes */
 	}
@@ -186,8 +195,8 @@ fn write_superblock(dev: &dyn BlockDev, layout: &LayoutResult) {
 	/* s_feature_incompat (offset 96) */
 	raw[96..100].copy_from_slice(&INCOMPAT_EXTENTS.to_le_bytes());
 
-	/* s_feature_compat (offset 92) */
-	raw[92..96].copy_from_slice(&0u32.to_le_bytes());
+	/* s_feature_compat (offset 92) — has_journal */
+	raw[92..96].copy_from_slice(&super::superblock::COMPAT_HAS_JOURNAL.to_le_bytes());
 
 	/* s_desc_size (offset 254) */
 	raw[254..256].copy_from_slice(&32u16.to_le_bytes());
@@ -394,7 +403,23 @@ pub fn format_device(
 	}
 	init_inode_table(dev, &layout);
 
-	/* 6. Create root directory */
+	/* 6. Write journal superblock */
+	let jsb = super::journal::JournalSuperblock::new(
+		layout.block_size as u32,
+		layout.journal_block,
+		layout.journal_blocks,
+	);
+	let jsb_bytes = jsb.serialize();
+	/* Write journal superblock to first journal block */
+	let mut jsb_buf = alloc::vec![0u8; layout.block_size];
+	jsb_buf[..jsb_bytes.len()].copy_from_slice(&jsb_bytes);
+	write_block(dev, &sb, layout.journal_block, &jsb_buf);
+	/* Zero remaining journal blocks */
+	for blk in 1..layout.journal_blocks {
+		zero_block(dev, &sb, layout.journal_block + blk);
+	}
+
+	/* 7. Create root directory */
 	create_root_dir(dev, &layout);
 
 	Ok(())
