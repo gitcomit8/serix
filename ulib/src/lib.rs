@@ -32,6 +32,7 @@ const SYS_GETDENTS: usize = 18;
 const SYS_MKDIR: usize = 20;
 const SYS_UNLINK: usize = 21;
 const SYS_RMDIR: usize = 22;
+const SYS_FORMAT: usize = 23;
 
 const SYS_MMAP: usize = 90;
 const SYS_MUNMAP: usize = 91;
@@ -495,4 +496,25 @@ pub fn serix_create_notification_port(cap_handle: &mut [u64; 2], bitmask: u64) -
  */
 pub fn serix_notify(port: u64, event_mask: u64) -> i64 {
 	unsafe { syscall2(SYS_NOTIFY, port as usize, event_mask as usize) as i64 }
+}
+
+/*
+ * serix_format - Format a block device with ext4 filesystem
+ * @dev_path: Device path (e.g., "/dev/sda")
+ * @block_size: Block size in bytes (power of 2, 1024-65536)
+ * @inode_count: Total number of inodes (>= 512)
+ * @block_count: Total number of data blocks (>= 1024)
+ *
+ * Returns: 0 on success, negative errno on error
+ */
+pub fn serix_format(dev_path: &str, block_size: usize, inode_count: u32, block_count: u32) -> i64 {
+	unsafe {
+		syscall4(
+			SYS_FORMAT,
+			dev_path.as_ptr() as usize,
+			dev_path.len(),
+			block_size,
+			inode_count as usize,
+		) as i64
+	}
 }

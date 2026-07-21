@@ -4,7 +4,13 @@
  * Provides a simple 64 KiB bump allocator backed by a static array.
  * Dealloc is a no-op; memory is never reclaimed. Suitable for short-lived
  * processes like rsh where total allocation is bounded.
+ *
+ * This module is intentionally kept as dead code in the ulib crate —
+ * it is meant to be copied or re-exported by userspace binaries that
+ * need their own bump allocator (e.g., ext4d).
  */
+
+#![allow(dead_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -12,12 +18,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 const HEAP_SIZE: usize = 65536;
 
 #[repr(align(16))]
-struct HeapStorage([u8; HEAP_SIZE]);
+pub struct HeapStorage([u8; HEAP_SIZE]);
 
-static mut HEAP: HeapStorage = HeapStorage([0u8; HEAP_SIZE]);
-static HEAP_POS: AtomicUsize = AtomicUsize::new(0);
+pub static mut HEAP: HeapStorage = HeapStorage([0u8; HEAP_SIZE]);
+pub static HEAP_POS: AtomicUsize = AtomicUsize::new(0);
 
-struct BumpAllocator;
+pub struct BumpAllocator;
 
 unsafe impl GlobalAlloc for BumpAllocator {
 	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -42,5 +48,5 @@ unsafe impl GlobalAlloc for BumpAllocator {
 	}
 }
 
-#[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator;
+/* BumpAllocator is available as a local allocator for userspace crates
+ * that need it (e.g., ext4d). The kernel uses memory::heap::ALLOCATOR. */
