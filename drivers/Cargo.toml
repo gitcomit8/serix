@@ -7,7 +7,7 @@ edition = "2024"
 hal = { path = "../hal" }
 vfs = { path = "../vfs" }
 graphics = { path = "../graphics" }
-memory = { path = "../memory" }
+memory = { path = "../memory", default-features = false }
 idt = { path = "../idt" }
 apic = { path = "../apic" }
 x86_64 = "0.15.2"
