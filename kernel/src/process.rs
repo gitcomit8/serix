@@ -268,7 +268,7 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		pml4_frame: Some(pml4_frame),
 		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
-		cspace: alloc::vec::Vec::new(),
+		cspace: alloc::sync::Arc::new(spin::Mutex::new(capability::cspace::CapabilitySpace::new())),
 		virtual_runtime: 0,
 		inherited_priority: None,
 		blocked_on: None,

@@ -1,7 +1,8 @@
 [package]
 name = "capability"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 spin = "0.10.0"
+x86_64 = "0.15"

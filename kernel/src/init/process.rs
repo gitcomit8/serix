@@ -206,15 +206,14 @@ pub fn init_boot_task() -> Arc<spin::Mutex<task::TaskCB>> {
 	/* Seed RunQueue with a boot placeholder as "current" */
 	let boot_task = Arc::new(spin::Mutex::new(task::TaskCB::running_task()));
 
-	/* Pre-create IPC ports for ext4d */
-	let (ext4_req_port, ext4_req_cap) =
-		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
-	let (ext4_reply_port, ext4_reply_cap) =
-		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
+	/* Set boot task as current so create_port inserts into its cspace */
+	task::scheduler::get_per_cpu_run_queue(0).lock().current = Some(Arc::clone(&boot_task));
 
-	/* Add caps to boot task's cspace */
-	boot_task.lock().cspace.push(ext4_req_cap);
-	boot_task.lock().cspace.push(ext4_reply_cap);
+	/* Pre-create IPC ports for ext4d (auto-inserts into boot task's cspace) */
+	let (ext4_req_port, _ext4_req_cap) =
+		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REQ_PORT);
+	let (ext4_reply_port, _ext4_reply_cap) =
+		ipc::IPC_GLOBAL.create_port(fs::ext4::ipc::EXT4_REPLY_BASE);
 
 	serial_println!(
 		"ext4d: IPC ports created (req={}, reply_base={})",
@@ -222,8 +221,10 @@ pub fn init_boot_task() -> Arc<spin::Mutex<task::TaskCB>> {
 		ext4_reply_port.id()
 	);
 
-	/* Seed the run queue */
-	task::scheduler::get_per_cpu_run_queue(0).lock().current = Some(Arc::clone(&boot_task));
+	/*
+	 * ponytail: capabilities are auto-inserted into the current task's
+	 * cspace by create_port(). The old push() calls are removed.
+	 */
 
 	boot_task
 }

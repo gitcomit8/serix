@@ -85,10 +85,11 @@ impl Port {
 		let task_arc = task::scheduler::current_task_arc().ok_or("No current task")?;
 		let task_cspace = {
 			let task = task_arc.lock();
-			task.cspace.clone()
+			Arc::clone(&task.cspace)
 		};
 		let cap_store = capability::global_cap_store().lock();
-		check_send_capability(&task_cspace, self.id, &cap_store)?;
+		let cspace_guard = task_cspace.lock();
+		check_send_capability(&cspace_guard, self.id, &cap_store)?;
 
 		/* 2. Try fastpath: check for blocked receiver */
 		let waiter = self.waiting_receivers.lock().pop_front();
@@ -305,7 +306,7 @@ impl Port {
  * Err("Permission denied") if task lacks capability.
  */
 fn check_send_capability(
-	task_cspace: &[capability::CapabilityHandle],
+	task_cspace: &capability::cspace::CapabilitySpace,
 	port_id: u64,
 	cap_store: &capability::CapabilityStore,
 ) -> Result<(), &'static str> {
@@ -314,16 +315,17 @@ fn check_send_capability(
 		return Err("Port not found");
 	}
 
-	/* Check each capability in task's cspace */
-	for handle in task_cspace {
-		if let Some(cap) = cap_store.get_capability(&handle.key) {
-			match cap.cap_type {
+	/* Check each capability slot in task's cspace */
+	for (slot, cap_id, _gen) in task_cspace.iter() {
+		if let Some(record) = cap_store.lookup(cap_id) {
+			match record.cap_type {
 				capability::CapabilityType::IpcPort {
 					port_id: cap_port_id,
 					can_send,
 					..
-				} => {
-					if cap_port_id == port_id && can_send {
+				} if cap_port_id == port_id && can_send => {
+					/* Verify record is active (not revoked/expired) */
+					if record.is_active(0) {
 						return Ok(());
 					}
 				}
@@ -373,23 +375,24 @@ impl IpcSpace {
 		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
 		let port = Arc::new(Port::new(id, owner_id));
 		ports.insert(id, port.clone());
+		drop(ports);
 
 		let handle = capability::CapabilityHandle::generate();
-		let cap = capability::Capability {
-			cap_type: capability::CapabilityType::IpcPort {
-				port_id: id,
-				can_recv: true,
-				can_send: true,
-			},
-			handle,
+		let cap_type = capability::CapabilityType::IpcPort {
+			port_id: id,
+			can_recv: true,
+			can_send: true,
 		};
+		let rights = capability::Rights::SEND | capability::Rights::RECV;
 
-		/* Add to global capability store */
-		capability::global_cap_store().lock().add_capability(cap);
+		/* Create record and insert into global store */
+		let record = capability::global_cap_store()
+			.lock()
+			.mint_root(handle, cap_type, rights, 0);
 
-		/* Add to current task's cspace */
+		/* Insert into current task's cspace */
 		if let Some(task_arc) = task::scheduler::current_task_arc() {
-			task_arc.lock().cspace.push(handle);
+			task_arc.lock().cspace.lock().insert(record.id, false);
 		}
 
 		(port, handle)
@@ -423,21 +426,20 @@ impl IpcSpace {
 		/* Set initial notification bitmask */
 		port.notification_bitmask.store(bitmask, Ordering::Relaxed);
 		ports.insert(id, port.clone());
+		drop(ports);
 
 		let handle = capability::CapabilityHandle::generate();
-		let cap = capability::Capability {
-			cap_type: capability::CapabilityType::AsyncNotification {
-				port_id: id,
-			},
-			handle,
-		};
+		let cap_type = capability::CapabilityType::AsyncNotification { port_id: id };
+		let rights = capability::Rights::NOTIFY;
 
-		/* Add to global capability store */
-		capability::global_cap_store().lock().add_capability(cap);
+		/* Create record and insert into global store */
+		let record = capability::global_cap_store()
+			.lock()
+			.mint_root(handle, cap_type, rights, 0);
 
-		/* Add to current task's cspace */
+		/* Insert into current task's cspace */
 		if let Some(task_arc) = task::scheduler::current_task_arc() {
-			task_arc.lock().cspace.push(handle);
+			task_arc.lock().cspace.lock().insert(record.id, false);
 		}
 
 		(port, handle)

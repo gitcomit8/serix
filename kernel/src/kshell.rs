@@ -534,7 +534,7 @@ pub fn spawn_kshell() -> Result<u64, &'static str> {
 		pml4_frame: None,
 		children: alloc::vec::Vec::new(),
 		waiting_for_child: false,
-		cspace: alloc::vec::Vec::new(),
+		cspace: alloc::sync::Arc::new(spin::Mutex::new(capability::cspace::CapabilitySpace::new())),
 		virtual_runtime: 0,
 		inherited_priority: None,
 		blocked_on: None,

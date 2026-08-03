@@ -269,7 +269,7 @@ impl Default for CPUContext {
  * @pml4_frame: User address space PML4 frame (None for kernel tasks)
  * @children: Task IDs of spawned child processes
  * @waiting_for_child: True when task is blocked in SYS_WAIT4
- * @cspace: Per-task capability handle table
+ * @cspace: Per-task capability space (slot → CapabilityId + generation)
  */
 #[derive(Debug, Clone)]
 pub struct TaskCB {
@@ -285,7 +285,7 @@ pub struct TaskCB {
 	pub pml4_frame: Option<PhysFrame>,
 	pub children: Vec<u64>,
 	pub waiting_for_child: bool,
-	pub cspace: Vec<capability::CapabilityHandle>,
+	pub cspace: Arc<spin::Mutex<capability::cspace::CapabilitySpace>>,
 	/* virtual_runtime: Accumulated virtual CPU time (ns) for WFQ */
 	pub virtual_runtime: u64,
 	/* inherited_priority: Temporarily boosted priority from priority inheritance */
@@ -363,7 +363,7 @@ impl TaskCB {
 			pml4_frame: None,
 			children: Vec::new(),
 			waiting_for_child: false,
-			cspace: Vec::new(),
+			cspace: Arc::new(spin::Mutex::new(capability::cspace::CapabilitySpace::new())),
 			virtual_runtime: 0,
 			inherited_priority: None,
 			blocked_on: None,
@@ -391,7 +391,7 @@ impl TaskCB {
 			pml4_frame: None,
 			children: Vec::new(),
 			waiting_for_child: false,
-			cspace: Vec::new(),
+			cspace: Arc::new(spin::Mutex::new(capability::cspace::CapabilitySpace::new())),
 			virtual_runtime: 0,
 			inherited_priority: None,
 			blocked_on: None,
