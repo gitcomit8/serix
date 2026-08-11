@@ -117,6 +117,10 @@ impl CapabilitySpace {
 	pub fn remove(&mut self, slot: usize) {
 		if let Some(s) = self.slots.get_mut(slot) {
 			s.cap_id = None;
+			/* A closed slot must never validate after it is reused. */
+			s.generation = self.next_generation.get();
+			self.next_generation.set(s.generation.wrapping_add(1).max(1));
+			s.close_on_exec = false;
 		}
 	}
 
@@ -136,7 +140,11 @@ impl CapabilitySpace {
 	 * Called during execve. Removes the slot and clears the flag.
 	 */
 	pub fn close_on_exec(&mut self) {
-		self.slots.retain(|s| !s.close_on_exec);
+		for slot in 0..self.slots.len() {
+			if self.slots[slot].close_on_exec {
+				self.remove(slot);
+			}
+		}
 	}
 
 	/*

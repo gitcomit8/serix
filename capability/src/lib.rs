@@ -75,48 +75,37 @@ pub fn init_global_store() -> Result<(), &'static str> {
 /*  Entropy state                                                      */
 /* ------------------------------------------------------------------ */
 
-/// Whether secure entropy (RDSEED/RDRAND) is available on this CPU.
-/// Set during init; read-only after.
+/// Whether RDSEED/RDRAND was health-checked during boot.  A false value
+/// means the kernel is in restricted mode and must not accept capabilities
+/// originating outside its bootstrap trust boundary.
 static SECURE_ENTROPY_AVAILABLE: Once<bool> = Once::new();
 
-/*
- * has_secure_entropy — Check if secure RNG is available
- *
- /// Returns true if RDSEED or RDRAND is available.
- /// If false, capability handle generation will panic.
- */
 pub fn has_secure_entropy() -> bool {
 	*SECURE_ENTROPY_AVAILABLE.call_once(|| {
-		// Try RDSEED first
-		let mut val = 0u64;
-		let rdseed_ok =
-			unsafe { core::arch::x86_64::_rdseed64_step(&mut val) } == 1;
-		if rdseed_ok {
-			return true;
+		let mut value = 0u64;
+		let leaf1 = core::arch::x86_64::__cpuid(1);
+		let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+		if leaf7.ebx & (1 << 18) != 0 {
+			for _ in 0..16 {
+				if unsafe { core::arch::x86_64::_rdseed64_step(&mut value) } == 1 {
+					return true;
+				}
+			}
 		}
-
-		// Try RDRAND
-		let rdrand = RdRand::new();
-		rdrand.is_some()
+		if leaf1.ecx & (1 << 30) != 0 {
+			for _ in 0..16 {
+				if unsafe { core::arch::x86_64::_rdrand64_step(&mut value) } == 1 {
+					return true;
+				}
+			}
+		}
+		false
 	})
 }
 
-/*
- * init_entropy — Initialize entropy availability flag
- *
- * Called early in boot before any capability handles are minted.
- * If no secure entropy is available, the kernel should enter a
- * restricted security state and disable untrusted capability handoff.
- */
-pub fn init_entropy() {
-	let _ = has_secure_entropy();
-}
+pub fn init_entropy() { let _ = has_secure_entropy(); }
 
-/* ------------------------------------------------------------------ */
-/*  RdRand wrapper (from x86_64 crate)                                 */
-/* ------------------------------------------------------------------ */
-
-use x86_64::instructions::random::RdRand;
+pub fn restricted_mode() -> bool { !has_secure_entropy() }
 
 /* ------------------------------------------------------------------ */
 /*  Boot-time seeded handle generation (fallback)                      */
@@ -131,4 +120,69 @@ use x86_64::instructions::random::RdRand;
  /// cryptographic-quality entropy.
 pub unsafe fn handle_from_seed(seed: [u8; 16]) -> CapabilityHandle {
 	CapabilityHandle::generate_from_seed(seed)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::cspace::CapabilitySpace;
+	use crate::object::ObjectId;
+	use crate::rights::CapabilityRequest;
+	use crate::validate::validate;
+
+	fn handle(value: u8) -> CapabilityHandle { CapabilityHandle::new([value; 16]) }
+	fn request(port: u64, rights: Rights) -> CapabilityRequest {
+		CapabilityRequest {
+			object: ObjectId(port), required_rights: rights, operation: "test",
+			caller: 1,
+			expected_type: None, expected_rights: None,
+		}
+	}
+
+	#[test]
+	fn validation_enforces_membership_scope_rights_and_lifecycle() {
+		let store = CapabilityStore::new();
+		let record = store.mint_root(handle(1), CapabilityType::IpcPort {
+			port_id: 7, can_send: true, can_recv: false,
+		}, Rights::SEND, 10);
+		let mut owner = CapabilitySpace::new();
+		let slot = owner.insert(record.id, false).unwrap();
+
+		assert!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 1).is_ok());
+		assert_eq!(validate(&store, &owner, 1, slot, &request(8, Rights::SEND), 1).unwrap_err(), CapabilityError::ObjectMismatch);
+		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::RECV), 1).unwrap_err(), CapabilityError::InsufficientRights);
+		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 10).unwrap_err(), CapabilityError::Expired);
+		let foreign = CapabilitySpace::new();
+		assert_eq!(validate(&store, &foreign, 2, slot, &request(7, Rights::SEND), 1).unwrap_err(), CapabilityError::BadHandle);
+		store.revoke(record.id);
+		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 1).unwrap_err(), CapabilityError::Revoked);
+	}
+
+	#[test]
+	fn delegation_is_narrowing_and_revocation_is_transitive() {
+		let store = CapabilityStore::new();
+		let root = store.mint_root(handle(2), CapabilityType::IpcPort {
+			port_id: 9, can_send: true, can_recv: true,
+		}, Rights::SEND | Rights::RECV, 100);
+		assert_eq!(store.delegate(&root, Rights::SEND | Rights::NOTIFY, 0).unwrap_err(), store::DelegateError::RightsSuperset);
+		assert_eq!(store.delegate(&root, Rights::SEND, 101).unwrap_err(), store::DelegateError::ExpiryExceedsParent);
+		let child = store.delegate(&root, Rights::SEND, 0).unwrap();
+		let grandchild = store.delegate(&child, Rights::SEND, 0).unwrap();
+		let great_grandchild = store.delegate(&grandchild, Rights::SEND, 0).unwrap();
+		store.revoke(root.id);
+		for id in [root.id, child.id, grandchild.id, great_grandchild.id] {
+			assert!(store.lookup(id).unwrap().revoked);
+		}
+	}
+
+	#[test]
+	fn reused_slot_has_a_new_generation() {
+		let mut space = CapabilitySpace::new();
+		let first = space.insert(CapabilityId::new(1), false).unwrap();
+		let old_generation = space.get(first).unwrap().1;
+		space.remove(first);
+		let reused = space.insert(CapabilityId::new(2), false).unwrap();
+		assert_eq!(first, reused);
+		assert_ne!(old_generation, space.get(reused).unwrap().1);
+	}
 }
