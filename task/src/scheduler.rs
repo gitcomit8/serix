@@ -80,6 +80,13 @@ impl RunQueue {
 		self.queue.pop_front()
 	}
 
+	fn dequeue_scheduled(&mut self) -> Option<Arc<Mutex<TaskCB>>> {
+		let tasks: Vec<_> = self.queue.iter().cloned().collect();
+		let selected = crate::wfq::pick_next(&tasks)?;
+		let index = self.queue.iter().position(|task| Arc::ptr_eq(task, &selected))?;
+		self.queue.remove(index)
+	}
+
 	/*
 	 * peek - Inspect the next task without removing it
 	 *
@@ -257,7 +264,7 @@ pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
 pub fn pick_next_task() -> Option<Arc<Mutex<TaskCB>>> {
 	let cpu_id = current_cpu_id();
 	let mut rq = get_per_cpu_run_queue(cpu_id).lock();
-	let next = rq.dequeue()?;
+	let next = rq.dequeue_scheduled()?;
 	{
 		let mut task = next.lock();
 		task.set_state(TaskState::Running);
@@ -282,6 +289,7 @@ pub fn reschedule_current() {
 	let cpu_id = current_cpu_id();
 	let mut rq = get_per_cpu_run_queue(cpu_id).lock();
 	if let Some(task) = rq.current.take() {
+		crate::wfq::update_virtual_runtime(&mut task.lock());
 		/* Skip re-enqueue for the boot placeholder (kstack == 0) */
 		let dominated = task.lock().kstack.as_u64() == 0;
 		if !dominated {
