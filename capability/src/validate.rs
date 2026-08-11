@@ -79,11 +79,15 @@ pub fn validate(
 		return Err(CapabilityError::Expired);
 	}
 
-	/* 8. Object equality/scope containment */
-	// ponytail: object containment check added when CapabilityRecord
-	//           carries an object_id field. For now, rights containment
-	//           is the primary enforcement mechanism.
-	let _ = request.object;
+	/* 8. Object equality/scope containment. IPC capability variants carry
+	 * their object identity directly; accepting a matching right on a
+	 * different port would turn the capability into ambient authority. */
+	match record.cap_type {
+		crate::CapabilityType::IpcPort { port_id, .. }
+		| crate::CapabilityType::AsyncNotification { port_id }
+			if request.object.0 != port_id => return Err(CapabilityError::ObjectMismatch),
+		_ => {}
+	}
 
 	/* 9. Type check — does the capability type match? */
 	if let Some(expected_type) = request.expected_type {

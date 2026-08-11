@@ -9,7 +9,7 @@
 use crate::types::{
 	CapabilityHandle, CapabilityId, CapabilityRecord, CapabilityType, Rights,
 };
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -24,6 +24,9 @@ pub struct CapabilityStore {
 	next_id: Mutex<u64>,
 	/// Reverse index: handle → CapabilityId (for handle-based lookup)
 	handle_index: Mutex<BTreeMap<[u8; 16], CapabilityId>>,
+	/// Parent → direct descendants.  This makes revocation transitive without
+	/// repeatedly scanning the authoritative store.
+	descendants: Mutex<BTreeMap<CapabilityId, BTreeSet<CapabilityId>>>,
 }
 
 impl CapabilityStore {
@@ -35,6 +38,7 @@ impl CapabilityStore {
 			records: Mutex::new(BTreeMap::new()),
 			next_id: Mutex::new(1), // 0 is reserved
 			handle_index: Mutex::new(BTreeMap::new()),
+			descendants: Mutex::new(BTreeMap::new()),
 		}
 	}
 
@@ -90,6 +94,9 @@ impl CapabilityStore {
 
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(record.handle.key, record.id);
+		if let Some(parent) = record.parent {
+			self.descendants.lock().entry(parent).or_default().insert(record.id);
+		}
 
 		record.id
 	}
@@ -141,6 +148,7 @@ impl CapabilityStore {
 
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(handle.key, id);
+		self.descendants.lock().entry(source.id).or_default().insert(id);
 
 		record
 	}
@@ -202,6 +210,7 @@ impl CapabilityStore {
 
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(handle.key, id);
+		self.descendants.lock().entry(parent.id).or_default().insert(id);
 
 		Ok(record)
 	}
@@ -215,6 +224,12 @@ impl CapabilityStore {
 			self.records.lock().remove(&id);
 			let mut handle_idx = self.handle_index.lock();
 			handle_idx.remove(&record.handle.key);
+			if let Some(parent) = record.parent {
+				if let Some(children) = self.descendants.lock().get_mut(&parent) {
+					children.remove(&id);
+				}
+			}
+			self.descendants.lock().remove(&id);
 		}
 	}
 
@@ -227,21 +242,15 @@ impl CapabilityStore {
 	pub fn revoke(&self, id: CapabilityId) {
 		let mut records = self.records.lock();
 
-		// Mark the target
-		if let Some(rec) = records.get_mut(&id) {
-			rec.revoked = true;
-		}
-
-		// Mark all descendants (simple traversal; optimize with epoch tree later)
-		let descendant_ids: Vec<CapabilityId> = records
-			.values()
-			.filter(|r| r.parent == Some(id) && !r.revoked)
-			.map(|r| r.id)
-			.collect();
-
-		for desc_id in descendant_ids {
-			if let Some(rec) = records.get_mut(&desc_id) {
+		let descendants = self.descendants.lock();
+		let mut pending = Vec::new();
+		pending.push(id);
+		while let Some(current) = pending.pop() {
+			if let Some(rec) = records.get_mut(&current) {
 				rec.revoked = true;
+			}
+			if let Some(children) = descendants.get(&current) {
+				pending.extend(children.iter().copied());
 			}
 		}
 	}
@@ -250,12 +259,9 @@ impl CapabilityStore {
 	 * get_descendants — List all direct child CapabilityIds
 	 */
 	pub fn get_descendants(&self, parent_id: CapabilityId) -> Vec<CapabilityId> {
-		self.records
-			.lock()
-			.values()
-			.filter(|r| r.parent == Some(parent_id))
-			.map(|r| r.id)
-			.collect()
+		self.descendants.lock().get(&parent_id)
+			.map(|children| children.iter().copied().collect())
+			.unwrap_or_default()
 	}
 
 	/*
