@@ -36,6 +36,7 @@ pub struct Port {
 	waiting_receivers: Mutex<VecDeque<Arc<spin::Mutex<TaskCB>>>>,
 	/* Notification bitmask for async notification ports */
 	notification_bitmask: AtomicU64,
+	is_notification_port: bool,
 }
 
 impl Port {
@@ -47,12 +48,17 @@ impl Port {
 	 * Return: New Port instance
 	 */
 	pub fn new(id: u64, owner_id: u64) -> Self {
+		Self::new_with_kind(id, owner_id, false)
+	}
+
+	fn new_with_kind(id: u64, owner_id: u64, is_notification_port: bool) -> Self {
 		Self {
 			id,
 			owner_id,
 			queue: Mutex::new(VecDeque::with_capacity(PORT_QUEUE_LEN)),
 			waiting_receivers: Mutex::new(VecDeque::new()),
 			notification_bitmask: AtomicU64::new(0),
+			is_notification_port,
 		}
 	}
 
@@ -81,6 +87,9 @@ impl Port {
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
 	pub fn send(&self, msg: Message) -> Result<(), &'static str> {
+		if self.is_notification_port {
+			return Err("Notification ports do not queue messages");
+		}
 		/* 1. Capability Authorization Check */
 		let task_arc = task::scheduler::current_task_arc().ok_or("No current task")?;
 		let task_cspace = {
@@ -91,9 +100,13 @@ impl Port {
 		let cspace_guard = task_cspace.lock();
 		check_send_capability(&cspace_guard, self.id, &cap_store)?;
 
-		/* 2. Try fastpath: check for blocked receiver */
-		let waiter = self.waiting_receivers.lock().pop_front();
+		/* 2. Direct delivery is legal only while the queued stream is empty.
+		 * This preserves FIFO ordering if a stale waiter and queued messages
+		 * briefly coexist around a wakeup.  Lock order is queue → waiters. */
+		let mut q = self.queue.lock();
+		let waiter = if q.is_empty() { self.waiting_receivers.lock().pop_front() } else { None };
 		if let Some(receiver) = waiter {
+			drop(q);
 			/* Fastpath: inject message directly into receiver's TaskCB */
 			let msg_arc = Arc::new(msg);
 			task::inject_direct_message(&receiver, msg_arc);
@@ -102,7 +115,6 @@ impl Port {
 		}
 
 		/* 3. Slowpath: enqueue message */
-		let mut q = self.queue.lock();
 		if q.len() >= PORT_QUEUE_LEN {
 			return Err("Port queue full");
 		}
@@ -132,9 +144,13 @@ impl Port {
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
 	pub fn send_kernel(&self, msg: Message) -> Result<(), &'static str> {
-		/* Try fastpath: check for blocked receiver */
-		let waiter = self.waiting_receivers.lock().pop_front();
+		if self.is_notification_port {
+			return Err("Notification ports do not queue messages");
+		}
+		let mut q = self.queue.lock();
+		let waiter = if q.is_empty() { self.waiting_receivers.lock().pop_front() } else { None };
 		if let Some(receiver) = waiter {
+			drop(q);
 			/* Fastpath: inject message directly into receiver's TaskCB */
 			let msg_arc = Arc::new(msg);
 			task::inject_direct_message(&receiver, msg_arc);
@@ -143,7 +159,6 @@ impl Port {
 		}
 
 		/* Slowpath: enqueue message */
-		let mut q = self.queue.lock();
 		if q.len() >= PORT_QUEUE_LEN {
 			return Err("Port queue full");
 		}
@@ -207,7 +222,7 @@ impl Port {
 	 */
 	pub fn is_notification_port(&self) -> bool {
 		/* Notification ports have a non-zero initial bitmask set by create_notification_port */
-		false /* Default ports are not notification ports; set by create_notification_port */
+		self.is_notification_port
 	}
 
 	/*
@@ -422,7 +437,7 @@ impl IpcSpace {
 	pub fn create_notification_port(&self, id: u64, bitmask: u64) -> (Arc<Port>, capability::CapabilityHandle) {
 		let mut ports = self.ports.write();
 		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
-		let port = Arc::new(Port::new(id, owner_id));
+		let port = Arc::new(Port::new_with_kind(id, owner_id, true));
 		/* Set initial notification bitmask */
 		port.notification_bitmask.store(bitmask, Ordering::Relaxed);
 		ports.insert(id, port.clone());
@@ -430,7 +445,7 @@ impl IpcSpace {
 
 		let handle = capability::CapabilityHandle::generate();
 		let cap_type = capability::CapabilityType::AsyncNotification { port_id: id };
-		let rights = capability::Rights::NOTIFY;
+		let rights = capability::Rights::NOTIFY | capability::Rights::RECV;
 
 		/* Create record and insert into global store */
 		let record = capability::global_cap_store()
