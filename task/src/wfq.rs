@@ -35,13 +35,13 @@ const WFQ_TICK_DURATION_NS: u64 = 1600;
  * @priority: Task priority (100-139 for Fair class)
  *
  * Returns weight where lower priority number = higher weight.
- * Priority 100 → weight 1, priority 139 → weight 40.
+ * Priority 100 → weight 40, priority 139 → weight 1.
  */
 pub fn wfq_weight(priority: u8) -> u64 {
 	if priority <= 100 {
-		1
+		40
 	} else {
-		(priority - 100) as u64 + 1
+		(140u8.saturating_sub(priority)) as u64
 	}
 }
 
@@ -56,15 +56,28 @@ pub fn wfq_weight(priority: u8) -> u64 {
  * Return: Some(Arc) of the selected task, None if queue is empty
  */
 pub fn pick_next_wfq(tasks: &[Arc<Mutex<TaskCB>>]) -> Option<Arc<Mutex<TaskCB>>> {
+	/* Preserve the fixed class ordering before applying WFQ inside Fair. */
+	for task in tasks {
+		if matches!(task.lock().sched_class, SchedClass::Realtime(_)) {
+			return Some(Arc::clone(task));
+		}
+	}
+	for task in tasks {
+		if matches!(task.lock().sched_class, SchedClass::Iso) {
+			return Some(Arc::clone(task));
+		}
+	}
 	let mut best: Option<Arc<Mutex<TaskCB>>> = None;
 	let mut min_vruntime: u64 = u64::MAX;
 
 	for task in tasks {
 		let t = task.lock();
 
-		/* RT tasks always run first */
-		if let SchedClass::Realtime(_) = t.sched_class {
-			return Some(Arc::clone(task));
+		/* Fair is ordered by virtual runtime; Batch is the final fallback. */
+		match t.sched_class {
+			SchedClass::Batch => continue,
+			SchedClass::Fair(_) => {}
+			SchedClass::Realtime(_) | SchedClass::Iso => continue,
 		}
 
 		/* Fair tasks: pick lowest virtual runtime */
@@ -74,7 +87,7 @@ pub fn pick_next_wfq(tasks: &[Arc<Mutex<TaskCB>>]) -> Option<Arc<Mutex<TaskCB>>>
 		}
 	}
 
-	best
+	best.or_else(|| tasks.iter().find(|task| matches!(task.lock().sched_class, SchedClass::Batch)).cloned())
 }
 
 /*
@@ -90,7 +103,7 @@ pub fn update_virtual_runtime(task: &mut TaskCB) {
 			let weight = wfq_weight(task.priority());
 			task.virtual_runtime += WFQ_TICK_DURATION_NS * 100 / weight;
 		}
-		_ => {}
+		SchedClass::Batch | SchedClass::Iso | SchedClass::Realtime(_) => {}
 	}
 }
 
