@@ -12,10 +12,10 @@ all: iso
 
 ext4d:
 	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
-	  cargo build -p ext4d --release --target x86_64-unknown-none
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem -p ext4d --release --target x86_64-unknown-none
 
 kernel: ext4d
-	cargo build --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
+	cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
 
 limine:
 	if [ ! -d $(LIMINE_DIR) ]; then \
