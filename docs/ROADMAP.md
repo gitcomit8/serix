@@ -87,7 +87,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 3: Preemptive Scheduling & IPC Hardening 🔄
 
-**Status:** Core features complete; SMP and advanced scheduler features deferred to Phase 7
+**Status:** Single-CPU baseline in progress; SMP, per-CPU queues/TSS, and Ring-3 VirtIO are Phase 7 work
 
 ### Preemptive SMP Scheduler
 
@@ -95,9 +95,9 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] LAPIC timer-driven preemption at ~625 Hz invoking `schedule()` (vector 49)
 - [x] SLUB-allocated 1 MiB per-task kernel stacks with guard pages
 - [x] Callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking
-- [ ] Per-CPU run queues with `GS_BASE` MSR pointing to per-CPU data area
-- [ ] `TSS.RSP0` swap on context switch for per-task kernel stacks
-- [ ] Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
+- [ ] Per-CPU run queues with `GS_BASE` MSR pointing to per-CPU data area (Phase 7)
+- [ ] `TSS.RSP0` swap on context switch for per-task kernel stacks (Phase 7)
+- [x] Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
 - [ ] Priority inheritance protocol for capability-holding tasks in critical sections
 
 ### SMP Bring-Up
@@ -125,13 +125,13 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] `read_sector()` / `write_sector()` with polled completion (spin_loop) (IRQ 11 → vector 34, IOAPIC)
 - [x] `BlockDevice` VFS INode: byte-oriented read/write with sector-aligned translation and read-modify-write
 - [x] 32 MiB disk (65536 sectors), write→read verified via VFS interface
-- [ ] Ring 3 driver server process with MMIO BAR mapped into userspace
+- [ ] Ring 3 driver server process with MMIO BAR mapped into userspace (Phase 7)
 
 ---
 
 ## Phase 4: Storage & Filesystem Stack
 
-**Status:** In progress (FAT32 complete; ext4 daemon MVP integrated)
+**Status:** In progress. Existing ext4d/cache code is MVP-only until its listed recovery and coherence acceptance tests are added and pass.
 
 ### VFS Core Enhancements
 
@@ -221,14 +221,16 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 6: Security Bridge & Capability Enforcement
 
-**Status:** Planned
+**Status:** Phase 6.1 in progress; Phase 6.2 POSIX/LES syscall gating remains planned.
 
-### Capability Store Enforcement
+### Capability Store Enforcement (Phase 6.1)
 
-- [ ] Gate every syscall/IPC entry with `CapabilityStore::validate()` — reject unauthorized access with `EPERM`
+- [ ] Gate every IPC entry with `CapabilityStore::validate()` before observable state changes; non-IPC syscall gates are Phase 6.2
 - [ ] Per-task capability table (inherited on `clone()`, cleared on `execve()` unless marked inheritable)
 - [ ] Capability delegation: tasks can `grant()` subsets of their capabilities to child tasks
-- [ ] Revocation cascading: revoking a capability invalidates all delegated descendants
+- [x] Revocation cascading: revoking a capability invalidates all delegated descendants
+
+Lock order is fixed as: `task table → C-space → capability store → object`. No code may acquire an earlier lock while holding a later one.
 
 ### POSIX-to-Capability Authorization Bridge (Ring 3)
 
@@ -251,6 +253,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [ ] `x2APIC` mode enable (MSR-based, no MMIO) when CPUID indicates support
 - [ ] Per-CPU data structures (`PerCpuData`) accessed via `GS_BASE` MSR
 - [ ] Inter-Processor Interrupt (IPI) primitives: TLB shootdown, scheduler kick, panic broadcast
+- [ ] BORE scheduler policy, only after SMP, per-CPU scheduling, and IPI support have stabilized; WFQ remains the Phase 3 baseline.
 
 ### IOMMU (Intel VT-d / AMD-Vi)
 
