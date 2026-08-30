@@ -90,6 +90,50 @@ pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
 pub const ERRNO_EPERM: u64 = u64::MAX - 1; /* Operation not permitted (errno 1) */
 pub const ERRNO_ENOTBLK: u64 = u64::MAX - 15; /* Not a block device (errno 16) */
 
+/* ------------------------------------------------------------------ */
+/*  Capability authorization metadata                                  */
+/* ------------------------------------------------------------------ */
+
+/// The object class a protected syscall must derive from validated
+/// authority. This table is intentionally exhaustive: adding a dispatcher
+/// arm requires deciding whether it is unprotected or which authority it
+/// consumes before implementation can proceed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyscallAuthorization {
+	Unprotected,
+	Capability { rights: capability::Rights },
+}
+
+/// authorization_for - The mandatory authorization class for a syscall.
+///
+/// Object identity is supplied by the validated capability record, never by
+/// a raw syscall object identifier.  The ABI migration consumes this table
+/// incrementally; keeping it central prevents new raw-authority paths.
+pub const fn authorization_for(nr: u64) -> SyscallAuthorization {
+	use capability::Rights;
+	match nr {
+		SYS_EXIT | SYS_YIELD | SYS_GETPID | SYS_GETPPID => SyscallAuthorization::Unprotected,
+		SYS_SPAWN => SyscallAuthorization::Capability { rights: Rights::SPAWN },
+		SYS_WAIT => SyscallAuthorization::Capability { rights: Rights::WAIT },
+		SYS_OPEN => SyscallAuthorization::Capability { rights: Rights::LOOKUP },
+		SYS_CLOSE => SyscallAuthorization::Capability { rights: Rights::WRITE },
+		SYS_READ | SYS_GETDENTS => SyscallAuthorization::Capability { rights: Rights::READ },
+		SYS_WRITE => SyscallAuthorization::Capability { rights: Rights::WRITE },
+		SYS_SEEK => SyscallAuthorization::Capability { rights: Rights::SEEK },
+		SYS_DUP | SYS_DUP2 => SyscallAuthorization::Capability { rights: Rights::DUP },
+		SYS_PIPE => SyscallAuthorization::Capability { rights: Rights::CONTROL },
+		SYS_MKDIR | SYS_UNLINK | SYS_RMDIR => SyscallAuthorization::Capability { rights: Rights::METADATA },
+		SYS_FORMAT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
+		SYS_MMAP => SyscallAuthorization::Capability { rights: Rights::MMAP },
+		SYS_MUNMAP => SyscallAuthorization::Capability { rights: Rights::MUNMAP },
+		SYS_SEND => SyscallAuthorization::Capability { rights: Rights::SEND },
+		SYS_RECV | SYS_RECV_BLOCK => SyscallAuthorization::Capability { rights: Rights::RECV },
+		SYS_CREATE_PORT | SYS_CREATE_NOTIFICATION_PORT => SyscallAuthorization::Capability { rights: Rights::CONTROL },
+		SYS_NOTIFY => SyscallAuthorization::Capability { rights: Rights::NOTIFY },
+		_ => SyscallAuthorization::Unprotected,
+	}
+}
+
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000; /* 128 TiB - typical userspace limit */
