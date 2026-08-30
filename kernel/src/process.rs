@@ -255,7 +255,7 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	let child_id_val = task::TaskId::new();
 	let child_id = child_id_val.0;
 
-	let tcb = task::TaskCB {
+	let mut tcb = task::TaskCB {
 		id: child_id_val,
 		state: task::TaskState::Ready,
 		sched_class: task::SchedClass::Fair(120),
@@ -275,6 +275,15 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		direct_msg: None,
 		direct_msg_valid: false,
 	};
+
+	/* Bootstrap grants are explicit, least-privilege child capabilities. They
+	 * replace the former assumption that a well-known port number conveys
+	 * authority. The daemon receives slot 0 = request/RECV and slot 1 =
+	 * reply/SEND; both generations are 1 in its freshly-created C-space. */
+	if path == "/ext4d" {
+		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REQ_PORT, capability::Rights::RECV)?;
+		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REPLY_BASE, capability::Rights::SEND)?;
+	}
 
 	/* 9. Initialise stdio fds */
 	crate::fd::init_stdio(child_id);
@@ -297,4 +306,33 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	);
 
 	Ok(child_id)
+}
+
+/* grant_bootstrap_ipc - Derive a service's initial IPC authority from the
+ * boot task's root capability. This is a controlled kernel bootstrap action,
+ * not a raw-ID authorization path. */
+fn grant_bootstrap_ipc(
+	child: &mut task::TaskCB,
+	port_id: u64,
+	rights: capability::Rights,
+) -> Result<(), &'static str> {
+	let boot = task::scheduler::current_task_arc().ok_or("bootstrap: no boot task")?;
+	let source = {
+		let cspace = boot.lock().cspace.clone();
+		let cspace = cspace.lock();
+		let store = capability::global_cap_store().lock();
+		cspace.iter().find_map(|(_, id, _)| {
+			let record = store.lookup(id)?;
+			match record.cap_type {
+				capability::CapabilityType::IpcPort { port_id: id, .. } if id == port_id => Some(record),
+				_ => None,
+			}
+		})
+	}.ok_or("bootstrap: IPC root capability missing")?;
+	let child_record = capability::global_cap_store()
+		.lock()
+		.delegate_checked(source.id, rights, 0, 0)
+		.map_err(|_| "bootstrap: unable to delegate IPC capability")?;
+	child.cspace.lock().insert(child_record.id, false).ok_or("bootstrap: C-space full")?;
+	Ok(())
 }
