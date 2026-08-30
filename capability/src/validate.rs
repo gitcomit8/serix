@@ -17,7 +17,7 @@
  * 9. Rights containment
  */
 
-use crate::cspace::CapabilitySpace;
+use crate::cspace::{CapabilityRef, CapabilitySpace};
 use crate::store::CapabilityStore;
 use crate::types::CapabilityHandle;
 use crate::{CapabilityError, CapabilityRequest, ValidatedCapability};
@@ -43,22 +43,19 @@ pub fn validate(
 	store: &CapabilityStore,
 	cspace: &CapabilitySpace,
 	_caller_id: u64,
-	slot: usize,
+	reference: CapabilityRef,
 	request: &CapabilityRequest,
 	now: u64,
 ) -> Result<ValidatedCapability, CapabilityError> {
 	/* 1. C-space membership — does the slot exist? */
-	let (cap_id, slot_gen) = cspace
-		.get(slot)
-		.ok_or(CapabilityError::BadHandle)?;
+	let cap_id = cspace.resolve(reference)?;
+	let slot_gen = reference.generation();
 
 	/* 2. Slot generation — has the slot been reused? */
 	// (generation is always valid here since we got it from cspace.get)
 
 	/* 3. Record existence — is the CapabilityId in the store? */
-	let record = store
-		.lookup(cap_id)
-		.ok_or(CapabilityError::NotFound)?;
+	let record = store.lookup(cap_id).ok_or(CapabilityError::NotFound)?;
 
 	/* 4. Record generation — was the record replaced? */
 	// (generation is stored in the record; we'd track this if records
@@ -85,15 +82,23 @@ pub fn validate(
 	match record.cap_type {
 		crate::CapabilityType::IpcPort { port_id, .. }
 		| crate::CapabilityType::AsyncNotification { port_id }
-			if request.object.0 != port_id => return Err(CapabilityError::ObjectMismatch),
+			if request.object.0 != port_id =>
+		{
+			return Err(CapabilityError::ObjectMismatch);
+		}
 		_ => {}
 	}
 
 	/* 9. Type check — does the capability type match? */
-	if let Some(expected_type) = request.expected_type {
-		if record.cap_type != expected_type {
-			return Err(CapabilityError::TypeMismatch);
-		}
+	if let Some(expected_type) = request.expected_type
+		&& record.cap_type != expected_type
+	{
+		return Err(CapabilityError::TypeMismatch);
+	}
+	if let Some(expected_rights) = request.expected_rights
+		&& !record.rights.contains(expected_rights)
+	{
+		return Err(CapabilityError::InsufficientRights);
 	}
 
 	/* 10. Rights containment — does the capability grant the needed rights? */
@@ -106,7 +111,7 @@ pub fn validate(
 
 	Ok(ValidatedCapability {
 		record,
-		slot,
+		slot: reference.slot(),
 		generation: slot_gen,
 		granted_rights,
 	})
@@ -133,15 +138,22 @@ pub fn validate_handle(
 	let mut found_slot = None;
 	for (slot, cap_id, generation) in cspace.iter() {
 		// Look up the record and compare handle
-		if let Some(record) = store.lookup(cap_id) {
-			if record.handle == *handle {
-				found_slot = Some((slot, generation));
-				break;
-			}
+		if let Some(record) = store.lookup(cap_id)
+			&& record.handle == *handle
+		{
+			found_slot = Some((slot, generation));
+			break;
 		}
 	}
 
-	let (slot, _) = found_slot.ok_or(CapabilityError::BadHandle)?;
+	let (slot, generation) = found_slot.ok_or(CapabilityError::BadHandle)?;
 
-	validate(store, cspace, caller_id, slot, request, now)
+	validate(
+		store,
+		cspace,
+		caller_id,
+		CapabilityRef::from_syscall(slot, generation),
+		request,
+		now,
+	)
 }

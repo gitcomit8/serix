@@ -6,11 +6,10 @@
  * Thread-safe via Mutex.
  */
 
-use crate::types::{
-	CapabilityHandle, CapabilityId, CapabilityRecord, CapabilityType, Rights,
-};
+use crate::types::{CapabilityHandle, CapabilityId, CapabilityRecord, CapabilityType, Rights};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 /* ------------------------------------------------------------------ */
@@ -27,6 +26,9 @@ pub struct CapabilityStore {
 	/// Parent → direct descendants.  This makes revocation transitive without
 	/// repeatedly scanning the authoritative store.
 	descendants: Mutex<BTreeMap<CapabilityId, BTreeSet<CapabilityId>>>,
+	/// Phase 7 cache contract: revocation increments this epoch before return.
+	/// Phase 6 has no validation cache, so no acknowledgement is required yet.
+	revocation_epoch: AtomicU64,
 }
 
 impl CapabilityStore {
@@ -39,6 +41,7 @@ impl CapabilityStore {
 			next_id: Mutex::new(1), // 0 is reserved
 			handle_index: Mutex::new(BTreeMap::new()),
 			descendants: Mutex::new(BTreeMap::new()),
+			revocation_epoch: AtomicU64::new(0),
 		}
 	}
 
@@ -95,7 +98,11 @@ impl CapabilityStore {
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(record.handle.key, record.id);
 		if let Some(parent) = record.parent {
-			self.descendants.lock().entry(parent).or_default().insert(record.id);
+			self.descendants
+				.lock()
+				.entry(parent)
+				.or_default()
+				.insert(record.id);
 		}
 
 		record.id
@@ -148,7 +155,11 @@ impl CapabilityStore {
 
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(handle.key, id);
-		self.descendants.lock().entry(source.id).or_default().insert(id);
+		self.descendants
+			.lock()
+			.entry(source.id)
+			.or_default()
+			.insert(id);
 
 		record
 	}
@@ -210,9 +221,37 @@ impl CapabilityStore {
 
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(handle.key, id);
-		self.descendants.lock().entry(parent.id).or_default().insert(id);
+		self.descendants
+			.lock()
+			.entry(parent.id)
+			.or_default()
+			.insert(id);
 
 		Ok(record)
+	}
+
+	/// delegate_checked - Delegate from a currently live parent record.
+	///
+	/// This is the public lifecycle entry point. It prevents callers holding a
+	/// stale copied record from minting authority after its store record was
+	/// revoked or expired.
+	pub fn delegate_checked(
+		&self,
+		parent_id: CapabilityId,
+		reduced_rights: Rights,
+		expiry_ticks: u64,
+		now: u64,
+	) -> Result<CapabilityRecord, DelegateError> {
+		let parent = self
+			.lookup(parent_id)
+			.ok_or(DelegateError::ParentNotFound)?;
+		if parent.revoked {
+			return Err(DelegateError::ParentRevoked);
+		}
+		if parent.is_expired(now) {
+			return Err(DelegateError::ParentExpired);
+		}
+		self.delegate(&parent, reduced_rights, expiry_ticks)
 	}
 
 	/*
@@ -224,10 +263,10 @@ impl CapabilityStore {
 			self.records.lock().remove(&id);
 			let mut handle_idx = self.handle_index.lock();
 			handle_idx.remove(&record.handle.key);
-			if let Some(parent) = record.parent {
-				if let Some(children) = self.descendants.lock().get_mut(&parent) {
-					children.remove(&id);
-				}
+			if let Some(parent) = record.parent
+				&& let Some(children) = self.descendants.lock().get_mut(&parent)
+			{
+				children.remove(&id);
 			}
 			self.descendants.lock().remove(&id);
 		}
@@ -253,13 +292,31 @@ impl CapabilityStore {
 				pending.extend(children.iter().copied());
 			}
 		}
+		/* Publish only after every descendant has been marked revoked. */
+		self.revocation_epoch.fetch_add(1, Ordering::Release);
+	}
+
+	/// validation_epoch - Epoch a future per-CPU validation cache must observe.
+	pub fn validation_epoch(&self) -> u64 {
+		self.revocation_epoch.load(Ordering::Acquire)
+	}
+
+	/// acknowledge_validation_epoch - Phase 7 acknowledgement hook.
+	///
+	/// Phase 6 deliberately has no cache, therefore acknowledgement is a
+	/// no-op. A cache implementation must retain this interface and only make
+	/// synchronous revocation visible once every participating CPU has acked.
+	pub fn acknowledge_validation_epoch(&self, _cpu_id: u32, epoch: u64) -> bool {
+		epoch <= self.validation_epoch()
 	}
 
 	/*
 	 * get_descendants — List all direct child CapabilityIds
 	 */
 	pub fn get_descendants(&self, parent_id: CapabilityId) -> Vec<CapabilityId> {
-		self.descendants.lock().get(&parent_id)
+		self.descendants
+			.lock()
+			.get(&parent_id)
 			.map(|children| children.iter().copied().collect())
 			.unwrap_or_default()
 	}
@@ -269,6 +326,12 @@ impl CapabilityStore {
 	 */
 	pub fn count(&self) -> usize {
 		self.records.lock().len()
+	}
+}
+
+impl Default for CapabilityStore {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
@@ -282,4 +345,7 @@ pub enum DelegateError {
 	RightsSuperset,
 	/// Requested expiry exceeds parent's expiry
 	ExpiryExceedsParent,
+	ParentNotFound,
+	ParentRevoked,
+	ParentExpired,
 }
