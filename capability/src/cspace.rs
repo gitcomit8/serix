@@ -14,6 +14,38 @@ use core::cell::Cell;
 /// Large enough for typical workloads; grows dynamically beyond this.
 const INITIAL_CAPACITY: usize = 64;
 
+/* ------------------------------------------------------------------ */
+/*  CapabilityRef — syscall-safe C-space reference                    */
+/* ------------------------------------------------------------------ */
+
+/// A reference to a capability slot supplied at a syscall boundary.
+///
+/// Slot indices are only names within one C-space. The generation is part of
+/// the name: accepting the slot alone would let a closed reference become
+/// valid again if the slot were reused. 128-bit handles are reserved for
+/// explicit capability-transfer protocols, not ordinary syscalls.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CapabilityRef {
+	slot: usize,
+	generation: u32,
+}
+
+impl CapabilityRef {
+	/// Decode the two scalar words in the syscall ABI. This does not grant
+	/// authority; `validate` still compares this with the live C-space slot.
+	pub const fn from_syscall(slot: usize, generation: u32) -> Self {
+		Self { slot, generation }
+	}
+
+	pub const fn slot(self) -> usize {
+		self.slot
+	}
+	pub const fn generation(self) -> u32 {
+		self.generation
+	}
+}
+
 /// A single slot in the capability space.
 #[derive(Clone, Debug)]
 struct Slot {
@@ -23,16 +55,6 @@ struct Slot {
 	generation: u32,
 	/// Close this slot on execve
 	close_on_exec: bool,
-}
-
-impl Slot {
-	const fn empty() -> Self {
-		Slot {
-			cap_id: None,
-			generation: 0,
-			close_on_exec: false,
-		}
-	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -69,11 +91,7 @@ impl CapabilitySpace {
 	 * Returns the slot index, or None if the capability should not be
 	 * placed (e.g., delegation depth exceeded).
 	 */
-	pub fn insert(
-		&mut self,
-		cap_id: CapabilityId,
-		close_on_exec: bool,
-	) -> Option<usize> {
+	pub fn insert(&mut self, cap_id: CapabilityId, close_on_exec: bool) -> Option<usize> {
 		// Find first empty slot
 		let slots = &mut self.slots;
 		for (i, slot) in slots.iter_mut().enumerate() {
@@ -106,9 +124,29 @@ impl CapabilitySpace {
 	 * that's validate()'s job.
 	 */
 	pub fn get(&self, slot: usize) -> Option<(CapabilityId, u32)> {
-		self.slots.get(slot).and_then(|s| {
-			s.cap_id.map(|id| (id, s.generation))
-		})
+		self.slots
+			.get(slot)
+			.and_then(|s| s.cap_id.map(|id| (id, s.generation)))
+	}
+
+	/// reference - Return the current syscall reference for an occupied slot.
+	pub fn reference(&self, slot: usize) -> Option<CapabilityRef> {
+		self.get(slot)
+			.map(|(_, generation)| CapabilityRef { slot, generation })
+	}
+
+	/// resolve - Look up a supplied reference and reject stale generations.
+	pub fn resolve(
+		&self,
+		reference: CapabilityRef,
+	) -> Result<CapabilityId, crate::CapabilityError> {
+		let (cap_id, live_generation) = self
+			.get(reference.slot)
+			.ok_or(crate::CapabilityError::BadHandle)?;
+		if live_generation != reference.generation {
+			return Err(crate::CapabilityError::StaleGeneration);
+		}
+		Ok(cap_id)
 	}
 
 	/*
@@ -119,7 +157,8 @@ impl CapabilitySpace {
 			s.cap_id = None;
 			/* A closed slot must never validate after it is reused. */
 			s.generation = self.next_generation.get();
-			self.next_generation.set(s.generation.wrapping_add(1).max(1));
+			self.next_generation
+				.set(s.generation.wrapping_add(1).max(1));
 			s.close_on_exec = false;
 		}
 	}
@@ -153,9 +192,10 @@ impl CapabilitySpace {
 	 * Yields (slot_index, CapabilityId, generation).
 	 */
 	pub fn iter(&self) -> impl Iterator<Item = (usize, CapabilityId, u32)> + '_ {
-		self.slots.iter().enumerate().filter_map(|(i, s)| {
-			s.cap_id.map(|id| (i, id, s.generation))
-		})
+		self.slots
+			.iter()
+			.enumerate()
+			.filter_map(|(i, s)| s.cap_id.map(|id| (i, id, s.generation)))
 	}
 
 	/*
@@ -170,5 +210,11 @@ impl CapabilitySpace {
 	 */
 	pub fn is_empty(&self) -> bool {
 		self.slots.is_empty()
+	}
+}
+
+impl Default for CapabilitySpace {
+	fn default() -> Self {
+		Self::new()
 	}
 }

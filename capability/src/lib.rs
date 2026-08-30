@@ -28,11 +28,12 @@ pub mod syscall;
 pub mod types;
 pub mod validate;
 
+pub use cspace::CapabilityRef;
+pub use object::ObjectId;
 pub use store::CapabilityStore;
 pub use types::{
 	Capability, CapabilityHandle, CapabilityId, CapabilityRecord, CapabilityType, Rights,
 };
-pub use object::ObjectId;
 
 use spin::{Mutex, Once};
 
@@ -103,9 +104,13 @@ pub fn has_secure_entropy() -> bool {
 	})
 }
 
-pub fn init_entropy() { let _ = has_secure_entropy(); }
+pub fn init_entropy() {
+	let _ = has_secure_entropy();
+}
 
-pub fn restricted_mode() -> bool { !has_secure_entropy() }
+pub fn restricted_mode() -> bool {
+	!has_secure_entropy()
+}
 
 /* ------------------------------------------------------------------ */
 /*  Boot-time seeded handle generation (fallback)                      */
@@ -115,9 +120,9 @@ pub fn restricted_mode() -> bool { !has_secure_entropy() }
 /// Used when RDSEED/RDRAND are unavailable but firmware provides
 /// an entropy blob.
 ///
- /// # Safety
- /// The caller must ensure `seed` contains at least 16 bytes of
- /// cryptographic-quality entropy.
+/// # Safety
+/// The caller must ensure `seed` contains at least 16 bytes of
+/// cryptographic-quality entropy.
 pub unsafe fn handle_from_seed(seed: [u8; 16]) -> CapabilityHandle {
 	CapabilityHandle::generate_from_seed(seed)
 }
@@ -130,42 +135,119 @@ mod tests {
 	use crate::rights::CapabilityRequest;
 	use crate::validate::validate;
 
-	fn handle(value: u8) -> CapabilityHandle { CapabilityHandle::new([value; 16]) }
+	fn handle(value: u8) -> CapabilityHandle {
+		CapabilityHandle::new([value; 16])
+	}
 	fn request(port: u64, rights: Rights) -> CapabilityRequest {
 		CapabilityRequest {
-			object: ObjectId(port), required_rights: rights, operation: "test",
+			object: ObjectId(port),
+			required_rights: rights,
+			operation: "test",
 			caller: 1,
-			expected_type: None, expected_rights: None,
+			expected_type: None,
+			expected_rights: None,
 		}
 	}
 
 	#[test]
 	fn validation_enforces_membership_scope_rights_and_lifecycle() {
 		let store = CapabilityStore::new();
-		let record = store.mint_root(handle(1), CapabilityType::IpcPort {
-			port_id: 7, can_send: true, can_recv: false,
-		}, Rights::SEND, 10);
+		let record = store.mint_root(
+			handle(1),
+			CapabilityType::IpcPort {
+				port_id: 7,
+				can_send: true,
+				can_recv: false,
+			},
+			Rights::SEND,
+			10,
+		);
 		let mut owner = CapabilitySpace::new();
 		let slot = owner.insert(record.id, false).unwrap();
+		let reference = owner.reference(slot).unwrap();
 
-		assert!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 1).is_ok());
-		assert_eq!(validate(&store, &owner, 1, slot, &request(8, Rights::SEND), 1).unwrap_err(), CapabilityError::ObjectMismatch);
-		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::RECV), 1).unwrap_err(), CapabilityError::InsufficientRights);
-		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 10).unwrap_err(), CapabilityError::Expired);
+		assert!(validate(&store, &owner, 1, reference, &request(7, Rights::SEND), 1).is_ok());
+		assert_eq!(
+			validate(&store, &owner, 1, reference, &request(8, Rights::SEND), 1).unwrap_err(),
+			CapabilityError::ObjectMismatch
+		);
+		assert_eq!(
+			validate(&store, &owner, 1, reference, &request(7, Rights::RECV), 1).unwrap_err(),
+			CapabilityError::InsufficientRights
+		);
+		assert_eq!(
+			validate(&store, &owner, 1, reference, &request(7, Rights::SEND), 10).unwrap_err(),
+			CapabilityError::Expired
+		);
 		let foreign = CapabilitySpace::new();
-		assert_eq!(validate(&store, &foreign, 2, slot, &request(7, Rights::SEND), 1).unwrap_err(), CapabilityError::BadHandle);
+		assert_eq!(
+			validate(&store, &foreign, 2, reference, &request(7, Rights::SEND), 1).unwrap_err(),
+			CapabilityError::BadHandle
+		);
 		store.revoke(record.id);
-		assert_eq!(validate(&store, &owner, 1, slot, &request(7, Rights::SEND), 1).unwrap_err(), CapabilityError::Revoked);
+		assert_eq!(
+			validate(&store, &owner, 1, reference, &request(7, Rights::SEND), 1).unwrap_err(),
+			CapabilityError::Revoked
+		);
+	}
+
+	#[test]
+	fn stale_slot_generation_is_rejected_before_store_lookup() {
+		let store = CapabilityStore::new();
+		let first = store.mint_root(
+			handle(2),
+			CapabilityType::IpcPort {
+				port_id: 9,
+				can_send: true,
+				can_recv: false,
+			},
+			Rights::SEND,
+			0,
+		);
+		let second = store.mint_root(
+			handle(3),
+			CapabilityType::IpcPort {
+				port_id: 9,
+				can_send: true,
+				can_recv: false,
+			},
+			Rights::SEND,
+			0,
+		);
+		let mut space = CapabilitySpace::new();
+		let slot = space.insert(first.id, false).unwrap();
+		let stale = space.reference(slot).unwrap();
+		space.remove(slot);
+		space.insert(second.id, false).unwrap();
+		assert_eq!(
+			validate(&store, &space, 1, stale, &request(9, Rights::SEND), 0).unwrap_err(),
+			CapabilityError::StaleGeneration
+		);
 	}
 
 	#[test]
 	fn delegation_is_narrowing_and_revocation_is_transitive() {
 		let store = CapabilityStore::new();
-		let root = store.mint_root(handle(2), CapabilityType::IpcPort {
-			port_id: 9, can_send: true, can_recv: true,
-		}, Rights::SEND | Rights::RECV, 100);
-		assert_eq!(store.delegate(&root, Rights::SEND | Rights::NOTIFY, 0).unwrap_err(), store::DelegateError::RightsSuperset);
-		assert_eq!(store.delegate(&root, Rights::SEND, 101).unwrap_err(), store::DelegateError::ExpiryExceedsParent);
+		let root = store.mint_root(
+			handle(2),
+			CapabilityType::IpcPort {
+				port_id: 9,
+				can_send: true,
+				can_recv: true,
+			},
+			Rights::SEND | Rights::RECV,
+			100,
+		);
+		assert_eq!(
+			store
+				.delegate(&root, Rights::SEND | Rights::NOTIFY, 0)
+				.unwrap_err(),
+			store::DelegateError::RightsSuperset
+		);
+		assert_eq!(
+			store.delegate(&root, Rights::SEND, 101).unwrap_err(),
+			store::DelegateError::ExpiryExceedsParent
+		);
 		let child = store.delegate(&root, Rights::SEND, 0).unwrap();
 		let grandchild = store.delegate(&child, Rights::SEND, 0).unwrap();
 		let great_grandchild = store.delegate(&grandchild, Rights::SEND, 0).unwrap();
@@ -184,5 +266,24 @@ mod tests {
 		let reused = space.insert(CapabilityId::new(2), false).unwrap();
 		assert_eq!(first, reused);
 		assert_ne!(old_generation, space.get(reused).unwrap().1);
+	}
+
+	#[test]
+	fn checked_delegation_rejects_revoked_or_expired_parents() {
+		let store = CapabilityStore::new();
+		let root = store.mint_root(handle(4), CapabilityType::Task, Rights::SPAWN, 10);
+		assert!(store.delegate_checked(root.id, Rights::SPAWN, 0, 9).is_ok());
+		assert_eq!(
+			store.delegate_checked(root.id, Rights::SPAWN, 0, 10).unwrap_err(),
+			store::DelegateError::ParentExpired
+		);
+		store.revoke(root.id);
+		assert_eq!(
+			store.delegate_checked(root.id, Rights::SPAWN, 0, 1).unwrap_err(),
+			store::DelegateError::ParentRevoked
+		);
+		assert_eq!(store.validation_epoch(), 1);
+		assert!(store.acknowledge_validation_epoch(0, 1));
+		assert!(!store.acknowledge_validation_epoch(0, 2));
 	}
 }

@@ -27,28 +27,28 @@ pub fn capability_error_to_errno(err: CapabilityError) -> u64 {
  * an errno on failure. On success, returns the slot index for
  * the caller to use in the protected operation.
  *
- /// # Arguments
- /// * `store` — Global capability store
- /// * `cspace` — Caller's capability space
- /// * `caller_id` — Caller's task ID
- /// * `handle` — Capability handle from the syscall argument
- /// * `request` — What the syscall wants to do
- /// * `now` — Current tick count
- ///
- /// # Returns
- /// `Ok(slot)` if validated, `Err(errno)` otherwise.
+/// # Arguments
+/// * `store` — Global capability store
+/// * `cspace` — Caller's capability space
+/// * `caller_id` — Caller's task ID
+/// * `reference` — Slot-plus-generation reference from the syscall arguments
+/// * `request` — What the syscall wants to do
+/// * `now` — Current tick count
+///
+/// # Returns
+/// `Ok(slot)` if validated, `Err(errno)` otherwise.
  */
 pub fn authorize_syscall(
 	store: &crate::store::CapabilityStore,
 	cspace: &crate::cspace::CapabilitySpace,
 	caller_id: u64,
-	handle: &crate::types::CapabilityHandle,
+	reference: crate::cspace::CapabilityRef,
 	request: crate::rights::CapabilityRequest,
 	now: u64,
 ) -> Result<usize, u64> {
-	use crate::validate::validate_handle;
+	use crate::validate::validate;
 
-	match validate_handle(store, cspace, caller_id, handle, &request, now) {
+	match validate(store, cspace, caller_id, reference, &request, now) {
 		Ok(_validated) => {
 			// ponytail: audit reset on success
 			// crate::audit::GLOBAL_AUDIT.reset_rate_limit(caller_id);

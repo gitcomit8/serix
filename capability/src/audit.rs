@@ -54,6 +54,15 @@ pub enum AuditResult {
 	Denied(u8),
 }
 
+/// A cursor-addressable audit read. `gap` means the requested cursor was
+/// older than the bounded ring and some records were overwritten.
+#[derive(Clone, Debug)]
+pub struct AuditRead {
+	pub records: alloc::vec::Vec<AuditRecord>,
+	pub next_cursor: u64,
+	pub gap: bool,
+}
+
 /* ------------------------------------------------------------------ */
 /*  AuditRing — bounded overwrite-on-full ring buffer                  */
 /* ------------------------------------------------------------------ */
@@ -110,10 +119,8 @@ impl AuditRing {
 	 */
 	pub fn emit(&self, mut record: AuditRecord) {
 		// Rate limiting for denials
-		if matches!(record.result, AuditResult::Denied(_)) {
-			if self.is_rate_limited(record.caller) {
-				return; // Suppressed
-			}
+		if matches!(record.result, AuditResult::Denied(_)) && self.is_rate_limited(record.caller) {
+			return; // Suppressed
 		}
 
 		// Assign sequence number
@@ -194,12 +201,44 @@ impl AuditRing {
 	pub fn iter(&self) -> alloc::vec::Vec<AuditRecord> {
 		let entries = self.entries.lock();
 		let write_pos = self.write_pos.get();
-		let count = core::cmp::min(write_pos, RING_SIZE);
+		let total = self.total_written.get();
+		let count = core::cmp::min(total as usize, RING_SIZE);
+		let oldest = if total >= RING_SIZE as u64 {
+			write_pos
+		} else {
+			0
+		};
 		let mut result = alloc::vec::Vec::with_capacity(count);
 		for i in 0..count {
-			result.push(entries[i].clone());
+			result.push(entries[(oldest + i) % RING_SIZE].clone());
 		}
 		result
+	}
+
+	/// read_from - Read records strictly after `cursor` in chronological order.
+	///
+	/// The returned cursor is the final sequence observed. Consumers that see
+	/// `gap` must treat the missing interval as an audit overflow, rather than
+	/// assuming there were no events.
+	pub fn read_from(&self, cursor: u64, limit: usize) -> AuditRead {
+		let records = self.iter();
+		let oldest = records.first().map(|record| record.sequence).unwrap_or(0);
+		let gap = oldest != 0 && cursor.saturating_add(1) < oldest;
+		let mut selected = alloc::vec::Vec::with_capacity(core::cmp::min(limit, records.len()));
+		for record in records {
+			if record.sequence > cursor && selected.len() < limit {
+				selected.push(record);
+			}
+		}
+		let next_cursor = selected
+			.last()
+			.map(|record| record.sequence)
+			.unwrap_or(cursor);
+		AuditRead {
+			records: selected,
+			next_cursor,
+			gap,
+		}
 	}
 
 	/*
@@ -214,5 +253,47 @@ impl AuditRing {
 	 */
 	pub fn overflowed(&self) -> bool {
 		self.total_written.get() as usize > RING_SIZE
+	}
+}
+
+impl Default for AuditRing {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn record(sequence: u64) -> AuditRecord {
+		AuditRecord {
+			sequence,
+			ticks: sequence,
+			cpu: 0,
+			caller: sequence + 1,
+			operation: "test",
+			object_kind: "port",
+			object_id: 1,
+			requested_rights: 0,
+			result: AuditResult::Ok,
+			parent_generation: 0,
+		}
+	}
+
+	#[test]
+	fn wrapped_ring_is_chronological_and_reports_cursor_gap() {
+		let ring = AuditRing::new();
+		for sequence in 0..(RING_SIZE as u64 + 2) {
+			ring.emit(record(sequence));
+		}
+		let entries = ring.iter();
+		assert_eq!(entries.len(), RING_SIZE);
+		assert_eq!(entries.first().unwrap().sequence, 3);
+		assert_eq!(entries.last().unwrap().sequence, RING_SIZE as u64 + 2);
+		let read = ring.read_from(0, 2);
+		assert!(read.gap);
+		assert_eq!(read.records.len(), 2);
+		assert_eq!(read.next_cursor, 4);
 	}
 }
