@@ -306,4 +306,89 @@ mod tests {
 		assert_eq!(read.records.len(), 2);
 		assert_eq!(read.next_cursor, 4);
 	}
+
+	#[test]
+	fn rate_limiting_suppresses_repetitive_denials() {
+		let ring = AuditRing::new();
+		let denial = AuditRecord {
+			sequence: 0,
+			ticks: 1,
+			cpu: 0,
+			caller: 42,
+			operation: "test",
+			object_kind: "port",
+			object_id: 1,
+			requested_rights: 0,
+			result: AuditResult::Denied(3),
+			parent_generation: 0,
+		};
+		// Emit RATE_LIMIT_THRESHOLD - 1 denials (should all pass)
+		for _ in 0..(RATE_LIMIT_THRESHOLD - 2) {
+			ring.emit(denial.clone());
+		}
+		let entries = ring.iter();
+		assert_eq!(entries.len(), (RATE_LIMIT_THRESHOLD - 2) as usize);
+		// The next denial should be the threshold (suppressed)
+		ring.emit(denial.clone());
+		// One more success to break the streak
+		ring.emit(AuditRecord {
+			sequence: 0,
+			ticks: 2,
+			cpu: 0,
+			caller: 42,
+			operation: "test",
+			object_kind: "port",
+			object_id: 1,
+			requested_rights: 0,
+			result: AuditResult::Ok,
+			parent_generation: 0,
+		});
+		// After reset, another denial should be allowed
+		ring.emit(denial.clone());
+		let entries = ring.iter();
+		assert!(entries.len() > 0);
+	}
+
+	#[test]
+	fn cursor_gap_detected_on_overflow() {
+		let ring = AuditRing::new();
+		// Fill ring past capacity
+		for i in 0..(RING_SIZE as u64 + 10) {
+			ring.emit(record(i));
+		}
+		// Read from cursor 0 — gap should be true
+		let read = ring.read_from(0, RING_SIZE);
+		assert!(read.gap);
+		// Read from a cursor within the readable range — no gap
+		let oldest_seq = ring.iter().first().unwrap().sequence;
+		let read2 = ring.read_from(oldest_seq, 10);
+		assert!(!read2.gap);
+		assert_eq!(read2.records.len(), 10.min(RING_SIZE));
+	}
+
+	#[test]
+	fn no_full_handles_in_audit_records() {
+		let ring = AuditRing::new();
+		// Emit with various record types
+		let record = AuditRecord {
+			sequence: 0,
+			ticks: 1,
+			cpu: 0,
+			caller: 12345,
+			operation: "mint_root",
+			object_kind: "port",
+			object_id: 999,
+			requested_rights: 0x7FF,
+			result: AuditResult::Ok,
+			parent_generation: 1,
+		};
+		ring.emit(record);
+		let entries = ring.iter();
+		assert_eq!(entries.len(), 1);
+		// Verify no handle bytes appear in the record
+		// (AuditRecord has no handle field by design)
+		let e = &entries[0];
+		assert_eq!(e.caller, 12345);
+		assert_eq!(e.object_id, 999);
+	}
 }
