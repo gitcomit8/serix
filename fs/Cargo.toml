@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 kernel = ["dep:apic", "dep:capability", "dep:drivers", "dep:hal", "dep:ipc"]
+policy-engine = ["dep:capability"]
 
 [dependencies]
 apic      = { path = "../apic",    optional = true }

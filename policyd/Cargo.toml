@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ulib = { path = "../ulib" }
-fs   = { path = "../fs" }
-vfs  = { path = "../vfs" }
+ulib       = { path = "../ulib" }
+fs         = { path = "../fs", default-features = false, features = ["policy-engine"] }
+vfs        = { path = "../vfs" }
 capability = { path = "../capability" }
+spin       = "0.10.0"
 
 [profile.release]
 panic = "abort"
