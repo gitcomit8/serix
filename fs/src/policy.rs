@@ -179,6 +179,13 @@ impl PolicySnapshot {
 	}
 }
 
+impl PolicySnapshot {
+	/// Iterate over immutable references to rules.
+	pub fn iter(&self) -> impl Iterator<Item = &PolicyRule> {
+		self.rules.iter()
+	}
+}
+
 impl Default for PolicySnapshot {
 	fn default() -> Self {
 		PolicySnapshot {

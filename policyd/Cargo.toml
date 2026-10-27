@@ -1,0 +1,16 @@
+[package]
+name    = "policyd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ulib = { path = "../ulib" }
+fs   = { path = "../fs" }
+vfs  = { path = "../vfs" }
+capability = { path = "../capability" }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
