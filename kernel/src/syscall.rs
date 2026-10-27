@@ -5,6 +5,7 @@
  * Handles system call entry, register marshaling, and return to userspace.
  */
 
+use alloc::sync::Arc;
 use core::arch::naked_asm;
 use hal::serial_println;
 use x86_64::VirtAddr;
@@ -137,6 +138,115 @@ pub const fn authorization_for(nr: u64) -> SyscallAuthorization {
 /* Userspace memory validation constants */
 const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000; /* 128 TiB - typical userspace limit */
+
+/* authorize_current_ipc - Resolve an IPC object only through the caller's
+ * slot-generation reference. The port number is derived after validation and
+ * never accepted as syscall authority. */
+fn authorize_current_ipc(slot: u64, generation: u64, rights: capability::Rights) -> Result<u64, u64> {
+	let reference = capability::CapabilityRef::from_syscall(slot as usize, generation as u32);
+	let task = task::scheduler::current_task_arc().ok_or(ERRNO_EPERM)?;
+	let cspace = task.lock().cspace.clone();
+	let cspace = cspace.lock();
+	let store = capability::global_cap_store().lock();
+	let id = cspace.resolve(reference).map_err(capability::syscall::capability_error_to_errno)?;
+	let record = store.lookup(id).ok_or(ERRNO_ENOENT)?;
+	let port_id = match record.cap_type {
+		capability::CapabilityType::IpcPort { port_id, .. }
+		| capability::CapabilityType::AsyncNotification { port_id } => port_id,
+		_ => return Err(ERRNO_EPERM),
+	};
+	let request = capability::CapabilityRequest {
+		object: capability::ObjectId(port_id), required_rights: rights, operation: "ipc",
+		caller: task::scheduler::current_task_id(), expected_type: None, expected_rights: None,
+	};
+	capability::validate::validate(&store, &cspace, request.caller, reference, &request, 0)
+		.map_err(capability::syscall::capability_error_to_errno)?;
+	Ok(port_id)
+}
+
+/* authorize_current_inode - Resolve an inode object only through the caller's
+ * slot-generation reference. Returns the Arc<dyn INode> after validating
+ * authority. The pointer is derived after validation and never accepted as
+ * syscall authority. */
+fn authorize_current_inode(slot: usize, generation: u32, rights: capability::Rights) -> Result<Arc<dyn vfs::INode>, u64> {
+	let reference = capability::CapabilityRef::from_syscall(slot, generation);
+	let task = task::scheduler::current_task_arc().ok_or(ERRNO_EPERM)?;
+	let cspace = task.lock().cspace.clone();
+	let cspace = cspace.lock();
+	let store = capability::global_cap_store().lock();
+
+	/* Resolve slot → CapabilityId (rejects stale generations) */
+	let id = cspace.resolve(reference).map_err(capability::syscall::capability_error_to_errno)?;
+
+	/* Look up record in store */
+	let record = store.lookup(id).ok_or(ERRNO_ENOENT)?;
+
+	/* Extract inode pointer from CapabilityType::Inode */
+	let ptr = match record.cap_type {
+		capability::CapabilityType::Inode { ptr } => ptr,
+		_ => return Err(ERRNO_EPERM),
+	};
+
+	/* Validate against the request */
+	let request = capability::CapabilityRequest {
+		object: capability::ObjectId(ptr),
+		required_rights: rights,
+		operation: "inode",
+		caller: task::scheduler::current_task_id(),
+		expected_type: Some(capability::CapabilityType::Inode { ptr }),
+		expected_rights: Some(rights),
+	};
+	capability::validate::validate(&store, &cspace, request.caller, reference, &request, 0)
+		.map_err(capability::syscall::capability_error_to_errno)?;
+
+	/* Look up the Arc in the FD table by task and slot index.
+	 * The slot index matches the fd number (deterministic mapping). */
+	let fd = slot as u64;
+	let file = crate::fd::get(task::scheduler::current_task_id(), fd)
+		.ok_or(ERRNO_EBADF)?;
+
+	Ok(file.inode.clone())
+}
+
+/* resolve_path_capability - Parse a path and validate authority on the parent directory.
+ * @cap_slot/cap_gen: Capability reference to the parent directory
+ * @path_ptr/path_len: The full path being operated on
+ * @rights: Required rights on the parent directory
+ *
+ * Returns the parent Arc<dyn INode> after validating capability authority.
+ * The path is parsed to extract the filename from the parent directory.
+ */
+fn resolve_path_capability(
+	cap_slot: usize,
+	cap_gen: u32,
+	path_ptr: *const u8,
+	path_len: usize,
+	rights: capability::Rights,
+) -> Result<Arc<dyn vfs::INode>, u64> {
+	let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+	let path_str = core::str::from_utf8(path).map_err(|_| ERRNO_EINVAL)?;
+
+	/* Parse parent directory path and filename */
+	let parent_path = match path_str.rfind('/') {
+		Some(0) => "/",
+		Some(pos) => &path_str[..pos],
+		None => "/",
+	};
+
+	/* Validate capability on parent directory */
+	let parent_ino = authorize_current_inode(cap_slot, cap_gen, rights)?;
+
+	/* Verify the capability actually points to the parent directory.
+	 * Compare Arc pointers (same kernel object) rather than content. */
+	let resolved = vfs::lookup_path(parent_path);
+	let cap_ptr = Arc::as_ptr(&parent_ino) as *const () as usize;
+	let resolved_ptr = resolved.as_ref().map(|a| Arc::as_ptr(a) as *const () as usize);
+	if Some(cap_ptr) != resolved_ptr {
+		return Err(ERRNO_EPERM);
+	}
+
+	Ok(parent_ino)
+}
 
 /*
  * init_syscalls - Initialize system call support
@@ -321,10 +431,13 @@ extern "C" fn syscall_dispatcher(
 ) -> u64 {
 	match nr {
 		SYS_READ => {
-			/* Read system call: fd, buffer pointer, length */
-			let fd = arg1;
-			let ptr = arg2 as *mut u8;
-			let len = arg3 as usize;
+			/* Read system call: cap_slot, cap_gen, buffer pointer, length */
+			let _inode = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::READ) {
+				Ok(ino) => ino,
+				Err(errno) => return errno,
+			};
+			let ptr = arg3 as *mut u8;
+			let len = arg4 as usize;
 
 			if len == 0 {
 				return 0;
@@ -334,7 +447,7 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			let task_id = task::scheduler::current_task_id();
-			if let Some(file) = crate::fd::get(task_id, fd) {
+			if let Some(file) = crate::fd::get(task_id, arg1) {
 				let mut off = file.offset.lock();
 				let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
 				let n = file.inode.read(*off, buf);
@@ -345,17 +458,20 @@ extern "C" fn syscall_dispatcher(
 			}
 		}
 		SYS_WRITE => {
-			/* Write system call: fd, buffer pointer, length */
-			let fd = arg1;
-			let ptr = arg2 as *const u8;
-			let len = arg3 as usize;
+			/* Write system call: cap_slot, cap_gen, buffer pointer, length */
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::WRITE) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
 
 			if !is_user_accessible(ptr, len) {
 				return ERRNO_EFAULT;
 			}
 
 			let task_id = task::scheduler::current_task_id();
-			if let Some(file) = crate::fd::get(task_id, fd) {
+			if let Some(file) = crate::fd::get(task_id, arg1) {
 				let mut off = file.offset.lock();
 				let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
 				let n = file.inode.write(*off, buf);
@@ -584,37 +700,62 @@ extern "C" fn syscall_dispatcher(
 
 		SYS_OPEN => {
 			/*
-			 * Open system call: path_ptr, path_len
+			 * Open system call: parent_cap_slot, parent_cap_gen, path_ptr, path_len
 			 * Returns: fd on success, ENOENT if path not found
+			 *
+			 * Validates LOOKUP rights on the parent directory capability.
+			 * The path is resolved relative to the parent directory.
 			 */
-			let ptr = arg1 as *const u8;
-			let len = arg2 as usize;
+			let path_ptr = arg3 as *const u8;
+			let path_len = arg4 as usize;
 
-			if !is_user_accessible(ptr, len) {
+			if !is_user_accessible(path_ptr, path_len) {
 				return ERRNO_EFAULT;
 			}
 
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
+			let parent_ino = match resolve_path_capability(
+				arg1 as usize, arg2 as u32,
+				path_ptr, path_len,
+				capability::Rights::LOOKUP,
+			) {
+				Ok(inode) => inode,
+				Err(errno) => return errno,
+			};
+
+			let path_str = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path_ptr, path_len) }) {
 				Ok(s) => s,
 				Err(_) => return ERRNO_EINVAL,
 			};
 
-			let task_id = task::scheduler::current_task_id();
-			match crate::fd::open(task_id, path) {
-				Some(fd) => fd,
+			/* Extract filename from path */
+			let filename = match path_str.rfind('/') {
+				Some(0) => &path_str[1..],
+				Some(pos) => &path_str[pos + 1..],
+				None => path_str,
+			};
+
+			/* Try to open existing file in parent directory */
+			match parent_ino.lookup(filename) {
+				Some(child) => {
+					let task_id = task::scheduler::current_task_id();
+					let fd = crate::fd::insert_inode(task_id, child, capability::Rights::READ | capability::Rights::WRITE | capability::Rights::SEEK);
+					fd
+				}
 				None => ERRNO_ENOENT,
 			}
 		}
 
 		SYS_CLOSE => {
 			/*
-			 * Close system call: fd
+			 * Close system call: cap_slot, cap_gen
 			 * Returns: 0 on success, EBADF if fd not found
 			 */
-			let fd = arg1;
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::WRITE) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
 			let task_id = task::scheduler::current_task_id();
-			if crate::fd::close(task_id, fd) {
+			if crate::fd::close(task_id, arg1) {
 				0
 			} else {
 				ERRNO_EBADF
@@ -623,13 +764,16 @@ extern "C" fn syscall_dispatcher(
 
 		SYS_SEEK => {
 			/*
-			 * Seek system call: fd, offset
+			 * Seek system call: cap_slot, cap_gen, offset
 			 * Returns: 0 on success, EBADF if fd not found
 			 */
-			let fd = arg1;
-			let offset = arg2 as usize;
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::SEEK) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
+			let offset = arg3 as usize;
 			let task_id = task::scheduler::current_task_id();
-			if crate::fd::seek(task_id, fd, offset) {
+			if crate::fd::seek(task_id, arg1, offset) {
 				0
 			} else {
 				ERRNO_EBADF
@@ -644,15 +788,16 @@ extern "C" fn syscall_dispatcher(
 		SYS_SEND => {
 			/*
 			 * Send IPC Message
-			 * arg1: Target Port ID
-			 * arg2: Message ID/Type
-			 * arg3: Pointer to data buffer (userspace)
-			 * arg4: Data length
+			 * arg1/arg2: capability slot/generation
+			 * arg3: Message ID/Type, arg4: data pointer, arg5: data length
 			 */
-			let port_id = arg1;
-			let msg_type = arg2;
-			let ptr = arg3 as *const u8;
-			let len = arg4 as usize;
+			let port_id = match authorize_current_ipc(arg1, arg2, capability::Rights::SEND) {
+				Ok(port) => port,
+				Err(errno) => return errno,
+			};
+			let msg_type = arg3;
+			let ptr = arg4 as *const u8;
+			let len = arg5 as usize;
 
 			if len > ipc::MAX_MSG_SIZE {
 				return ERRNO_EINVAL;
@@ -690,12 +835,15 @@ extern "C" fn syscall_dispatcher(
 		SYS_RECV => {
 			/*
 			 * Receive IPC Message (non-blocking)
-			 * arg1: Local Port ID
-			 * arg2: Pointer to buffer to write data
+			 * arg1/arg2: capability slot/generation
+			 * arg3: Pointer to buffer to write data
 			 * Returns: Message ID in RAX, or EAGAIN if empty
 			 */
-			let port_id = arg1;
-			let out_ptr = arg2 as *mut u8;
+			let port_id = match authorize_current_ipc(arg1, arg2, capability::Rights::RECV) {
+				Ok(port) => port,
+				Err(errno) => return errno,
+			};
+			let out_ptr = arg3 as *mut u8;
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
 				if let Some(msg) = port.receive() {
@@ -718,15 +866,18 @@ extern "C" fn syscall_dispatcher(
 		SYS_RECV_BLOCK => {
 			/*
 			 * Blocking Receive IPC Message
-			 * arg1: Local Port ID
-			 * arg2: Pointer to IpcMsg buffer in userspace (receives full Message)
+			 * arg1/arg2: capability slot/generation
+			 * arg3: Pointer to IpcMsg buffer in userspace (receives full Message)
 			 * Returns: 0 on success, errno on error
 			 *
 			 * Copies the entire ipc::Message struct (sender_id, id, len, data)
 			 * into the user-supplied buffer. Blocks until a message arrives.
 			 */
-			let port_id = arg1;
-			let out_ptr = arg2 as *mut u8;
+			let port_id = match authorize_current_ipc(arg1, arg2, capability::Rights::RECV) {
+				Ok(port) => port,
+				Err(errno) => return errno,
+			};
+			let out_ptr = arg3 as *mut u8;
 			let msg_size = core::mem::size_of::<ipc::Message>();
 
 			let port = match ipc::IPC_GLOBAL.get_port(port_id) {
@@ -826,16 +977,19 @@ extern "C" fn syscall_dispatcher(
 		SYS_NOTIFY => {
 			/*
 			 * Send Async Notification
-			 * arg1: Port ID to notify
-			 * arg2: Event bitmask
+			 * arg1/arg2: capability slot/generation
+			 * arg3: Event bitmask
 			 * Returns: 0 on success, errno on error
 			 *
 			 * Sets the event bitmask on the target port and wakes any
 			 * blocked receiver. The receiver will see the bitmask via
 			 * check_notification() in receive_blocking().
 			 */
-			let port_id = arg1;
-			let event_mask = arg2;
+			let port_id = match authorize_current_ipc(arg1, arg2, capability::Rights::NOTIFY) {
+				Ok(port) => port,
+				Err(errno) => return errno,
+			};
+			let event_mask = arg3;
 
 			if let Some(port) = ipc::IPC_GLOBAL.get_port(port_id) {
 				port.notify(event_mask);
@@ -845,6 +999,14 @@ extern "C" fn syscall_dispatcher(
 			}
 		}
 		SYS_DUP => {
+			/*
+			 * Duplicate fd: old_cap_slot, old_cap_gen
+			 * Returns: new fd on success, EBADF if old fd not found
+			 */
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::DUP) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
 			let task_id = task::scheduler::current_task_id();
 			match crate::fd::dup(task_id, arg1) {
 				Some(new_fd) => new_fd,
@@ -853,8 +1015,16 @@ extern "C" fn syscall_dispatcher(
 		}
 
 		SYS_DUP2 => {
+			/*
+			 * Duplicate fd to specific fd: old_cap_slot, old_cap_gen, new_fd
+			 * Returns: new_fd on success, EBADF if old fd not found
+			 */
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::DUP) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
 			let task_id = task::scheduler::current_task_id();
-			match crate::fd::dup2(task_id, arg1, arg2) {
+			match crate::fd::dup2(task_id, arg1, arg3) {
 				Some(new_fd) => new_fd,
 				None => ERRNO_EBADF,
 			}
@@ -881,9 +1051,9 @@ extern "C" fn syscall_dispatcher(
 		SYS_GETDENTS => {
 			/*
 			 * List directory entries into a user buffer.
-			 * arg1: fd (must be open on a directory)
-			 * arg2: user buffer pointer
-			 * arg3: user buffer length
+			 * arg1: cap_slot, arg2: cap_gen
+			 * arg3: user buffer pointer
+			 * arg4: user buffer length
 			 *
 			 * Each entry is serialised as dirent64:
 			 *   u64 d_ino, u64 d_off, u16 d_reclen, u8 d_type, char d_name[]
@@ -891,16 +1061,19 @@ extern "C" fn syscall_dispatcher(
 			 * The fd offset tracks the next entry index to emit.
 			 * Returns total bytes written, or 0 when all entries have been read.
 			 */
-			let fd = arg1;
-			let buf_ptr = arg2 as *mut u8;
-			let buf_len = arg3 as usize;
+			match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::READ) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
+			let buf_ptr = arg3 as *mut u8;
+			let buf_len = arg4 as usize;
 
 			if buf_len == 0 || !is_user_accessible(buf_ptr, buf_len) {
 				return ERRNO_EFAULT;
 			}
 
 			let task_id = task::scheduler::current_task_id();
-			let file = match crate::fd::get(task_id, fd) {
+			let file = match crate::fd::get(task_id, arg1) {
 				Some(f) => f,
 				None => return ERRNO_EBADF,
 			};
@@ -958,14 +1131,13 @@ extern "C" fn syscall_dispatcher(
 		}
 
 		SYS_MKDIR => {
-			let ptr = arg1 as *const u8;
-			let len = arg2 as usize;
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
 
 			if !is_user_accessible(ptr, len) {
 				return ERRNO_EFAULT;
 			}
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
+			let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }) {
 				Ok(s) => s,
 				Err(_) => return ERRNO_EINVAL,
 			};
@@ -976,24 +1148,30 @@ extern "C" fn syscall_dispatcher(
 				None => ("/", path),
 			};
 
-			match vfs::lookup_path(parent_path) {
-				Some(dir) => match dir.mkdir(name) {
-					Ok(()) => 0,
-					Err(_) => ERRNO_EINVAL,
-				},
-				None => ERRNO_ENOENT,
+			/* Validate METADATA rights on parent directory */
+			let parent_ino = match resolve_path_capability(
+				arg1 as usize, arg2 as u32,
+				ptr, len,
+				capability::Rights::METADATA,
+			) {
+				Ok(inode) => inode,
+				Err(errno) => return errno,
+			};
+
+			match parent_ino.mkdir(name) {
+				Ok(()) => 0,
+				Err(_) => ERRNO_EINVAL,
 			}
 		}
 
 		SYS_UNLINK => {
-			let ptr = arg1 as *const u8;
-			let len = arg2 as usize;
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
 
 			if !is_user_accessible(ptr, len) {
 				return ERRNO_EFAULT;
 			}
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
+			let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }) {
 				Ok(s) => s,
 				Err(_) => return ERRNO_EINVAL,
 			};
@@ -1004,24 +1182,30 @@ extern "C" fn syscall_dispatcher(
 				None => ("/", path),
 			};
 
-			match vfs::lookup_path(parent_path) {
-				Some(dir) => match dir.unlink(name) {
-					Ok(()) => 0,
-					Err(_) => ERRNO_ENOENT,
-				},
-				None => ERRNO_ENOENT,
+			/* Validate METADATA rights on parent directory */
+			let parent_ino = match resolve_path_capability(
+				arg1 as usize, arg2 as u32,
+				ptr, len,
+				capability::Rights::METADATA,
+			) {
+				Ok(inode) => inode,
+				Err(errno) => return errno,
+			};
+
+			match parent_ino.unlink(name) {
+				Ok(()) => 0,
+				Err(_) => ERRNO_ENOENT,
 			}
 		}
 
 		SYS_RMDIR => {
-			let ptr = arg1 as *const u8;
-			let len = arg2 as usize;
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
 
 			if !is_user_accessible(ptr, len) {
 				return ERRNO_EFAULT;
 			}
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
+			let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }) {
 				Ok(s) => s,
 				Err(_) => return ERRNO_EINVAL,
 			};
@@ -1032,12 +1216,19 @@ extern "C" fn syscall_dispatcher(
 				None => ("/", path),
 			};
 
-			match vfs::lookup_path(parent_path) {
-				Some(dir) => match dir.rmdir(name) {
-					Ok(()) => 0,
-					Err(_) => ERRNO_ENOTDIR,
-				},
-				None => ERRNO_ENOENT,
+			/* Validate METADATA rights on parent directory */
+			let parent_ino = match resolve_path_capability(
+				arg1 as usize, arg2 as u32,
+				ptr, len,
+				capability::Rights::METADATA,
+			) {
+				Ok(inode) => inode,
+				Err(errno) => return errno,
+			};
+
+			match parent_ino.rmdir(name) {
+				Ok(()) => 0,
+				Err(_) => ERRNO_ENOTDIR,
 			}
 		}
 
