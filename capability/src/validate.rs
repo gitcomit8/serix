@@ -89,6 +89,16 @@ pub fn validate(
 		_ => {}
 	}
 
+	/* 8b. Inode pointer identity check — the record's ptr must match the
+	 * request's expected pointer (set by the syscall layer before validation). */
+	if let crate::CapabilityType::Inode { ptr: rec_ptr } = record.cap_type {
+		if let Some(crate::CapabilityType::Inode { ptr: req_ptr }) = request.expected_type {
+			if rec_ptr != req_ptr {
+				return Err(CapabilityError::ObjectMismatch);
+			}
+		}
+	}
+
 	/* 9. Type check — does the capability type match? */
 	if let Some(expected_type) = request.expected_type
 		&& record.cap_type != expected_type

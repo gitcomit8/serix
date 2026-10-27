@@ -154,6 +154,13 @@ pub enum CapabilityType {
 	AsyncNotification {
 		port_id: u64,
 	},
+	/// Inode capability — identity is an opaque kernel pointer to the Arc<dyn INode>.
+	/// Used for all VFS file/directory operations. The pointer is stable for the
+	/// lifetime of the Arc and sufficient for capability validation within a single boot.
+	Inode {
+		/// Opaque kernel pointer to the Arc<dyn INode> (Arc::as_ptr as u64).
+		ptr: u64,
+	},
 }
 
 /* ------------------------------------------------------------------ */
