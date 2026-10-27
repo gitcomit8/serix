@@ -127,6 +127,20 @@ Built-in TTY shell running as a Ring-0 task. Input: PS/2 keyboard. Output: frame
 - **Handler naming**: suffix with `_handler` (e.g., `timer_interrupt_handler`)
 - **Commit format**: `<type>(<scope>): <subject>` — types: feat/fix/docs/style/refactor/perf/test/build/ci/chore, scopes: crate names
 
+## Search Conventions
+
+**Always use Serena for codebase searches** — never fall back to `grep`, `rg` (ripgrep), `find`, or shell-based text search tools. Serena provides semantic symbol search, reference finding, declaration navigation, and diagnostics via its LSP-backed index.
+
+- **Find a symbol / function / struct**: Use Serena's `find_symbol` or `get_symbols_overview`
+- **Find usages / references**: Use Serena's `find_referencing_symbols`
+- **Navigate to declaration**: Use Serena's `find_declaration`
+- **Find implementations**: Use Serena's `find_implementations`
+- **File search**: Use Serena's `find_file` or `list_dir`
+- **Pattern search**: Use Serena's `search_for_pattern`
+- **Diagnostics**: Use Serena's `get_diagnostics_for_file` or `get_diagnostics_for_symbol`
+
+Only revert to shell tools if Serena is unavailable or explicitly requested otherwise.
+
 ## Common Pitfalls
 
 - **Heap before allocations**: Never use `Vec`, `Box`, `String` before `init_heap()` is called
@@ -200,6 +214,14 @@ make run         # Rebuild kernel + ISO, boot in QEMU
 ```
 
 Kernel initialization is hardcoded in `kernel/src/main.rs::_start()`. To change process startup order, edit that file and rebuild with `make run`.
+
+## x86-64 Hardware Reference
+
+- **Skill**: `.claude/skills/x86-sdm/SKILL.md` — use when implementing/debugging low-level x86 code
+- **Converted specs**: `docs/specs/intel-sdm/INDEX.md` — chapter-split Markdown from Intel SDM Vol. 3
+- **Verified notes**: `docs/hw-notes/` — your own distilled register layouts with SDM citations
+- **Page verifier**: `python3 scripts/sdm_page.py <vol> <pdf_page>` renders a PDF page to PNG
+- Always check `docs/hw-notes/` first, then the converted spec, then verify bit positions via `sdm_page.py`
 
 ## Project Status
 
