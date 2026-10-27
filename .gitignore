@@ -4,6 +4,9 @@
 *.hdd
 *.img
 /target
+/web_doc/node_modules
+/web_doc/.vitepress/cache
+/web_doc/.vitepress/dist
 .idea/
 Cargo.lock
 iso_root/*
@@ -16,3 +19,7 @@ disk.img
 .rtk/
 .claude/
 .remember/
+
+# Intel SDM PDFs and converted Markdown (copyright Intel; reproducible from scripts)
+docs/specs/raw/
+docs/specs/intel-sdm/
