@@ -285,6 +285,21 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REPLY_BASE, capability::Rights::SEND)?;
 	}
 
+	/* Grant a LOOKUP capability on the root directory to all user processes.
+	 * This allows them to open files relative to / (e.g., /hello.txt).
+	 * For ext4d, this is granted after the IPC caps (slot 2). For other
+	 * processes, it's the first file cap (slot 0). */
+	if let Some(root_inode) = vfs::lookup_path("/") {
+		let ptr = Arc::as_ptr(&root_inode) as *const () as usize as u64;
+		let cap_type = capability::CapabilityType::Inode { ptr };
+		let rights = capability::Rights::LOOKUP | capability::Rights::READ;
+		let cap_handle = capability::CapabilityHandle::generate();
+		let record = capability::global_cap_store()
+			.lock()
+			.mint_root(cap_handle, cap_type, rights, 0);
+		tcb.cspace.lock().insert(record.id, false);
+	}
+
 	/* 9. Initialise stdio fds */
 	crate::fd::init_stdio(child_id);
 
