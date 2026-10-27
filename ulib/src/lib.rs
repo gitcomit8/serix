@@ -299,14 +299,18 @@ pub fn serix_mmap(file_cap: CapabilityRef, offset: usize, length: usize) -> isiz
 }
 
 /*
- * serix_munmap - Unmap a VMA region
- * @addr: Start address of mapping
- * @length: Length of mapping
+ * serix_munmap - Unmap a VMA region.
+ * @file_cap: Capability reference to the original mmap backing file.
+ * @addr: Start address of mapping.
+ * @length: Length of mapping.
+ *
+ * The caller must hold a MUNMAP-capable reference to the original file
+ * capability used in the mmap call.
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_munmap(addr: usize, length: usize) -> isize {
-	unsafe { syscall2(SYS_MUNMAP, addr, length) as isize }
+pub fn serix_munmap(file_cap: CapabilityRef, addr: usize, _length: usize) -> isize {
+	unsafe { syscall3(SYS_MUNMAP, file_cap.slot, file_cap.generation as usize, addr) as isize }
 }
 
 pub fn exit(code: i32) -> ! {
@@ -485,16 +489,26 @@ pub fn serix_dup2(old_cap: CapabilityRef, new_fd: usize) -> isize {
 
 /*
  * serix_pipe - Create a pipe.
- * @fds: [read_fd, write_fd] output array
+ * @parent_cap: Capability reference to a parent directory (CONTROL right).
+ * @fds: [read_fd, write_fd] output array.
+ * @cap_fds: [cap_slot_r, cap_slot_w] output array.
  *
  * Return: 0 on success, negative errno on error
- *
- * Note: Pipe capabilities are not yet authorized — this is deferred to
- * Phase 6.3. The fds returned can be used directly with read()/write()
- * which will validate against the fd table.
  */
-pub fn serix_pipe(fds: &mut [u64; 2]) -> isize {
-	unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, 0) as isize }
+pub fn serix_pipe(
+	parent_cap: CapabilityRef,
+	fds: &mut [u64; 2],
+	cap_fds: &mut [u64; 2],
+) -> isize {
+	unsafe {
+		syscall4(
+			SYS_PIPE,
+			parent_cap.slot,
+			parent_cap.generation as usize,
+			fds.as_mut_ptr() as usize,
+			cap_fds.as_mut_ptr() as usize,
+		) as isize
+	}
 }
 
 /*
@@ -537,22 +551,16 @@ pub fn serix_notify(cap: CapabilityRef, event_mask: u64) -> i64 {
 }
 
 /*
- * serix_format - Format a block device with ext4 filesystem
- * @dev_path: Device path (e.g., "/dev/sda")
- * @block_size: Block size in bytes (power of 2, 1024-65536)
- * @inode_count: Total number of inodes (>= 512)
- * @block_count: Total number of data blocks (>= 1024)
+ * serix_format - Format a block device with ext4 filesystem.
+ * @admin_cap: Capability reference with PLATFORM_ADMIN right.
+ * @dev_path: Device path (e.g., "/dev/sda").
+ *
+ * The kernel derives block_size defaults and inode_count from the device capacity.
  *
  * Returns: 0 on success, negative errno on error
  */
-pub fn serix_format(dev_path: &str, block_size: usize, inode_count: u32, block_count: u32) -> i64 {
+pub fn serix_format(admin_cap: CapabilityRef, dev_path: &str) -> i64 {
 	unsafe {
-		syscall4(
-			SYS_FORMAT,
-			dev_path.as_ptr() as usize,
-			dev_path.len(),
-			block_size,
-			inode_count as usize,
-		) as i64
+		syscall2(SYS_FORMAT, admin_cap.slot, admin_cap.generation as usize) as i64
 	}
 }

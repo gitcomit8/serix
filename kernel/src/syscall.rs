@@ -148,26 +148,39 @@ fn authorize_current_ipc(slot: u64, generation: u64, rights: capability::Rights)
 	let cspace = task.lock().cspace.clone();
 	let cspace = cspace.lock();
 	let store = capability::global_cap_store().lock();
+
+	/* Resolve slot → CapabilityId (rejects stale generations) */
 	let id = cspace.resolve(reference).map_err(capability::syscall::capability_error_to_errno)?;
 	let record = store.lookup(id).ok_or(ERRNO_ENOENT)?;
+
+	/* Extract port_id from capability type */
 	let port_id = match record.cap_type {
 		capability::CapabilityType::IpcPort { port_id, .. }
 		| capability::CapabilityType::AsyncNotification { port_id } => port_id,
 		_ => return Err(ERRNO_EPERM),
 	};
+
+	/* Centralized authorization gate */
 	let request = capability::CapabilityRequest {
-		object: capability::ObjectId(port_id), required_rights: rights, operation: "ipc",
-		caller: task::scheduler::current_task_id(), expected_type: None, expected_rights: None,
+		object: capability::ObjectId(port_id),
+		required_rights: rights,
+		operation: "ipc",
+		caller: task::scheduler::current_task_id(),
+		expected_type: None,
+		expected_rights: None,
 	};
-	capability::validate::validate(&store, &cspace, request.caller, reference, &request, 0)
-		.map_err(capability::syscall::capability_error_to_errno)?;
+	let _slot = capability::syscall::authorize_syscall(
+		&store, &cspace, task::scheduler::current_task_id(),
+		reference, request, 0,
+	)?;
+
 	Ok(port_id)
 }
 
 /* authorize_current_inode - Resolve an inode object only through the caller's
  * slot-generation reference. Returns the Arc<dyn INode> after validating
- * authority. The pointer is derived after validation and never accepted as
- * syscall authority. */
+ * authority via authorize_syscall(). The pointer is derived after validation
+ * and never accepted as syscall authority. */
 fn authorize_current_inode(slot: usize, generation: u32, rights: capability::Rights) -> Result<Arc<dyn vfs::INode>, u64> {
 	let reference = capability::CapabilityRef::from_syscall(slot, generation);
 	let task = task::scheduler::current_task_arc().ok_or(ERRNO_EPERM)?;
@@ -187,7 +200,7 @@ fn authorize_current_inode(slot: usize, generation: u32, rights: capability::Rig
 		_ => return Err(ERRNO_EPERM),
 	};
 
-	/* Validate against the request */
+	/* Centralized authorization gate */
 	let request = capability::CapabilityRequest {
 		object: capability::ObjectId(ptr),
 		required_rights: rights,
@@ -196,13 +209,13 @@ fn authorize_current_inode(slot: usize, generation: u32, rights: capability::Rig
 		expected_type: Some(capability::CapabilityType::Inode { ptr }),
 		expected_rights: Some(rights),
 	};
-	capability::validate::validate(&store, &cspace, request.caller, reference, &request, 0)
-		.map_err(capability::syscall::capability_error_to_errno)?;
+	let slot_idx = capability::syscall::authorize_syscall(
+		&store, &cspace, task::scheduler::current_task_id(),
+		reference, request, 0,
+	)?;
 
-	/* Look up the Arc in the FD table by task and slot index.
-	 * The slot index matches the fd number (deterministic mapping). */
-	let fd = slot as u64;
-	let file = crate::fd::get(task::scheduler::current_task_id(), fd)
+	/* Look up the Arc in the FD table by validated slot index */
+	let file = crate::fd::get(task::scheduler::current_task_id(), slot_idx as u64)
 		.ok_or(ERRNO_EBADF)?;
 
 	Ok(file.inode.clone())
@@ -1032,18 +1045,63 @@ extern "C" fn syscall_dispatcher(
 
 		SYS_PIPE => {
 			/*
-			 * Create a pipe. arg1 points to a [u64; 2] user buffer that
-			 * receives [read_fd, write_fd].
+			 * Create a pipe.
+			 * arg1: cap_slot, arg2: cap_gen
+			 * arg3: pointer to [u64; 2] user buffer for [read_fd, write_fd]
+			 * arg4: pointer to [u64; 2] user buffer for [cap_slot_r, cap_slot_w]
+			 * Validates CONTROL rights on a directory capability (parent where
+			 * the pipe is implicitly registered).
+			 * Returns: 0 on success, errno on failure
 			 */
-			let pipefd_ptr = arg1 as *mut u64;
+			let parent_ino = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::CONTROL) {
+				Ok(ino) => ino,
+				Err(errno) => return errno,
+			};
+
+			let pipefd_ptr = arg3 as *mut u64;
+			let capfd_ptr = arg4 as *mut u64;
 			if !is_user_accessible(pipefd_ptr as *const u8, 16) {
+				return ERRNO_EFAULT;
+			}
+			if !is_user_accessible(capfd_ptr as *const u8, 16) {
 				return ERRNO_EFAULT;
 			}
 			let task_id = task::scheduler::current_task_id();
 			let (rfd, wfd) = crate::pipe::create_pipe(task_id);
+
+			/* Mint new capability records for pipe ends and insert into caller's cspace */
+			let cap_ptr_r = Arc::as_ptr(&parent_ino) as *const () as usize;
+			let cap_ptr_w = cap_ptr_r;
+			let store = capability::global_cap_store().lock();
+			let rec_r = store.mint_root(
+				capability::CapabilityHandle::generate(),
+				capability::CapabilityType::Inode { ptr: cap_ptr_r as u64 },
+				capability::Rights::READ | capability::Rights::SEEK,
+				0, // no expiry
+			);
+			let rec_w = store.mint_root(
+				capability::CapabilityHandle::generate(),
+				capability::CapabilityType::Inode { ptr: cap_ptr_w as u64 },
+				capability::Rights::WRITE | capability::Rights::SEEK,
+				0,
+			);
+			drop(store);
+
+			let task = match task::scheduler::current_task_arc() {
+				Some(t) => t,
+				None => return ERRNO_EPERM,
+			};
+			/* Clone Arc to release task lock while modifying cspace */
+			let cspace_arc = task.lock().cspace.clone();
+			let mut cspace = cspace_arc.lock();
+			let r_slot = cspace.insert(rec_r.id, false).unwrap_or(0);
+			let w_slot = cspace.insert(rec_w.id, false).unwrap_or(0);
+
 			unsafe {
 				*pipefd_ptr = rfd;
 				*pipefd_ptr.add(1) = wfd;
+				*capfd_ptr = r_slot as u64;
+				*capfd_ptr.add(1) = w_slot as u64;
 			}
 			0
 		}
@@ -1235,14 +1293,20 @@ extern "C" fn syscall_dispatcher(
 		SYS_FORMAT => {
 			/*
 			 * Format a block device with ext4 filesystem.
-			 * arg1: device path (e.g., "/dev/sda")
-			 * arg2: block_size (must be power of 2, 1024-65536)
-			 * arg3: inode_count (must be >= 512)
-			 * arg4: block_count (must be >= 1024)
+			 * arg1: cap_slot, arg2: cap_gen (PLATFORM_ADMIN right required)
+			 * arg3: device path pointer
+			 * arg4: device path length
+			 * arg5: block_size (must be power of 2, 1024-65536)
+			 * arg6: inode_count (must be >= 512)
 			 * Returns: 0 on success, errno on failure
 			 */
-			let path_ptr = arg1 as *const u8;
-			let path_len = arg2 as usize;
+			let _ = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::PLATFORM_ADMIN) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			};
+
+			let path_ptr = arg3 as *const u8;
+			let path_len = arg4 as usize;
 
 			if !is_user_accessible(path_ptr, path_len) {
 				return ERRNO_EFAULT;
@@ -1253,9 +1317,7 @@ extern "C" fn syscall_dispatcher(
 				Err(_) => return ERRNO_EINVAL,
 			};
 
-			let block_size = arg3 as usize;
-			let inode_count = arg4 as u32;
-			let block_count = arg5 as u32;
+			let block_size = arg5 as usize;
 
 			/* Look up the block device by path */
 			let block_dev = match fs::lookup_block_device(dev_path) {
@@ -1263,7 +1325,12 @@ extern "C" fn syscall_dispatcher(
 				None => return ERRNO_ENOTBLK,
 			};
 
-			/* Call format_device */
+			/* Derive counts from device capacity */
+			let sector_count = block_dev.sector_count();
+			let inode_count = (sector_count * 512 / 4096) as u32;
+			let block_count = sector_count as u32;
+
+						/* Call format_device */
 			match fs::ext4::format::format_device(&*block_dev, block_size, inode_count, block_count) {
 				Ok(()) => 0,
 				Err(e) => {
@@ -1276,24 +1343,22 @@ extern "C" fn syscall_dispatcher(
 		SYS_MMAP => {
 			/*
 			 * Memory-map a file.
-			 * arg1: file descriptor
-			 * arg2: mapping offset (must be page-aligned)
-			 * arg3: mapping length
+			 * arg1: cap_slot, arg2: cap_gen
+			 * arg3: mapping offset (page-aligned)
+			 * arg4: mapping length
 			 * Returns: virtual address on success, errno on failure
 			 */
-			let fd = arg1 as u64;
-			let offset = arg2;
-			let length = arg3 as usize;
+			let inode = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::MMAP) {
+				Ok(ino) => ino,
+				Err(errno) => return errno,
+			};
+			let offset = arg3;
+			let length = arg4 as usize;
+			let cap_ptr = Arc::as_ptr(&inode) as *const () as usize;
 
 			if length == 0 {
 				return ERRNO_EINVAL;
 			}
-
-			let task_id = task::scheduler::current_task_id();
-			let file = match crate::fd::get(task_id, fd) {
-				Some(f) => f,
-				None => return ERRNO_EBADF,
-			};
 
 			/* Allocate VMA region */
 			let vma_mgr = match memory::vma::get_vma_manager() {
@@ -1313,6 +1378,7 @@ extern "C" fn syscall_dispatcher(
 				start + (length as u64),
 				perms,
 				offset as u64,
+				cap_ptr,
 			);
 			vma_mgr.add_vma(vma);
 
@@ -1325,7 +1391,7 @@ extern "C" fn syscall_dispatcher(
 
 				/* Read page from file */
 				let mut page_data = [0u8; memory::PAGE_SIZE];
-				let n = file.inode.read(file_off as usize, &mut page_data);
+				let n = inode.read(file_off as usize, &mut page_data);
 				if n == 0 {
 					/* EOF or read error */
 					vma_mgr.remove_vma(start.as_u64());
@@ -1345,20 +1411,29 @@ extern "C" fn syscall_dispatcher(
 		SYS_MUNMAP => {
 			/*
 			 * Unmap a VMA region.
-			 * arg1: start address
-			 * arg2: length
+			 * arg1: cap_slot, arg2: cap_gen
+			 * Validates MUNMAP rights on the original mmap capability
+			 * and compares Arc pointer identity against the stored cap_ptr.
 			 * Returns: 0 on success, errno on failure
 			 */
-			let start = arg1;
-			let length = arg2 as usize;
+			let _inode = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::MUNMAP) {
+				Ok(ino) => ino,
+				Err(errno) => return errno,
+			};
+			let cap_ptr = Arc::as_ptr(&_inode) as *const () as usize;
 
 			let vma_mgr = match memory::vma::get_vma_manager() {
 				Some(m) => m,
 				None => return ERRNO_EINVAL,
 			};
 
-			if vma_mgr.remove_vma(start).is_some() {
-				0
+			if let Some(vma) = vma_mgr.find_vma(x86_64::VirtAddr::new(arg3)) {
+				if vma.cap_ptr == cap_ptr {
+					vma_mgr.remove_vma(vma.start.as_u64());
+					0
+				} else {
+					ERRNO_EPERM
+				}
 			} else {
 				ERRNO_EINVAL
 			}
