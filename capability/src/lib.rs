@@ -28,6 +28,9 @@ pub mod syscall;
 pub mod types;
 pub mod validate;
 
+// Expose global audit ring for kernel bootstrap.
+pub use audit::{global_audit, init_audit, AuditRing, AuditRecord, AuditResult};
+
 pub use cspace::CapabilityRef;
 pub use object::ObjectId;
 pub use store::CapabilityStore;

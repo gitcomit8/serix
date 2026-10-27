@@ -49,11 +49,36 @@ pub fn authorize_syscall(
 	use crate::validate::validate;
 
 	match validate(store, cspace, caller_id, reference, &request, now) {
-		Ok(_validated) => {
-			// ponytail: audit reset on success
-			// crate::audit::GLOBAL_AUDIT.reset_rate_limit(caller_id);
-			Ok(_validated.slot)
+		Ok(ref validated) => {
+			crate::audit::global_audit().reset_rate_limit(caller_id);
+			crate::audit::global_audit().emit(crate::AuditRecord {
+				sequence: 0,
+				ticks: now,
+				cpu: 0,
+				caller: caller_id,
+				operation: request.operation,
+				object_kind: "inode",
+				object_id: validated.record.cap_type.object_id(),
+				requested_rights: request.required_rights.0,
+				result: crate::AuditResult::Ok,
+				parent_generation: 0,
+			});
+			Ok(validated.slot)
 		}
-		Err(err) => Err(err.to_errno()),
+		Err(ref err) => {
+			crate::audit::global_audit().emit(crate::AuditRecord {
+				sequence: 0,
+				ticks: now,
+				cpu: 0,
+				caller: caller_id,
+				operation: request.operation,
+				object_kind: "inode",
+				object_id: request.object.as_u64(),
+				requested_rights: request.required_rights.0,
+				result: crate::AuditResult::Denied(*err as u8),
+				parent_generation: 0,
+			});
+			Err(err.to_errno())
+		}
 	}
 }

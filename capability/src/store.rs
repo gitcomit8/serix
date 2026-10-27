@@ -81,6 +81,19 @@ impl CapabilityStore {
 		let mut handle_idx = self.handle_index.lock();
 		handle_idx.insert(handle.key, id);
 
+		crate::audit::global_audit().emit(crate::AuditRecord {
+			sequence: 0,
+			ticks: 0,
+			cpu: 0,
+			caller: 0, // bootstrap
+			operation: "mint_root",
+			object_kind: "inode",
+			object_id: cap_type.object_id(),
+			requested_rights: rights.0,
+			result: crate::AuditResult::Ok,
+			parent_generation: 0,
+		});
+
 		record
 	}
 
@@ -227,6 +240,19 @@ impl CapabilityStore {
 			.or_default()
 			.insert(id);
 
+		crate::audit::global_audit().emit(crate::AuditRecord {
+			sequence: 0,
+			ticks: 0,
+			cpu: 0,
+			caller: 0,
+			operation: "delegate",
+			object_kind: "inode",
+			object_id: parent.cap_type.object_id(),
+			requested_rights: reduced_rights.0,
+			result: crate::AuditResult::Ok,
+			parent_generation: 0,
+		});
+
 		Ok(record)
 	}
 
@@ -281,6 +307,10 @@ impl CapabilityStore {
 	pub fn revoke(&self, id: CapabilityId) {
 		let mut records = self.records.lock();
 
+		// Capture object info before marking revoked (for audit)
+		let cap_type = records.get(&id).map(|r| r.cap_type);
+		let object_id = cap_type.map(|t| t.object_id()).unwrap_or(0);
+
 		let descendants = self.descendants.lock();
 		let mut pending = Vec::new();
 		pending.push(id);
@@ -294,6 +324,19 @@ impl CapabilityStore {
 		}
 		/* Publish only after every descendant has been marked revoked. */
 		self.revocation_epoch.fetch_add(1, Ordering::Release);
+
+		crate::audit::global_audit().emit(crate::AuditRecord {
+			sequence: 0,
+			ticks: 0,
+			cpu: 0,
+			caller: 0,
+			operation: "revoke",
+			object_kind: "inode",
+			object_id,
+			requested_rights: 0,
+			result: crate::AuditResult::Ok,
+			parent_generation: 0,
+		});
 	}
 
 	/// validation_epoch - Epoch a future per-CPU validation cache must observe.
