@@ -18,6 +18,7 @@ pub mod pipe;
 pub mod process;
 pub mod smp;
 pub mod stdio;
+pub mod procfs;
 mod syscall;
 mod init;
 

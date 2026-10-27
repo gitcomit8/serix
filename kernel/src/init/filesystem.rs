@@ -38,6 +38,19 @@ pub fn init_filesystem() {
 	vfs::page_cache::init_page_cache(256);
 	serial_println!("VFS: page cache initialized (256 pages)");
 
+	/* Initialize /proc/serix/cap-audit */
+	{
+		let serix_dir: Arc<dyn vfs::INode> = Arc::new(vfs::RamDir::new("serix"));
+		let audit_file: Arc<dyn vfs::INode> = Arc::new(crate::procfs::make_audit_file());
+		if let Some(root) = vfs::lookup_path("/") {
+			root.insert("proc", serix_dir).ok();
+		}
+		if let Some(serix) = vfs::lookup_path("/proc") {
+			serix.insert("cap-audit", audit_file).ok();
+		}
+		serial_println!("VFS: /proc/serix/cap-audit ready");
+	}
+
 	/* Initialize VMA manager for mmap */
 	unsafe { memory::vma::init_vma_manager() };
 
