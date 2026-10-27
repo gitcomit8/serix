@@ -6,7 +6,7 @@
  * Rate-limits repetitive denials per task.
  */
 
-use core::cell::Cell;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 /// Maximum number of audit records in the ring.
@@ -71,14 +71,14 @@ pub struct AuditRing {
 	/// Ring buffer entries
 	entries: Mutex<[AuditRecord; RING_SIZE]>,
 	/// Next write position (0..RING_SIZE)
-	write_pos: Cell<usize>,
+	write_pos: AtomicUsize,
 	/// Total records written (may exceed RING_SIZE)
-	total_written: Cell<u64>,
+	total_written: AtomicU64,
 	/// Last sequence number emitted
-	last_sequence: Cell<u64>,
+	last_sequence: AtomicU64,
 	/// Rate limiting: (task_id, consecutive_denial_count)
 	rate_state: Mutex<[(u64, u32); 256]>,
-	rate_count: Cell<usize>,
+	rate_count: AtomicUsize,
 }
 
 impl AuditRing {
@@ -102,11 +102,11 @@ impl AuditRing {
 		let entries: [AuditRecord; RING_SIZE] = core::array::from_fn(|_| empty.clone());
 		AuditRing {
 			entries: Mutex::new(entries),
-			write_pos: Cell::new(0),
-			total_written: Cell::new(0),
-			last_sequence: Cell::new(0),
+			write_pos: AtomicUsize::new(0),
+			total_written: AtomicU64::new(0),
+			last_sequence: AtomicU64::new(0),
 			rate_state: Mutex::new([(0, 0); 256]),
-			rate_count: Cell::new(0),
+			rate_count: AtomicUsize::new(0),
 		}
 	}
 
@@ -124,9 +124,8 @@ impl AuditRing {
 		}
 
 		// Assign sequence number
-		let seq = self.last_sequence.get() + 1;
+		let seq = self.last_sequence.fetch_add(1, Ordering::Relaxed) + 1;
 		record.sequence = seq;
-		self.last_sequence.set(seq);
 
 		// Assign timestamp if not set
 		if record.ticks == 0 {
@@ -135,10 +134,9 @@ impl AuditRing {
 		}
 
 		// Write to ring
-		let pos = self.write_pos.get();
+		let pos = self.write_pos.fetch_add(1, Ordering::Relaxed) % RING_SIZE;
 		self.entries.lock()[pos] = record;
-		self.write_pos.set((pos + 1) % RING_SIZE);
-		self.total_written.set(self.total_written.get() + 1);
+		self.total_written.fetch_add(1, Ordering::Relaxed);
 	}
 
 	/*
@@ -162,9 +160,8 @@ impl AuditRing {
 		}
 
 		if !found {
-			if self.rate_count.get() < state.len() {
-				state[self.rate_count.get()] = (caller, 1);
-				self.rate_count.set(self.rate_count.get() + 1);
+			if self.rate_count.fetch_add(1, Ordering::Relaxed) < state.len() {
+				state[self.rate_count.load(Ordering::Relaxed) - 1] = (caller, 1);
 				return false;
 			}
 			// Table full — evict oldest (simplified: just allow)
@@ -175,7 +172,7 @@ impl AuditRing {
 		if count >= RATE_LIMIT_THRESHOLD {
 			true
 		} else {
-			state[idx] = (caller, count + 1);
+			state[idx] = (caller, count.saturating_add(1));
 			false
 		}
 	}
@@ -200,11 +197,11 @@ impl AuditRing {
 	 */
 	pub fn iter(&self) -> alloc::vec::Vec<AuditRecord> {
 		let entries = self.entries.lock();
-		let write_pos = self.write_pos.get();
-		let total = self.total_written.get();
+		let write_pos = self.write_pos.load(Ordering::Relaxed);
+		let total = self.total_written.load(Ordering::Relaxed);
 		let count = core::cmp::min(total as usize, RING_SIZE);
 		let oldest = if total >= RING_SIZE as u64 {
-			write_pos
+			write_pos % RING_SIZE
 		} else {
 			0
 		};
@@ -245,15 +242,28 @@ impl AuditRing {
 	 * total — Total records written (including overwritten)
 	 */
 	pub fn total(&self) -> u64 {
-		self.total_written.get()
+		self.total_written.load(Ordering::Relaxed)
 	}
 
 	/*
 	 * overflowed — True if the ring has wrapped around
 	 */
 	pub fn overflowed(&self) -> bool {
-		self.total_written.get() as usize > RING_SIZE
+		self.total_written.load(Ordering::Relaxed) as usize > RING_SIZE
 	}
+}
+
+/// Global audit ring — initialized during kernel bootstrap.
+static GLOBAL_AUDIT: spin::Once<AuditRing> = spin::Once::new();
+
+/// Get the global audit ring (must be initialized before calling).
+pub fn global_audit() -> &'static AuditRing {
+	GLOBAL_AUDIT.call_once(|| AuditRing::new())
+}
+
+/// Initialize the global audit ring. Safe to call multiple times.
+pub fn init_audit() {
+	let _ = global_audit();
 }
 
 impl Default for AuditRing {

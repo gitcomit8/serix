@@ -163,6 +163,21 @@ pub enum CapabilityType {
 	},
 }
 
+impl CapabilityType {
+	/// Return the object's canonical u64 identifier for audit logging.
+	pub fn object_id(&self) -> u64 {
+		match self {
+			CapabilityType::Task => 0,
+			CapabilityType::MemoryRegion => 0,
+			CapabilityType::IODevice => 0,
+			CapabilityType::FileDescriptor => 0,
+			CapabilityType::IpcPort { port_id, .. } => *port_id,
+			CapabilityType::AsyncNotification { port_id } => *port_id,
+			CapabilityType::Inode { ptr } => *ptr,
+		}
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /*  Rights — bitmask of allowed operations                             */
 /* ------------------------------------------------------------------ */

@@ -16,6 +16,12 @@ use core::fmt;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId(pub u64);
 
+impl ObjectId {
+	pub fn as_u64(&self) -> u64 {
+		self.0
+	}
+}
+
 impl fmt::Debug for ObjectId {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "Obj({})", self.0)
