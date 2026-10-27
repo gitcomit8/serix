@@ -21,7 +21,9 @@
  * For now, the API is fully programmatic — no serialized policy format yet.
  */
 
+use alloc::format;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -186,12 +188,19 @@ impl PolicySnapshot {
 	}
 }
 
-impl Default for PolicySnapshot {
-	fn default() -> Self {
+impl PolicySnapshot {
+	/// Create an empty policy snapshot.
+	pub fn empty() -> Self {
 		PolicySnapshot {
 			rules: Arc::new(Vec::new()),
 			deny_count: Arc::new(AtomicU32::new(0)),
 		}
+	}
+}
+
+impl Default for PolicySnapshot {
+	fn default() -> Self {
+		Self::empty()
 	}
 }
 

@@ -14,6 +14,7 @@ extern crate alloc;
 pub mod fd;
 mod gdt;
 mod kshell;
+pub mod les_bridge;
 pub mod pipe;
 pub mod process;
 pub mod smp;
@@ -121,6 +122,11 @@ pub extern "C" fn _start() -> ! {
 	/* Phase 4: Filesystem initialization                                   */
 	/* ------------------------------------------------------------------ */
 	init::filesystem::init_filesystem();
+
+	/* ------------------------------------------------------------------ */
+	/* LES bridge: load default deny policy (after /proc is created)        */
+	/* ------------------------------------------------------------------ */
+	les_bridge::init_default_policy();
 
 	/* ------------------------------------------------------------------ */
 	/* Phase 5: Scheduler initialization                                    */

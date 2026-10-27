@@ -14,7 +14,7 @@ members = ["kernel",
     "vfs",
     "ipc",
     "ipc_types",
-    "loader", "ulib", "fs", "ext4d", "policyd"]
+    "loader", "ulib", "fs", "ext4d"]
 
 [profile.release]
 panic = "abort"

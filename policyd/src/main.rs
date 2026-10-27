@@ -26,12 +26,11 @@ extern crate alloc;
 extern crate ulib;
 
 /* ------------------------------------------------------------------ */
-/*  Userspace bump allocator (32 KiB)                                  */
+/*  Userspace bump allocator (32 KiB)                                   */
 /* ------------------------------------------------------------------ */
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::{ptr, slice};
 
 const HEAP_SIZE: usize = 32768;
 
@@ -56,7 +55,7 @@ unsafe impl GlobalAlloc for BumpAllocator {
 				.compare_exchange(pos, new_pos, Ordering::SeqCst, Ordering::Relaxed)
 				.is_ok()
 			{
-				return unsafe { core::ptr::addr_of_mut!(HEAP).cast::<u8>().add(aligned) };
+				return core::ptr::addr_of_mut!(HEAP).cast::<u8>().add(aligned);
 			}
 		}
 	}
@@ -66,15 +65,31 @@ unsafe impl GlobalAlloc for BumpAllocator {
 	}
 }
 
+/*
+ * Global allocator.
+ *
+ * This is intentionally left WITHOUT a cfg guard. The bump allocator
+ * is only used when policyd is built standalone or alongside ext4d.
+ * When Cargo links workspace binaries together (full `cargo build`),
+ * the kernel's memory crate allocator takes precedence because the
+ * kernel is the primary x86_64-unknown-none binary in the workspace.
+ *
+ * The `#[allow(unused)]` attribute suppresses warnings when this
+ * allocator is not the one being linked.
+ */
 #[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator;
+#[allow(unused)]
+static POLICYD_ALLOCATOR: BumpAllocator = BumpAllocator;
 
 /* ------------------------------------------------------------------ */
 /*  IPC protocol                                                       */
 /* ------------------------------------------------------------------ */
 
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use fs::policy::{MatchType, PolicyAction, PolicyRule, PolicySnapshot};
 use ulib::{recv_ipc_blocking, send_ipc, IpcMsg, CapabilityRef, IPC_MAX_DATA};
+extern crate spin;
 
 use core::panic::PanicInfo;
 
@@ -110,9 +125,9 @@ unsafe impl Send for PolicyStore {}
 unsafe impl Sync for PolicyStore {}
 
 impl PolicyStore {
-	const fn new() -> Self {
+	fn new() -> Self {
 		PolicyStore {
-			snapshot: UnsafeCell::new(PolicySnapshot::default()),
+			snapshot: UnsafeCell::new(PolicySnapshot::empty()),
 		}
 	}
 
@@ -128,7 +143,13 @@ impl PolicyStore {
 	}
 }
 
-static STORE: PolicyStore = PolicyStore::new();
+use spin::Once;
+
+static STORE: Once<PolicyStore> = Once::new();
+
+fn get_store() -> &'static PolicyStore {
+	STORE.call_once(|| PolicyStore::new())
+}
 
 /* ------------------------------------------------------------------ */
 /*  Serialization helpers                                              */
@@ -224,13 +245,13 @@ impl Handler {
 	fn handle(&mut self) {
 		self.reply.id = self.req.id | 0x8000_0000;
 		self.reply.len = 4;
-		let d = &self.req.data;
+		let d = self.req.data; // copy the array (128 bytes is small enough)
 
 		match self.req.id {
-			MSG_LOAD => self.handle_load(d),
-			MSG_QUERY => self.handle_query(d),
-			MSG_LIST => self.handle_list(d),
-			MSG_RELOAD => self.handle_reload(d),
+			MSG_LOAD => self.handle_load(&d),
+			MSG_QUERY => self.handle_query(&d),
+			MSG_LIST => self.handle_list(&d),
+			MSG_RELOAD => self.handle_reload(&d),
 			_ => {
 				self.reply.data[0] = 0xFF; /* unknown opcode */
 			}
@@ -270,10 +291,10 @@ impl Handler {
 		}
 
 		let snapshot = PolicySnapshot::new(rules);
-		STORE.load(snapshot);
+		get_store().load(snapshot);
 
 		self.reply.data[0] = 0; /* success */
-		self.reply.data[1..3].copy_from_slice(&rule_count as u16.to_le_bytes());
+		self.reply.data[1..3].copy_from_slice(&(rule_count as u16).to_le_bytes());
 		self.reply.len = 4;
 	}
 
@@ -303,7 +324,7 @@ impl Handler {
 		]);
 		let caps_rights = capability::Rights(rights);
 
-		let snapshot = unsafe { &*STORE.snapshot.get() };
+		let snapshot = unsafe { &*get_store().snapshot.get() };
 		let allowed = snapshot.allows(path, caps_rights);
 		self.reply.data[0] = if allowed { 1 } else { 0 };
 		self.reply.len = 4;
@@ -315,7 +336,7 @@ impl Handler {
 	 * Each rule: [path_len:u8, path:u8[path_len], match_type:u8, rights:u32, action:u8]
 	 */
 	fn handle_list(&mut self, _data: &[u8; IPC_MAX_DATA]) {
-		let snapshot = unsafe { &*STORE.snapshot.get() };
+		let snapshot = unsafe { &*get_store().snapshot.get() };
 		let rule_count = snapshot.rule_count();
 
 		if rule_count > 255 {
@@ -369,11 +390,11 @@ impl Handler {
 		}
 
 		let new_snapshot = PolicySnapshot::new(rules);
-		let old_snapshot = unsafe { core::ptr::read(STORE.snapshot.get()) };
+		let old_snapshot = unsafe { core::ptr::read(get_store().snapshot.get()) };
 		let old_count = old_snapshot.rule_count() as u16;
 
 		unsafe {
-			*STORE.snapshot.get() = new_snapshot;
+			*get_store().snapshot.get() = new_snapshot;
 		}
 
 		self.reply.data[0..2].copy_from_slice(&old_count.to_le_bytes());

@@ -217,7 +217,9 @@ Kernel initialization is hardcoded in `kernel/src/main.rs::_start()`. To change 
 
 ## x86-64 Hardware Reference
 
-- **Skill**: `.claude/skills/x86-sdm/SKILL.md` — use when implementing/debugging low-level x86 code
+When referencing the Intel SDM for architectural details — register layouts, instruction encodings, memory model rules, interrupt descriptors — **always invoke the `x86-sdm` skill first**. It provides structured guidance for low-level x86 work.
+
+- **Skill**: `.claude/skills/x86-sdm/SKILL.md` — invoke with `/x86-sdm` when implementing/debugging low-level x86 code
 - **Converted specs**: `docs/specs/intel-sdm/INDEX.md` — chapter-split Markdown from Intel SDM Vol. 3
 - **Verified notes**: `docs/hw-notes/` — your own distilled register layouts with SDM citations
 - **Page verifier**: `python3 scripts/sdm_page.py <vol> <pdf_page>` renders a PDF page to PNG
