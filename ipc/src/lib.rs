@@ -147,6 +147,13 @@ impl Port {
 	 *
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
+	/// Push a message bypassing capability checks.
+	///
+	/// # Safety
+	/// This method does not verify that the caller has SEND capability for
+	/// the target port. Only trusted kernel code (Ring 0) or the ext4 stub
+	/// (which runs in the kernel task context) should call this.
+	/// Userspace callers must use `send()` which runs `check_send_capability()`.
 	pub fn send_kernel(&self, msg: Message) -> Result<(), &'static str> {
 		if self.is_notification_port {
 			return Err("Notification ports do not queue messages");

@@ -71,15 +71,18 @@ pub struct Vma {
 	pub perms: VmaPermissions,
 	/* File offset for file-backed mappings */
 	pub file_offset: u64,
+	/* Opaque Arc<dyn INode> pointer of the backing file cap (for MUNMAP identity check) */
+	pub cap_ptr: usize,
 }
 
 impl Vma {
-	pub fn new(start: VirtAddr, end: VirtAddr, perms: VmaPermissions, file_offset: u64) -> Self {
+	pub fn new(start: VirtAddr, end: VirtAddr, perms: VmaPermissions, file_offset: u64, cap_ptr: usize) -> Self {
 		Self {
 			start,
 			end,
 			perms,
 			file_offset,
+			cap_ptr,
 		}
 	}
 
