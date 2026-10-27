@@ -281,6 +281,70 @@ impl CapabilityStore {
 	}
 
 	/*
+	 * grant — Mint a new capability delegated from a parent, inserted into caller's cspace.
+	 *
+	 * @parent_id: CapabilityId of the delegating (parent) capability in the store.
+	 * @caller_cspace: Mutable reference to the caller's capability space.
+	 * @reduced_rights: Rights subset for the new capability.
+	 * @expiry_ticks: Expiry for the new capability (0 = inherit from parent).
+	 *
+	 * Validates the parent is live via delegate_checked(), then inserts the
+	 * resulting record into the caller's cspace at the next available slot.
+	 *
+	 * Returns the slot index in the caller's cspace, or DelegateError.
+	 */
+	pub fn grant(
+		&self,
+		parent_id: CapabilityId,
+		caller_cspace: &mut crate::cspace::CapabilitySpace,
+		reduced_rights: Rights,
+		expiry_ticks: u64,
+		now: u64,
+	) -> Result<usize, DelegateError> {
+		let record = self.delegate_checked(parent_id, reduced_rights, expiry_ticks, now)?;
+		let slot = caller_cspace.insert(record.id, false)
+			.ok_or(DelegateError::ParentNotFound)?;
+
+		crate::audit::global_audit().emit(crate::AuditRecord {
+			sequence: 0,
+			ticks: now,
+			cpu: 0,
+			caller: 0,
+			operation: "grant",
+			object_kind: "inode",
+			object_id: record.cap_type.object_id(),
+			requested_rights: reduced_rights.0,
+			result: crate::AuditResult::Ok,
+			parent_generation: 0,
+		});
+
+		Ok(slot)
+	}
+
+	/// delegate_depth — Walk the parent chain to compute delegation depth.
+	///
+	/// Returns the number of ancestors (0 for root capabilities).
+	pub fn delegate_depth(&self, id: CapabilityId) -> u32 {
+		let mut depth = 0u32;
+		let mut current = id;
+		let mut visited = alloc::collections::BTreeSet::new();
+		while let Some(record) = self.lookup(current) {
+			// Prevent infinite loops from corrupted data
+			if !visited.insert(current) {
+				break;
+			}
+			match record.parent {
+				Some(parent) => {
+					depth += 1;
+					current = parent;
+				}
+				None => break,
+			}
+		}
+		depth
+	}
+
+	/*
 	 * remove — Remove a capability from the store
 	 */
 	pub fn remove(&self, id: CapabilityId) {
