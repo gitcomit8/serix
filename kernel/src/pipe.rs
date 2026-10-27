@@ -173,7 +173,7 @@ pub fn create_pipe(task_id: u64) -> (u64, u64) {
 	let read_end: Arc<dyn INode> = Arc::new(PipeReadEnd(Arc::clone(&inner)));
 	let write_end: Arc<dyn INode> = Arc::new(PipeWriteEnd(inner));
 
-	let read_fd = crate::fd::insert_inode(task_id, read_end);
-	let write_fd = crate::fd::insert_inode(task_id, write_end);
+	let read_fd = crate::fd::insert_inode(task_id, read_end, capability::Rights::READ | capability::Rights::SEEK);
+	let write_fd = crate::fd::insert_inode(task_id, write_end, capability::Rights::WRITE | capability::Rights::SEEK);
 	(read_fd, write_fd)
 }
