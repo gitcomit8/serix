@@ -63,7 +63,7 @@ use fs::ext4::{
 };
 #[allow(unused_imports)]
 use fs::BlockDev;
-use ulib::{open, read, recv_ipc_blocking, send_ipc, write, IpcMsg, IPC_MAX_DATA};
+use ulib::{open, read, recv_ipc_blocking, send_ipc, write, IpcMsg, IPC_MAX_DATA, EXT4_REPLY_CAP, EXT4_REQUEST_CAP, EXT4_ROOT_CAP};
 
 use core::panic::PanicInfo;
 
@@ -73,24 +73,25 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Block device adapter: fd → BlockDev                               */
+/*  Block device adapter: fd + cap → BlockDev                          */
 /* ------------------------------------------------------------------ */
 
 struct FdBlockDev {
 	fd: usize,
+	cap: ulib::CapabilityRef,
 }
 
 impl fs::BlockDev for FdBlockDev {
 	fn read_block(&self, sector: u64, buf: &mut [u8; 512]) -> bool {
 		let offset = (sector * 512) as usize;
-		ulib::seek(self.fd, offset);
-		read(self.fd, buf) == 512
+		ulib::seek(self.cap, offset);
+		read(self.cap, buf) == 512
 	}
 
 	fn write_block(&self, sector: u64, buf: &[u8; 512]) -> bool {
 		let offset = (sector * 512) as usize;
-		ulib::seek(self.fd, offset);
-		write(self.fd, buf) == 512isize
+		ulib::seek(self.cap, offset);
+		write(self.cap, buf) == 512isize
 	}
 
 	fn sector_count(&self) -> u64 {
@@ -543,13 +544,16 @@ pub extern "C" fn _start() -> ! {
 }
 
 fn main() -> ! {
-	/* Open /dev/sda */
-	let fd = open(b"/dev/sda\0", 0);
+	/* Open /dev/sda relative to root directory capability */
+	let fd = open(EXT4_ROOT_CAP, b"/dev/sda\0", 0);
 	/* Large values indicate error (kernel returns ERRNO_ENOENT etc.) */
 	if fd > isize::MAX as usize {
 		ulib::exit(1);
 	}
-	let dev = FdBlockDev { fd };
+	let dev = FdBlockDev {
+		fd,
+		cap: ulib::CapabilityRef { slot: fd as usize, generation: 1 },
+	};
 
 	/* Parse ext4 superblock */
 	let sb = match Superblock::read(&dev) {
@@ -593,10 +597,11 @@ fn main() -> ! {
 	loop {
 		let mut req = IpcMsg::default();
 		let mut resp = IpcMsg::default();
-		recv_ipc_blocking(proto::EXT4_REQ_PORT, &mut req);
+		recv_ipc_blocking(EXT4_REQUEST_CAP, &mut req);
 		handle(&mut state, &req, &mut resp);
 		resp.sender_id = ulib::getpid() as u64;
 		let reply_port = proto::EXT4_REPLY_BASE + req.sender_id;
-		send_ipc(reply_port, &resp);
+		let _ = reply_port; /* bootstrap reply capability names this fixed port */
+		send_ipc(EXT4_REPLY_CAP, &resp);
 	}
 }
