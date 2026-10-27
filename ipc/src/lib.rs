@@ -141,6 +141,10 @@ impl Port {
 	 *
 	 * Slowpath: Enqueue the message and wake the first blocked receiver.
 	 *
+	 * Note: This bypasses capability checks. For userspace callers, always
+	 * use `send()` which runs `check_send_capability()`. Only kernel-internal
+	 * code (ext4 stub, IPC fastpath) should use this method.
+	 *
 	 * Return: Result<(), &'static str> indicating success or failure reason
 	 */
 	pub fn send_kernel(&self, msg: Message) -> Result<(), &'static str> {
