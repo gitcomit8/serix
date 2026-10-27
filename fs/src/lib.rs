@@ -35,6 +35,8 @@ pub mod ext4;
 #[cfg(feature = "kernel")]
 pub mod fat32;
 #[cfg(feature = "kernel")]
+pub mod policy;
+#[cfg(feature = "kernel")]
 pub use block_cache::CachedBlockDev;
 
 /* ------------------------------------------------------------------ */

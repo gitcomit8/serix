@@ -5,12 +5,13 @@ edition = "2024"
 
 [features]
 default = []
-kernel = ["dep:apic", "dep:drivers", "dep:hal", "dep:ipc"]
+kernel = ["dep:apic", "dep:capability", "dep:drivers", "dep:hal", "dep:ipc"]
 
 [dependencies]
-apic    = { path = "../apic",    optional = true }
-drivers = { path = "../drivers", optional = true }
-hal     = { path = "../hal",     optional = true }
-ipc     = { path = "../ipc",     optional = true }
-vfs     = { path = "../vfs" }
-spin    = "0.10.0"
+apic      = { path = "../apic",    optional = true }
+capability = { path = "../capability", optional = true }
+drivers   = { path = "../drivers", optional = true }
+hal       = { path = "../hal",     optional = true }
+ipc       = { path = "../ipc",     optional = true }
+vfs       = { path = "../vfs" }
+spin      = "0.10.0"
