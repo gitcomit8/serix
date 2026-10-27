@@ -48,6 +48,11 @@ pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
 pub const STDERR: usize = 2;
 
+/// Stdin capability for userspace processes (fd 0, slot 0, gen 1).
+pub const STDIN_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
+/// Stdout capability for userspace processes (fd 1, slot 1, gen 1).
+pub const STDOUT_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 1 };
+
 /*
  * syscall3 - Generic syscall wrapper for 3 arguments
  * @nr: System call number
@@ -143,6 +148,27 @@ unsafe fn syscall4(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize
 	}
 }
 
+#[inline(always)]
+unsafe fn syscall5(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> usize {
+	let ret: usize;
+	asm!("syscall", in("rax") nr, in("rdi") arg1, in("rsi") arg2, in("rdx") arg3,
+		in("r10") arg4, in("r8") arg5, lateout("rax") ret, out("rcx") _, out("r11") _);
+	ret
+}
+
+/// Ordinary protected syscall authority. A port/FD/PID is never authority by
+/// itself; callers retain the slot generation returned by the grant source.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapabilityRef { pub slot: usize, pub generation: u32 }
+
+pub const EXT4_REQUEST_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
+pub const EXT4_REPLY_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 2 };
+
+/// Root directory capability granted to ext4d at spawn time.
+/// Used to open files relative to / (e.g., /dev/sda).
+pub const EXT4_ROOT_CAP: CapabilityRef = CapabilityRef { slot: 2, generation: 1 };
+
 /*
  * syscall0 - Generic syscall wrapper for 0 arguments
  */
@@ -162,25 +188,25 @@ unsafe fn syscall0(nr: usize) -> usize {
 }
 
 /*
- * write - Write data to a file descriptor
- * @fd: File descriptor (should be STDOUT)
+ * write - Write data to a file capability
+ * @cap: File capability reference (slot=fd, generation from open)
  * @buf: Buffer containing data to write
  *
  * Return: Number of bytes written, or negative errno on error
  */
-pub fn write(fd: usize, buf: &[u8]) -> isize {
-	unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as usize, buf.len()) as isize }
+pub fn write(cap: CapabilityRef, buf: &[u8]) -> isize {
+	unsafe { syscall4(SYS_WRITE, cap.slot, cap.generation as usize, buf.as_ptr() as usize, buf.len()) as isize }
 }
 
 /*
- * read - Read data from a file descriptor
- * @fd: File descriptor (should be STDIN)
+ * read - Read data from a file capability
+ * @cap: File capability reference (slot=fd, generation from open)
  * @buf: Buffer to read data into
  *
  * Return: Number of bytes read
  */
-pub fn read(fd: usize, buf: &mut [u8]) -> usize {
-	unsafe { syscall3(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len() as usize) as usize }
+pub fn read(cap: CapabilityRef, buf: &mut [u8]) -> usize {
+	unsafe { syscall4(SYS_READ, cap.slot, cap.generation as usize, buf.as_mut_ptr() as usize, buf.len()) as usize }
 }
 
 /*
@@ -191,33 +217,34 @@ pub fn read(fd: usize, buf: &mut [u8]) -> usize {
  */
 /*
  * serix_open - Open a file by path
- * @path: Absolute path string
+ * @parent_cap: Capability reference to the parent directory
+ * @path: Absolute path string (filename relative to parent)
  *
  * Return: fd (>= 3) on success, or negative errno
  */
-pub fn serix_open(path: &str) -> isize {
-	unsafe { syscall2(SYS_OPEN, path.as_ptr() as usize, path.len()) as isize }
+pub fn serix_open(parent_cap: CapabilityRef, path: &str) -> isize {
+	unsafe { syscall4(SYS_OPEN, parent_cap.slot, parent_cap.generation as usize, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
- * serix_close - Close a file descriptor
- * @fd: File descriptor to close
+ * serix_close - Close a file capability
+ * @cap: File capability reference (slot=fd, generation from open)
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_close(fd: usize) -> isize {
-	unsafe { syscall1(SYS_CLOSE, fd) as isize }
+pub fn serix_close(cap: CapabilityRef) -> isize {
+	unsafe { syscall2(SYS_CLOSE, cap.slot, cap.generation as usize) as isize }
 }
 
 /*
  * serix_seek - Set file offset
- * @fd: File descriptor
+ * @cap: File capability reference
  * @offset: New byte offset
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_seek(fd: usize, offset: usize) -> isize {
-	unsafe { syscall2(SYS_SEEK, fd, offset) as isize }
+pub fn serix_seek(cap: CapabilityRef, offset: usize) -> isize {
+	unsafe { syscall3(SYS_SEEK, cap.slot, cap.generation as usize, offset) as isize }
 }
 
 /*
@@ -228,44 +255,47 @@ pub fn serix_seek(fd: usize, offset: usize) -> isize {
  */
 /*
  * serix_mkdir - Create a directory
- * @path: Absolute path of directory to create
+ * @parent_cap: Capability reference to the parent directory
+ * @path: Name of directory to create (relative to parent)
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_mkdir(path: &str) -> isize {
-	unsafe { syscall2(SYS_MKDIR, path.as_ptr() as usize, path.len()) as isize }
+pub fn serix_mkdir(parent_cap: CapabilityRef, path: &str) -> isize {
+	unsafe { syscall4(SYS_MKDIR, parent_cap.slot, parent_cap.generation as usize, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
  * serix_unlink - Delete a file
- * @path: Absolute path of file to delete
+ * @parent_cap: Capability reference to the parent directory
+ * @path: Name of file to delete (relative to parent)
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_unlink(path: &str) -> isize {
-	unsafe { syscall2(SYS_UNLINK, path.as_ptr() as usize, path.len()) as isize }
+pub fn serix_unlink(parent_cap: CapabilityRef, path: &str) -> isize {
+	unsafe { syscall4(SYS_UNLINK, parent_cap.slot, parent_cap.generation as usize, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
  * serix_rmdir - Remove an empty directory
- * @path: Absolute path of directory to remove
+ * @parent_cap: Capability reference to the parent directory
+ * @path: Name of directory to remove (relative to parent)
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_rmdir(path: &str) -> isize {
-	unsafe { syscall2(SYS_RMDIR, path.as_ptr() as usize, path.len()) as isize }
+pub fn serix_rmdir(parent_cap: CapabilityRef, path: &str) -> isize {
+	unsafe { syscall4(SYS_RMDIR, parent_cap.slot, parent_cap.generation as usize, path.as_ptr() as usize, path.len()) as isize }
 }
 
 /*
  * serix_mmap - Memory-map a file
- * @fd: File descriptor to map
+ * @file_cap: Capability reference to the backing file
  * @offset: Mapping offset (page-aligned)
  * @length: Mapping length
  *
  * Return: virtual address on success, negative errno on error
  */
-pub fn serix_mmap(fd: usize, offset: usize, length: usize) -> isize {
-	unsafe { syscall3(SYS_MMAP, fd, offset, length) as isize }
+pub fn serix_mmap(file_cap: CapabilityRef, offset: usize, length: usize) -> isize {
+	unsafe { syscall4(SYS_MMAP, file_cap.slot, file_cap.generation as usize, offset, length) as isize }
 }
 
 /*
@@ -327,11 +357,12 @@ impl Default for IpcMsg {
  * Adapts to kernel SYS_SEND ABI: (port, msg_id, data_ptr, data_len).
  * Returns 0 on success, non-zero on error.
  */
-pub fn send_ipc(port: u64, msg: &IpcMsg) -> usize {
+pub fn send_ipc(cap: CapabilityRef, msg: &IpcMsg) -> usize {
 	unsafe {
-		syscall4(
+		syscall5(
 			SYS_SEND,
-			port as usize,
+			cap.slot,
+			cap.generation as usize,
 			msg.id as usize,
 			msg.data.as_ptr() as usize,
 			msg.len as usize,
@@ -341,37 +372,40 @@ pub fn send_ipc(port: u64, msg: &IpcMsg) -> usize {
 
 /*
  * recv_ipc_blocking - Block until a message arrives on port (SYS_RECV_BLOCK = 32)
- * @port: source port ID
+ * @cap:  capability reference for the receive port
  * @msg:  output buffer — receives the full IpcMsg struct
  */
-pub fn recv_ipc_blocking(port: u64, msg: &mut IpcMsg) {
+pub fn recv_ipc_blocking(cap: CapabilityRef, msg: &mut IpcMsg) {
 	unsafe {
-		syscall2(SYS_RECV_BLOCK, port as usize, msg as *mut IpcMsg as usize);
+		syscall3(SYS_RECV_BLOCK, cap.slot, cap.generation as usize, msg as *mut IpcMsg as usize);
 	}
 }
 
 /*
  * open - Open a file by path (byte-slice form, for no_std callers)
+ * @parent_cap: Capability reference to the parent directory
  * @path:   null-terminated or length-implicit byte slice
  * @_flags: flags (currently unused)
  *
  * Return: fd on success, large value on error
  */
-pub fn open(path: &[u8], _flags: usize) -> usize {
+pub fn open(parent_cap: CapabilityRef, path: &[u8], _flags: usize) -> usize {
 	/* Strip trailing null if present, kernel uses ptr+len */
 	let len = path.iter().position(|&b| b == 0).unwrap_or(path.len());
-	unsafe { syscall2(SYS_OPEN, path.as_ptr() as usize, len) }
+	unsafe {
+		syscall4(SYS_OPEN, parent_cap.slot, parent_cap.generation as usize, path.as_ptr() as usize, len)
+	}
 }
 
 /*
  * seek - Set file offset
- * @fd:     file descriptor
+ * @cap:    file capability reference
  * @offset: new byte offset
  *
  * Return: 0 on success, non-zero on error
  */
-pub fn seek(fd: usize, offset: usize) -> usize {
-	unsafe { syscall2(SYS_SEEK, fd, offset) }
+pub fn seek(cap: CapabilityRef, offset: usize) -> usize {
+	unsafe { syscall3(SYS_SEEK, cap.slot, cap.generation as usize, offset) }
 }
 
 /*
@@ -430,23 +464,23 @@ pub fn serix_wait(pid: i64) -> (i64, i32) {
 
 /*
  * serix_getdents - Read directory entries into a buffer.
- * @fd: Open directory fd
+ * @cap: File capability reference (must be open on a directory)
  * @buf: Buffer to write dirent64 records into
  *
  * Return: bytes written, 0 at EOF, negative errno on error
  */
-pub fn serix_getdents(fd: usize, buf: &mut [u8]) -> isize {
-	unsafe { syscall3(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len()) as isize }
+pub fn serix_getdents(cap: CapabilityRef, buf: &mut [u8]) -> isize {
+	unsafe { syscall4(SYS_GETDENTS, cap.slot, cap.generation as usize, buf.as_mut_ptr() as usize, buf.len()) as isize }
 }
 
-/* serix_dup - Duplicate fd to the next available descriptor */
-pub fn serix_dup(fd: usize) -> isize {
-	unsafe { syscall1(SYS_DUP, fd) as isize }
+/* serix_dup - Duplicate fd capability to the next available descriptor */
+pub fn serix_dup(cap: CapabilityRef) -> isize {
+	unsafe { syscall3(SYS_DUP, cap.slot, cap.generation as usize, 0) as isize }
 }
 
-/* serix_dup2 - Duplicate old_fd to new_fd */
-pub fn serix_dup2(old_fd: usize, new_fd: usize) -> isize {
-	unsafe { syscall2(SYS_DUP2, old_fd, new_fd) as isize }
+/* serix_dup2 - Duplicate old_fd capability to new_fd */
+pub fn serix_dup2(old_cap: CapabilityRef, new_fd: usize) -> isize {
+	unsafe { syscall3(SYS_DUP2, old_cap.slot, old_cap.generation as usize, new_fd) as isize }
 }
 
 /*
@@ -454,6 +488,10 @@ pub fn serix_dup2(old_fd: usize, new_fd: usize) -> isize {
  * @fds: [read_fd, write_fd] output array
  *
  * Return: 0 on success, negative errno on error
+ *
+ * Note: Pipe capabilities are not yet authorized — this is deferred to
+ * Phase 6.3. The fds returned can be used directly with read()/write()
+ * which will validate against the fd table.
  */
 pub fn serix_pipe(fds: &mut [u64; 2]) -> isize {
 	unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, 0) as isize }
@@ -487,15 +525,15 @@ pub fn serix_create_notification_port(cap_handle: &mut [u64; 2], bitmask: u64) -
 
 /*
  * serix_notify - Send an async notification to a port
- * @port: Port ID to notify
+ * @cap:  capability reference for the notification port
  * @event_mask: Event bitmask
  *
  * Sets the event bitmask on the target port and wakes any blocked receiver.
  *
  * Return: 0 on success, negative errno on error
  */
-pub fn serix_notify(port: u64, event_mask: u64) -> i64 {
-	unsafe { syscall2(SYS_NOTIFY, port as usize, event_mask as usize) as i64 }
+pub fn serix_notify(cap: CapabilityRef, event_mask: u64) -> i64 {
+	unsafe { syscall3(SYS_NOTIFY, cap.slot, cap.generation as usize, event_mask as usize) as i64 }
 }
 
 /*

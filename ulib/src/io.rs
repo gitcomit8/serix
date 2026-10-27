@@ -6,8 +6,13 @@
  */
 
 extern crate alloc;
-use crate::{STDIN, STDOUT, read, write as sys_write};
+use crate::{CapabilityRef, read, write as sys_write};
 use alloc::string::String;
+
+/// Stdin capability for userspace processes (fd 0, slot 0, gen 1).
+pub const STDIN_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
+/// Stdout capability for userspace processes (fd 1, slot 1, gen 1).
+pub const STDOUT_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 1 };
 
 /*
  * read_line - Read a line from stdin with echo
@@ -20,26 +25,26 @@ pub fn read_line() -> Option<String> {
 	let mut line = String::new();
 	let mut buf = [0u8; 1];
 	loop {
-		let n = read(STDIN, &mut buf);
+		let n = read(STDIN_CAP, &mut buf);
 		if n == 0 {
 			return None;
 		}
 		match buf[0] {
 			b'\r' | b'\n' => {
-				sys_write(STDOUT, b"\n");
+				sys_write(STDOUT_CAP, b"\n");
 				return Some(line);
 			}
 			0x08 | 0x7F => {
 				if !line.is_empty() {
 					line.pop();
-					sys_write(STDOUT, b"\x08 \x08");
+					sys_write(STDOUT_CAP, b"\x08 \x08");
 				}
 			}
 			c => {
 				if let Ok(ch) = core::str::from_utf8(&[c]) {
 					line.push_str(ch);
 				}
-				sys_write(STDOUT, &buf[..1]);
+				sys_write(STDOUT_CAP, &buf[..1]);
 			}
 		}
 	}

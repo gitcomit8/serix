@@ -5,14 +5,15 @@
  * print! and println! work in no_std userspace binaries.
  */
 
-use crate::{STDOUT, write as sys_write};
+use crate::io::STDOUT_CAP;
+use crate::write as sys_write;
 use core::fmt::{self, Write};
 
 struct StdoutWriter;
 
 impl Write for StdoutWriter {
 	fn write_str(&mut self, s: &str) -> fmt::Result {
-		sys_write(STDOUT, s.as_bytes());
+		sys_write(STDOUT_CAP, s.as_bytes());
 		Ok(())
 	}
 }
@@ -24,7 +25,7 @@ pub fn _print(args: fmt::Arguments) {
 
 /* print_str - Write a &str directly to stdout, bypassing fmt machinery */
 pub fn print_str(s: &str) {
-	sys_write(STDOUT, s.as_bytes());
+	sys_write(STDOUT_CAP, s.as_bytes());
 }
 
 #[macro_export]
