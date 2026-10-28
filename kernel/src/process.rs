@@ -276,19 +276,26 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		direct_msg_valid: false,
 	};
 
-	/* Bootstrap grants are explicit, least-privilege child capabilities. They
-	 * replace the former assumption that a well-known port number conveys
-	 * authority. The daemon receives slot 0 = request/RECV and slot 1 =
-	 * reply/SEND; both generations are 1 in its freshly-created C-space. */
+	/* 9. Initialise stdio fds — must come before any capability grants
+	 * so that stdin/stdout/stderr occupy the well-known slots 0/1/2
+	 * in the task's C-space. This ensures ulib's hard-coded
+	 * STDIN_CAP and STDOUT_CAP resolve correctly. */
+	crate::fd::init_stdio(child_id);
+
+	/* 10. Bootstrap grants are explicit, least-privilege child capabilities.
+	 * They replace the former assumption that a well-known port number
+	 * conveys authority. For ext4d, IPC slots come after stdio
+	 * (slots 3 = request/RECV, 4 = reply/SEND), and the root directory
+	 * inode lands at slot 5. For all other processes the root inode
+	 * is the next capability (slot 3). */
 	if path == "/ext4d" {
 		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REQ_PORT, capability::Rights::RECV)?;
 		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REPLY_BASE, capability::Rights::SEND)?;
 	}
 
-	/* Grant a LOOKUP capability on the root directory to all user processes.
-	 * This allows them to open files relative to / (e.g., /hello.txt).
-	 * For ext4d, this is granted after the IPC caps (slot 2). For other
-	 * processes, it's the first file cap (slot 0). */
+	/* Grant a LOOKUP capability on the root directory to all user
+	 * processes. This allows them to open files relative to /
+	 * (e.g., /hello.txt). Always granted after stdio and ext4d IPC caps. */
 	if let Some(root_inode) = vfs::lookup_path("/") {
 		let ptr = Arc::as_ptr(&root_inode) as *const () as usize as u64;
 		let cap_type = capability::CapabilityType::Inode { ptr };
@@ -300,17 +307,14 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		tcb.cspace.lock().insert(record.id, false);
 	}
 
-	/* 9. Initialise stdio fds */
-	crate::fd::init_stdio(child_id);
-
-	/* 10. Register child in parent's children list */
+	/* 11. Register child in parent's children list */
 	if parent_id != 0 {
 		if let Some(parent_arc) = task::scheduler::find_task_by_id(parent_id) {
 			parent_arc.lock().children.push(child_id);
 		}
 	}
 
-	/* 11. Enqueue */
+	/* 12. Enqueue */
 	task::scheduler::enqueue_task(Arc::new(Mutex::new(tcb)));
 
 	hal::serial_println!(

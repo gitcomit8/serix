@@ -44,12 +44,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator;
 use ulib::{
-	CapabilityRef, STDOUT_CAP, exit, read, serix_close, serix_getpid, serix_getppid,
+	CapabilityRef, ROOT_CAP, STDOUT_CAP, exit, read, serix_close, serix_getpid, serix_getppid,
 	serix_open, serix_spawn, serix_wait, write,
 };
-
-/// Root directory capability granted at spawn time for normal processes.
-const ROOT_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
 
 /*
  * panic - User panic handler

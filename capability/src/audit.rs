@@ -9,8 +9,8 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
-/// Maximum number of audit records in the ring.
-const RING_SIZE: usize = 1024;
+/// Maximum number of audit records in the ring (~5–6KB).
+const RING_SIZE: usize = 64;
 
 /// Maximum consecutive identical denial events before suppression.
 const RATE_LIMIT_THRESHOLD: u32 = 100;

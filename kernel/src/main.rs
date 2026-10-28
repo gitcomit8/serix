@@ -62,9 +62,6 @@ pub extern "C" fn _start() -> ! {
 	hal::init_serial();
 	serial_println!("Serix Kernel v0.0.6 Starting.....");
 
-	/* Initialize global audit ring (before any capability operations) */
-	capability::init_audit();
-
 	/* Initialize Global Descriptor Table */
 	gdt::init();
 	task::register_switch_hook(|kstack| {
@@ -99,6 +96,10 @@ pub extern "C" fn _start() -> ! {
 	/* Phase 1: Memory initialization                                       */
 	/* ------------------------------------------------------------------ */
 	let mem = unsafe { init::memory::init_memory(&MMAP_REQ) };
+
+	/* Initialize global audit ring (before any capability operations).
+	 * AuditRing::new() creates a ~6KB local array — must fit on boot stack. */
+	capability::init_audit();
 
 	/* ------------------------------------------------------------------ */
 	/* Phase 2: Graphics initialization                                     */

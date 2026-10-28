@@ -5,7 +5,7 @@
  * print! and println! work in no_std userspace binaries.
  */
 
-use crate::io::STDOUT_CAP;
+use crate::STDOUT_CAP;
 use crate::write as sys_write;
 use core::fmt::{self, Write};
 
