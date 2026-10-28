@@ -131,13 +131,14 @@ cargo clippy --target x86_64-unknown-none
 2. Kernel initialization sequence:
    - Initialize serial console (COM1) for debugging
    - Disable legacy PIC, enable APIC
-   - Load IDT with exception/interrupt handlers
-   - Enable interrupts and start LAPIC timer
-   - Process Limine responses (framebuffer, memory map)
-   - Initialize page tables and heap
-   - Initialize graphics console
-   - Initialize VFS with ramdisk
-   - Load and execute init binary
+   - Register interrupt handlers, load IDT
+   - Enable interrupts globally
+   - Initialize executor, memory, heap, graphics
+   - Initialize drivers (VirtIO block), VFS, filesystems
+   - Load LES default deny policy
+   - Initialize scheduler and SMP/AP bootstrap
+   - Start LAPIC timer (~625 Hz) for preemptive scheduling
+   - Spawn ext4d daemon and kshell
    - Enter idle loop
 
 See [Boot Process Documentation](docs/BOOT_PROCESS.md) for more details.
@@ -410,20 +411,19 @@ build instructions, and commit message format.
 
 Based on the [roadmap](docs/ROADMAP.md), here are areas where contributions are welcome:
 
-### High Priority (Phase 3 - Current Focus)
+### High Priority (Phase 4-5 - Current Focus)
 
-- **VirtIO Block Driver**: Disk access via MMIO
-- **Chroma VFS**: RAM disk implementation, `/dev/console` node
-- **Pulse IPC Core**: Inter-process message passing
-- **Preemptive Scheduling**: Timer-triggered context switches
+- **Ext4 daemon hardening**: HTree directories, `rmdir` semantics, journaling (JBD2)
+- **LES policy daemon**: TOML config, hot-reload, audit log pagination
+- **Capability delegation**: Userspace `grant()` syscall, child cspace inheritance
+- **Mount table enhancements**: Auto-mount root filesystem at boot, multi-filesystem layouts
 
-### Medium Priority (Phase 4-5)
+### Medium Priority (Phase 5-6)
 
-- **Linux ABI Layer**: ELF loader improvements, `libc` stubs
-- **Threading Support**: `pthread_create`/`join` implementation
-- **Filesystem Operations**: POSIX file API
-- **Scheduler Tuning**: WFQ implementation
-- **IOMMU Protection**: DMA memory isolation
+- **LES policy rules**: Declarative access control for IPC ports and device capabilities
+- **Scheduler tuning**: WFQ cache-warmth heuristic, migration penalty
+- **IOMMU Protection**: DMA memory isolation via Intel VT-d / AMD-Vi
+- **Power Management**: ACPI FADT parsing, C-States (MWAIT), Intel HWP
 
 ### Always Welcome
 
@@ -437,9 +437,10 @@ Based on the [roadmap](docs/ROADMAP.md), here are areas where contributions are 
 
 These areas require more groundwork before accepting contributions:
 
-- SMP (multi-core) support - foundation not complete
-- Networking stack - driver layer needed first
-- GUI framework - graphics primitives too basic
+- Linux ABI translation / dynamic linking — `execve()` and `PT_INTERP` not yet implemented
+- Networking stack — VirtIO-net driver not yet implemented
+- GUI framework — graphics primitives too basic
+- Ring-3 driver server framework — MMIO BAR mapping into userspace not yet implemented
 
 ## Community and Communication
 

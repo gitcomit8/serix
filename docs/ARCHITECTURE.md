@@ -19,13 +19,14 @@
 
 ## 1. Executive Summary
 
-Serix is a **hybrid-kernel** operating system written in `#![no_std]` Rust for the x86_64 architecture. The kernel enforces a **capability-based security model** and provides a **Linux Executable Subsystem (LES)** ABI translation layer capable of running unmodified Linux ELF binaries without recompilation.
+Serix is a **hybrid-kernel** operating system written in `#![no_std]` Rust for the x86_64 architecture. The kernel enforces a **capability-based security model** and provides a **Least-Elevated Security (LES)** bridge — a declarative policy engine that gates resource access on cryptographic capabilities.
 
 - The architecture pins latency-critical subsystems (SMP scheduler, VFS, Memory Manager, IPC Router) in **Ring 0** for deterministic dispatch.
 - Crash-prone and high-latency subsystems (device drivers, filesystem daemons, network stack) are isolated as **Ring 3 userspace servers** communicating via synchronous/asynchronous IPC.
-- A **POSIX-to-Capability Authorization Bridge** translates legacy DAC (UID/GID/mode bits) semantics intercepted from the Linux ABI into fine-grained cryptographic capability tickets, preserving the security invariant that no resource access bypasses the `CapabilityStore`.
+- The **LES bridge** evaluates a local deny/allow policy at syscall entry; for paths not covered by the local snapshot, the kernel queries a Ring-3 policy daemon (`policyd`).
+- A **capability-based access control system** with per-task cspace, delegation, revocation cascading, and audit logging ensures no resource access bypasses the `CapabilityStore`.
 
-This is **not** a drop-in Linux replacement. Serix targets **gradual workload migration**: applications linked against glibc or musl execute atop the LES translation layer while native Serix binaries call kernel services directly through capability-gated IPC.
+Serix provides its own **Serix-native syscall ABI** (not a Linux ABI translation layer). Userspace binaries are compiled with `#![no_std]` against the `ulib` crate.
 
 ## 2. Hybrid Kernel Ring Model
 
@@ -62,62 +63,44 @@ These subsystems run as isolated processes in their own address spaces. Faults i
 
 ### 2.3 Ring Transition ABI
 
-- **User → Kernel:** `SYSCALL` instruction. RCX/R11 saved by hardware. Kernel swaps to per-task kernel stack via `TSS.RSP0`. SFMASK clears `IF` during entry.
-- **Kernel → User:** `SYSRET` restores RCX → RIP, R11 → RFLAGS. For full context restores (e.g., signal delivery), `IRETQ` is used instead.
-- **IPC Fastpath:** For small messages (≤128 bytes), the IPC Router performs a direct register-mediated transfer between sender and receiver `TaskCB` kernel stacks without copying through intermediate buffers.
+- **User → Kernel:** `SYSCALL` instruction. RCX/R11 saved by hardware. Kernel entry (`syscall_entry`) performs `swapgs`, saves full context to user stack, switches to kernel stack via `GS_BASE`-referenced per-CPU data area. SFMASK clears `IF` during entry. Context switch uses `SWITCH_HOOK` callback to update GDT stack pointer (not `TSS.RSP0`).
+- **Kernel → User:** `SYSRET` restores RCX → RIP, R11 → RFLAGS. For full context restores (e.g., `enter_user_mode` / `iretq`), `IRETQ` is used instead.
+- **IPC Fastpath:** When `send()` wakes a blocked receiver, the message is injected into the receiver's `TaskCB.direct_msg` field via `inject_direct_message()`. The receiver sees it in its next `receive_blocking()` loop iteration before checking the message queue. This is a buffered fastpath, not a direct register transfer.
 
-## 3. Linux Executable Subsystem (LES) — ABI Translation Layer
+## 3. LES (Least-Elevated Security) — Declarative Policy Bridge
 
-The LES enables execution of unmodified Linux ELF binaries by translating Linux `syscall` invocations into native Serix IPC dispatches.
+The LES provides a declarative access control mechanism. At boot, the kernel loads a small set of deny rules. At syscall entry, resource operations are checked against the local policy snapshot; if no local rule matches, the kernel queries a Ring-3 policy daemon (`policyd`) for a decision.
 
-### 3.1 Syscall Entry Trampoline
+### 3.1 Policy Engine Architecture
 
-- The `SYSCALL` entry point (`kernel/src/syscall.rs`) is a **zero-overhead naked function** (`#[naked]`) emitting raw assembly via `naked_asm!`.
-- Register state is marshaled according to the Linux x86_64 ABI: `RAX`=syscall number, `RDI`/`RSI`/`RDX`/`R10`/`R8`/`R9`=arguments.
-- Serix uses a Serix-native syscall table (process/file/IPC groups in `kernel/src/syscall.rs`) while preserving Linux-style register ABI (`RAX` number, `RDI..R9` args). The trampoline decodes numbers and dispatches to Ring 0 handlers or Ring 3 servers via IPC.
+- **Local Policy Snapshot** — `PolicySnapshot` (a `Vec<PolicyRule>`) loaded atomically via `AtomicUsize` pointer swap. Evaluates deny/allow rules for a `(path, rights)` pair. Default-allow: paths not explicitly denied are allowed.
+- **Policy Daemon Fallback** — When the local snapshot has no matching rule, the kernel sends a `MSG_QUERY` to `policyd` on IPC port `0x5000`. The daemon responds on a per-task reply port. Default allow if daemon is unreachable (fail-open).
+- **Transactional Reload** — `set_policy()` atomically swaps the snapshot pointer; old snapshot is dropped. Running syscalls holding a reference to the old snapshot are unaffected.
 
-### 3.2 Translation Pipeline
+### 3.2 Default Deny Rules (at boot)
 
-```
-	Linux ELF Binary
-	    │
-	    ▼
-	SYSCALL instruction (Ring 3 → Ring 0)
-	    │
-	    ▼
-	┌──────────────────────────────────┐
-	│  Naked ASM Trampoline            │
-	│  • Save RCX/R11/callee-saved     │
-	│  • Swap to kernel stack (TSS)    │
-	│  • Validate userspace pointers   │
-	└──────────┬───────────────────────┘
-	           │
-	           ▼
-	┌──────────────────────────────────┐
-	│  #[no_std] Rust Dispatch Layer   │
-	│  • Match RAX → syscall handler   │
-	│  • unsafe struct translations    │
-	│  • Capability ticket injection   │
-	└──────────┬───────────────────────┘
-	           │
-	     ┌─────┴──────┐
-	     ▼            ▼
-	Ring 0 Handler   IPC to Ring 3 Server
-	(fast path)      (e.g., Ext4 daemon)
-```
+- Deny read access to `/etc/shadow`
+- Deny access to `/proc/serix/cap-audit` (audit log — admin only)
 
-### 3.3 Struct Translation
+### 3.3 Audit Ring
 
-- Linux kernel structs (`struct stat`, `struct iovec`, `struct sockaddr`) are re-declared as `#[repr(C)]` Rust types within the LES crate.
-- Translation occurs in tightly optimized `unsafe` blocks that perform zero-copy reinterpretation via pointer casts where alignment permits, falling back to field-by-field copy for misaligned or variable-length structures.
-- The translation layer injects a `CapabilityHandle` into each request before forwarding to internal subsystems, bridging the Linux file-descriptor model to Serix's capability-gated resource access.
+- Bounded overwrite-on-full ring buffer (`~6KB`) in kernel memory
+- Each `AuditRecord` captures: caller task ID, operation, target, rights, result (granted/denied)
+- Exposed via `/proc/serix/cap-audit` pseudo-file (`procfs::make_audit_file()`)
 
-### 3.4 ELF Loading & Process Bootstrapping
+### 3.4 Syscall Entry Trampoline
 
-- The ELF loader (`loader/`) parses `PT_LOAD`, `PT_INTERP`, and `PT_GNU_STACK` program headers.
-- For dynamically linked binaries, `PT_INTERP` names the runtime linker (e.g., `/lib64/ld-linux-x86-64.so.2`), which is loaded from the Serix VFS.
-- An **auxiliary vector (auxv)** is constructed on the user stack conforming to the Linux ABI (`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_ENTRY`, `AT_BASE`, `AT_PAGESZ`, `AT_RANDOM`).
-- `execve()` semantics: parse ELF headers, allocate a fresh PML4 via `create_user_page_table()`, map `PT_LOAD` segments with correct `R/W/X` page flags, construct `auxv`/`envp`/`argv` on the user stack, and enter userspace via `IRETQ` to the ELF entry point (or `PT_INTERP` entry for dynamic binaries).
+- The `SYSCALL` entry point (`kernel/src/syscall.rs`) is a **zero-overhead naked function** (`#[unsafe(naked)]`) emitting raw assembly via `naked_asm!`.
+- Register state: `RAX`=syscall number, `RDI`/`RSI`/`RDX`/`R10`/`R8`/`R9`=arguments.
+- Serix-native syscall numbers (not Linux-compatible): Process group (0–5), File I/O (10–18), Filesystem (20–23), IPC (30–35), Memory (90–91).
+- Every resource-accessing syscall validates capability authority via `authorize_current_inode()` or `authorize_current_ipc()` before dispatching to the handler.
+
+### 3.5 ELF Loading & Process Bootstrapping
+
+- The ELF loader (`loader/`) parses `PT_LOAD` and `PT_GNU_STACK` program headers.
+- `PT_INTERP` is **not yet implemented** — all user binaries are statically linked.
+- Process spawning: `process::spawn_user_process()` allocates a PML4, maps `PT_LOAD` segments at `0x200000` (via `user.ld` linker script), constructs a 16 KiB user stack, and enters Ring 3 via `iretq`.
+- **No auxiliary vector, no dynamic linking, no `execve()`** — these are planned (Phase 5+).
 
 ## 4. Memory Management Subsystem
 
@@ -131,24 +114,26 @@ The LES enables execution of unmodified Linux ELF binaries by translating Linux 
 | **Kernel Heap** | `0xFFFF_8000_4444_0000` – `0xFFFF_8000_4454_0000` | 1 MiB; `linked_list_allocator`; growable via frame allocator |
 | **Kernel Code/Data** | Upper canonical half (Limine-assigned) | Higher-half kernel; PML4 entries 256–511 shared across all address spaces |
 
-### 4.2 Demand Paging & Unified Page Cache
+### 4.2 VMA Manager and `mmap`
 
-- **Page Fault (`#PF`) Handling:** The IDT vector 14 handler traps into the Ring 0 Memory Manager, which inspects the faulting VMA (Virtual Memory Area) descriptor.
-- **File-Backed Pages:** If the VMA is backed by an `INode`, the Memory Manager dispatches a **synchronous IPC** to the VFS to issue a DMA block fetch from the backing store (Ext4 daemon → VirtIO-blk driver).
-- **Unified Page Cache:** Fetched pages are inserted into a **concurrent radix tree** (lockless read path, fine-grained write locks) indexed by `(INode, page_offset)`. Subsequent faults and `read()` calls for the same block resolve from cache without I/O.
-- **Anonymous Pages:** `mmap(MAP_ANONYMOUS)` faults allocate zeroed frames on demand from the frame allocator.
-- **Copy-on-Write (CoW):** `fork()`/`clone(CLONE_VM=0)` marks all writable pages as read-only in both parent and child PML4s. A subsequent write fault triggers CoW duplication.
+- **VMA Manager:** `memory::vma` maintains a list of Virtual Memory Areas (start address, end address, permissions, backing inode).
+- `SYS_MMAP` — Maps a file into userspace: creates a VMA, reads each page from the file via the inode's `read()` method, and maps it into the address space. Currently supports only file-backed mappings with read+write permissions.
+- `SYS_MUNMAP` — Removes a VMA by matching the faulting address and verifying Arc-pointer identity against the stored capability pointer.
+- **No demand paging** — all pages are eagerly read from the file at `mmap()` time.
+- **No copy-on-write** — no fork semantics exist; each process has its own PML4 allocated at spawn time.
 
 ### 4.3 Frame Allocator
 
 - **Boot Phase:** `StaticBootFrameAllocator` pre-populates a frame list from the Limine memory map (`MemoryMapEntryType::USABLE` regions).
-- **Runtime Phase:** A buddy allocator manages free frames in O(log n) allocation/deallocation with per-order freelists. NUMA-aware allocation is deferred until SMP topology enumeration is complete.
+- **No deallocation:** Frames cannot be freed; the allocator only supports allocation. This is a known limitation.
+- **SLUB allocator:** Used for large kernel allocations and task stacks. 1 MiB per-task stacks allocated from `0xFFFF_D000_0000_0000` VA range via `memory::kstack::alloc_kernel_stack()`.
 
-### 4.4 IOMMU Integration
+### 4.4 IOMMU (Not Implemented)
 
-- **Intel VT-d / AMD-Vi** page tables are programmed to restrict DMA-capable devices to their assigned physical frame regions.
-- IOMMU remapping tables are parsed from the ACPI **DMAR** (DMA Remapping Reporting) table.
-- VirtIO-blk and VirtIO-net ring buffer physical addresses are registered in IOMMU page tables before the corresponding Ring 3 driver servers are started, ensuring DMA isolation.
+> **Status:** Planned for Phase 7. Not currently implemented.
+
+- Intel VT-d / AMD-Vi support is planned: ACPI DMAR table parsing, IOMMU page table construction, per-device DMA domain isolation.
+- Currently, VirtIO-blk DMA buffers use HHDM physical addresses without IOMMU translation.
 
 ## 5. IPC Router
 
@@ -160,10 +145,11 @@ The LES enables execution of unmodified Linux ELF binaries by translating Linux 
 - **Operations:** `send(port_id, msg)` enqueues; `receive(port_id)` dequeues (currently non-blocking; blocking semantics planned via scheduler integration).
 - **Blocking Receive:** `receive_blocking()` suspends the calling task (sets `TaskState::Blocked`) until a message arrives; `send()` wakes the first blocked receiver.
 
-### 5.2 IPC Fastpath
+### 5.2 IPC Wake-up Path
 
-- For latency-critical paths (e.g., `#PF` → VFS page fetch), the IPC Router performs a **direct context switch** from sender to receiver, transferring the message in registers (`RDI`–`R9`) without kernel buffer copies.
-- This fastpath bypasses the `VecDeque` entirely and is used when the receiver is blocked in `receive()` at the moment of `send()`.
+- `send()` wakes the first blocked receiver on the target port via `wake_task()`, which enqueues the receiver on the per-CPU run queue.
+- The blocked receiver (in `receive_blocking()`) checks a direct-injected message field (`direct_msg`) before the message queue. Messages are injected via `inject_direct_message()` by the scheduler — this is a buffered fastpath, not a register-mediated transfer.
+- Direct register transfer between sender and receiver contexts is **not yet implemented**.
 
 ### 5.3 Capability-Gated Access
 
@@ -188,24 +174,21 @@ pub struct TaskCB {
 
 ### 6.2 SMP-Aware Scheduling
 
-- **Per-CPU Run Queues:** Each logical processor maintains a local `VecDeque<TaskId>` run queue, reducing cross-core lock contention.
+- **Per-CPU Run Queues:** Each logical processor maintains a `RunQueue` (per-CPU, via `PER_CPU_RUN_QUEUES` array, 16 slots). Accessible via `get_per_cpu_run_queue(cpu_id)`.
 - **Scheduling Classes:**
-	- `Realtime(0-99)`: FIFO with static priority. Preempts all lower classes.
-	- `Fair(100-139)`: Weighted Fair Queueing (WFQ) with dynamic nice-adjusted virtual runtime.
-	- `Batch`: Background; scheduled only when no `Realtime` or `Fair` tasks are runnable.
-	- `Iso`: Isolated; pinned to specific cores (for real-time workloads requiring deterministic jitter).
-- **Load Balancing:** A periodic timer callback (LAPIC timer) examines per-CPU queue depths and migrates tasks between cores. Migration decisions factor in **cache warmth tracking** (last-run-core affinity) to minimize L1d/L2 thrashing.
-- **Context Switch:** Assembly routine `context_switch()` saves/restores all callee-saved registers, `CR3`, `FS_BASE`/`GS_BASE` MSRs, and FPU/SSE/AVX state via `XSAVE`/`XRSTOR`.
+	- `Realtime(0-99)`: Static priority (FIFO ordering).
+	- `Fair(100-139)`: Weighted Fair Queueing (WFQ) with virtual-runtime tracking (`wfq::pick_next()`).
+	- `Batch(140)`: Low-priority background tasks.
+	- `Iso(50)`: Isochronous tasks with elevated priority.
+- **Priority Inheritance:** `acquire_lock_with_pi()` temporarily boosts a lock holder's priority to match the acquirer's priority (prevents priority inversion). `release_lock_with_pi()` restores the original priority. Global `LOCK_REGISTRY` tracks which task holds which lock.
+- **Context Switch:** `context_switch()` (in `task/context_switch.rs`) saves/restores callee-saved GPRs (`RBP`, `RBX`, `R12-R15`), `CR3` (page table base), and `FS_BASE`/`GS_BASE` MSRs. FPU/SSE state is **not yet lazily saved** (handled by `#XF` handler, no lazy restore).
 
-### 6.3 Process Semantics & Linux `clone()` Mapping
+### 6.3 Process Semantics
 
-- Linux `clone()` flags map to native `TaskCB` construction:
-	- `CLONE_VM`: Share parent's PML4 (threads). Without: CoW-duplicate PML4 (fork).
-	- `CLONE_FS`: Share `cwd` and `umask`. Without: Copy.
-	- `CLONE_FILES`: Share file descriptor table. Without: Duplicate.
-	- `CLONE_SIGHAND`: Share signal handler table.
-- `execve()`: Parse ELF `PT_INTERP`, construct `auxv`, replace address space, reset signal dispositions to `SIG_DFL`, and jump to ELF entry.
-- **Userspace Interrupt Delivery:** Hardware interrupts destined for userspace (e.g., `SIGSEGV` on `#PF` in user VMA) are routed through **event channels** — IPC ports bound to signal numbers — enabling the target task to handle faults asynchronously without kernel-mediated signal frames.
+- **Process Creation:** `SYS_SPAWN` — `process::spawn_user_process()` parses an ELF file from the VFS, allocates a fresh PML4, maps `PT_LOAD` segments, constructs a 16 KiB user stack, grants the child an empty cspace (with STDIN/STDOUT/STDERR capabilities), and enters userspace via `iretq`.
+- **No `fork()` / `clone()` / `execve()`:** Each process is created fresh from an ELF file. No process sharing, CoW, or thread semantics are implemented. These are planned.
+- **Process Termination:** `SYS_EXIT` — marks the task as `Zombie`, closes all FDs, notifies the parent (via `waiting_for_child` flag), and context-switches away. Parent reaps the zombie via `SYS_WAIT`.
+- **No signals, no `waitpid()` semantics:** `SYS_WAIT` waits for any child to reach `Zombie` state. No signal delivery, no `WNOHANG` beyond non-blocking check.
 
 ## 7. Hardware & Driver Ecosystem
 
@@ -225,35 +208,27 @@ Serix discards legacy vendor-specific driver support. All hardware interaction t
 
 ### 7.2 Driver Server Model
 
+> **Status:** Planned. Not yet implemented.
+
+The intended architecture is:
 - Each driver server runs as a Ring 3 process with its own address space.
-- PCIe BAR (Base Address Register) MMIO regions are mapped into the driver's address space by the Server Manager at startup.
-- DMA buffers are allocated by the kernel Memory Manager and registered in the IOMMU before being shared with the driver process.
-- Driver–kernel communication occurs exclusively through IPC ports; the driver cannot directly access kernel data structures.
+- PCIe BAR (Base Address Register) MMIO regions would be mapped into the driver's address space at startup.
+- DMA buffers would be allocated by the kernel Memory Manager and registered in the IOMMU (when implemented) before being shared with the driver process.
+- Driver–kernel communication would occur exclusively through IPC ports.
+
+**Current reality:** The VirtIO-blk driver runs in Ring 0 (`drivers/` crate). The ext4 filesystem daemon runs in Ring 3 (`ext4d`), but it is a VFS proxy, not a hardware driver. No Ring 3 driver server framework or MMIO BAR mapping into userspace exists yet.
 
 ## 8. Zero-Copy Networking Stack
 
-### 8.1 Architecture
+> **Status:** Planned for Phase 9. Not yet implemented.
 
-The network stack employs a **kernel-bypass architecture** where the Ring 3 network driver maps VirtIO-net TX/RX ring buffers directly into the target application's address space.
+The intended architecture:
+- A Ring 3 VirtIO-net driver would map TX/RX ring buffers directly into application address space via capability grants.
+- DMA buffers would be allocated from DMA-safe physical frames.
+- Packet data would flow from NIC DMA → shared buffer → application without intermediate copies.
+- A `#[no_std]` TCP/IP stack (e.g., `smoltcp`) would integrate as a userspace library.
 
-```
-	┌─────────────┐       ┌──────────────────┐       ┌────────────────┐
-	│ Application  │◄─────►│ Network Server   │◄─────►│ VirtIO-net HW  │
-	│ (Ring 3)     │ mmap  │ (Ring 3)         │ MMIO  │ (virtqueues)   │
-	│              │ shared│                  │       │                │
-	│  ┌────────┐  │ buf   │  ┌────────────┐  │       │                │
-	│  │ TCP/IP │  │       │  │ Ring Mgmt  │  │       │                │
-	│  │ Stack  │  │       │  │ + DMA      │  │       │                │
-	│  └────────┘  │       │  └────────────┘  │       │                │
-	└─────────────┘       └──────────────────┘       └────────────────┘
-```
-
-### 8.2 Buffer Management
-
-- The VirtIO-net driver allocates TX/RX ring buffers from DMA-safe physical frames registered in the IOMMU.
-- These buffers are shared into the application's address space via the **Capability Store**: the driver grants a `CapabilityHandle` of type `MemoryRegion` to the application, which maps the buffer into its VMA.
-- Packet data flows from NIC DMA → shared buffer → application without any intermediate copies.
-- The application's TCP/IP stack (running in-process as a library, e.g., `smoltcp`) processes packets directly from the shared buffer.
+**Current reality:** No networking driver or TCP/IP stack exists. Only the VirtIO-blk block driver is implemented.
 
 ## 9. Security Model — POSIX-to-Capability Bridge
 
@@ -263,33 +238,34 @@ The network stack employs a **kernel-bypass architecture** where the Ring 3 netw
 - `CapabilityHandle` is a 128-bit unforgeable token. Handles are generated from hardware entropy (`RDTSC` + `RDRAND` mixing).
 - Operations: `grant(task_id, capability)` → `CapabilityHandle`; `revoke(handle)`; `validate(handle, expected_type)` → `bool`.
 
-### 9.2 POSIX-to-Capability Authorization Bridge
+### 9.2 Access Control
 
-- A Ring 3 daemon intercepts POSIX permission checks originating from the LES layer (e.g., `open()` with `O_RDWR` on a file owned by `uid=1000`, `mode=0644`).
-- The bridge daemon translates these DAC semantics into dynamic capability tickets:
-	- Consult a policy database mapping `(UID, GID, path, mode)` → `CapabilityType` + permission set.
-	- Mint a time-bounded `CapabilityHandle` with the resolved permissions.
-	- Return the handle to the LES layer, which attaches it to subsequent VFS/IPC requests.
-- This design ensures that **no Linux binary can escalate beyond the capabilities granted by the bridge**, even if it exploits a vulnerability in the LES translation layer.
+**Current state:** Access control is capability-based. Every resource (inode, IPC port, device) is represented as a `CapabilityRecord` in the global `CapabilityStore`. Operations require a valid `CapabilityRef { slot, generation }` on the syscall path. The kernel validates:
+1. Slot belongs to the caller's cspace
+2. Generation matches current slot generation (stale rejection)
+3. Record is not revoked and not expired
+4. Required rights (READ, WRITE, METADATA, etc.) are present
 
-## 10. Initialization — Server Manager (PID 1)
+**Planned:** A POSIX DAC bridge daemon would translate legacy UID/GID/mode semantics into capability tickets. This is not yet implemented.
 
-The Server Manager is the first userspace process spawned by the kernel. It orchestrates the boot of all Ring 3 servers.
+## 10. Initialization — Boot Task and Kernel Shell
 
-### 10.1 Bootstrap Sequence
+There is **no Server Manager (PID 1)** in the current implementation. The kernel initializes all subsystems in `_start()` and spawns a fixed set of tasks:
 
-1. **Kernel handoff:** The kernel loads the Server Manager ELF from the ramdisk VFS, creates its address space, and enters Ring 3 via `IRETQ`.
-2. **IPC Router memory:** The Server Manager maps the IPC Router's shared port registry into its address space (pre-allocated by the kernel).
-3. **tmpfs VFS root:** Mounts a `tmpfs` as the root filesystem (`/`), populating `/dev`, `/proc`, `/sys` mount points.
-4. **LES translation tables:** Initializes the Linux syscall number → Serix IPC port mapping table.
-5. **Dependency DAG construction:** Parses a declarative service manifest (e.g., `/etc/serix/services.toml`) to determine server start order.
-6. **Driver server binding:** For each driver server in the DAG:
-	- Enumerates PCIe configuration space for matching `(vendor_id, device_id)` tuples.
-	- Maps the device's BAR MMIO regions into the driver server's address space.
-	- Registers DMA buffer frames in the IOMMU.
-	- Spawns the driver server process and grants it the appropriate `CapabilityHandle` set.
-7. **Filesystem servers:** Starts the Ext4 daemon (`ext4d`) for IPC-backed ext4 operations over `/dev/sda`.
-8. **User session:** Spawns `serix-sh` (the default shell) or the configured login manager.
+### 10.1 Actual Bootstrap Sequence
+
+1. **Kernel entry** (`_start()`): Serial init → disable PIC/enable APIC → register interrupt handlers → load IDT → enable interrupts
+2. **Executor init:** Global `EXECUTOR` initialized
+3. **Memory init:** Frame allocator, heap, page table mapper from Limine responses
+4. **Audit ring:** `capability::init_audit()` — initializes the ~6KB audit buffer
+5. **Graphics:** Framebuffer console with blue background
+6. **Drivers:** VirtIO block device enumeration via PCI
+7. **Filesystem:** FAT32/ext2/ext4 registration, VFS mount table (`/` and `/dev/`), page cache, ext4d ELF inserted into VFS root
+8. **LES policy:** Default deny rules loaded (`/etc/shadow`, `/proc/serix/cap-audit`)
+9. **Scheduler:** Per-CPU run queues initialized; core type detected
+10. **SMP:** LAPIC timer started; AP bootstrap callbacks registered; `AP_READY_PTR` signaled
+11. **User tasks:** ext4d daemon spawned, then kshell (kernel-resident Ring-0 shell)
+12. **Idle loop:** `hlt()` in a loop; preempted by LAPIC timer interrupts (~625 Hz)
 
 ## 11. Subsystem Documentation Index
 
@@ -307,21 +283,24 @@ The Server Manager is the first userspace process spawned by the kernel. It orch
 
 ```
 serix/
-├── kernel/        # Entry point, syscall dispatch, GDT, Server Manager bootstrap
-├── memory/        # PML4 management, heap, frame allocator, demand paging
-├── hal/           # Serial I/O, CPUID, CPU topology, MSR access
-├── apic/          # LAPIC, I/O APIC, LAPIC timer, IPI broadcast
+├── kernel/        # Entry point, syscall dispatch, GDT, process spawning, kshell, LES bridge, procfs
+├── memory/        # PML4 management, heap, frame allocator, kstack allocator, VMA manager
+├── hal/           # Serial I/O, CPUID, CPU topology, MSR access, I/O ports
+├── apic/          # LAPIC, I/O APIC, LAPIC timer, SMP
 ├── idt/           # IDT construction, exception/IRQ handler stubs
 ├── graphics/      # Framebuffer console, text rendering, drawing primitives
-├── task/          # TaskCB, scheduler, context_switch(), async executor
-├── capability/    # CapabilityStore, CapabilityHandle, grant/revoke/validate
-├── ipc/           # Port-based IPC, Message, IpcSpace, fastpath
-├── vfs/           # INode trait, RamFile, RamDir, mount table, page cache
-├── fs/            # FAT32 + ext2 drivers, ext4 parser/kernel stubs, block cache
-├── loader/        # ELF64 parser, PT_LOAD/PT_INTERP, auxv construction
+├── task/          # TaskCB, scheduler, context_switch(), async executor, WFQ
+├── capability/    # CapabilityStore, CapabilityHandle, cspace, audit ring, validation
+├── ipc/           # Port-based IPC, Message, IpcSpace, notification ports
+├── vfs/           # INode trait, RamFile, RamDir, mount table (longest-prefix), page cache
+├── fs/            # FAT32 + ext2 drivers, ext4 parser/kernel stubs, block cache, policy engine
+├── loader/        # ELF64 parser, PT_LOAD segments
 ├── drivers/       # PCI enumeration, VirtIO-blk, ConsoleDevice
 ├── keyboard/      # PS/2 scancode translation, key event queue
-└── ulib/          # Userspace syscall wrappers, init binary
+├── ulib/          # Userspace syscall wrappers, capability refs, fmt, heap
+├── ext4d/         # Ring-3 ext4 filesystem daemon (embedded in kernel binary)
+├── policyd/       # Ring-3 policy service daemon
+└── util/          # Panic handler, shared utilities
 ```
 
 ## Contributing
