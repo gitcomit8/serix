@@ -1,16 +1,15 @@
 # Serix Kernel Documentation
 
-This directory contains comprehensive technical documentation for the Serix microkernel operating system.
-
-Current focus areas are ext4 daemon stabilization (Ring 3), scheduler/process bring-up, and syscall ABI hardening.
+This directory contains comprehensive technical documentation for the Serix hybrid-kernel operating system.
 
 ## Core Documentation
 
 ### System Architecture
 
-- **[Architecture Overview](ARCHITECTURE.md)** - High-level system design and subsystem organization
+- **[Architecture Overview](ARCHITECTURE.md)** - High-level system design, ring model, subsystem organization, and crate map
 - **[Boot Process](BOOT_PROCESS.md)** - Detailed boot sequence from firmware to userspace
 - **[Memory Layout](MEMORY_LAYOUT.md)** - Virtual and physical memory organization
+- **[Roadmap](ROADMAP.md)** - Development roadmap, milestones, and implementation status
 
 ### Hardware & Interrupts
 
@@ -19,12 +18,11 @@ Current focus areas are ext4 daemon stabilization (Ring 3), scheduler/process br
 
 ### APIs & Interfaces
 
-- **[Kernel API](KERNEL_API.md)** - Syscall interface and usage
+- **[Kernel API](KERNEL_API.md)** - Syscall interface, argument conventions, and usage
 - **[Graphics API](GRAPHICS_API.md)** - Framebuffer operations and console
 
 ### Development
 
-- **[Roadmap](ROADMAP.md)** - Development roadmap and milestones
 - **[Contributing](../CONTRIBUTING.md)** - Code style, build procedures, and PR process
 
 ## Module Documentation
@@ -33,13 +31,18 @@ Each subsystem has its own README with implementation details:
 
 | Module | Description | Documentation |
 | ------ | ----------- | ------------- |
-| **kernel** | Entry point, syscalls, GDT | [kernel/README.md](../kernel/README.md) |
-| **memory** | Page tables, heap, frame allocator | [memory/README.md](../memory/README.md) |
-| **hal** | Hardware abstraction (serial, CPU, I/O) | [hal/README.md](../hal/README.md) |
-| **apic** | APIC interrupt controller | [apic/README.md](../apic/README.md) |
+| **kernel** | Entry point, syscalls, GDT, kshell, LES bridge | [kernel/README.md](../kernel/README.md) |
+| **memory** | Page tables, heap, frame allocator, kstack, VMA | [memory/README.md](../memory/README.md) |
+| **hal** | Hardware abstraction (serial, CPU, I/O ports) | [hal/README.md](../hal/README.md) |
+| **apic** | APIC interrupt controller (LAPIC, I/O APIC, timer) | [apic/README.md](../apic/README.md) |
 | **idt** | Interrupt descriptor table | [idt/README.md](../idt/README.md) |
-| **graphics** | Framebuffer console, drawing | [graphics/README.md](../graphics/README.md) |
-| **task** | Async task executor, scheduler | [task/README.md](../task/README.md) |
+| **graphics** | Framebuffer console, drawing primitives | [graphics/README.md](../graphics/README.md) |
+| **task** | Async task executor, scheduler, WFQ | [task/README.md](../task/README.md) |
+| **capability** | Capability-based security system | [capability/](../capability/README.md) |
+| **ipc** | Port-based IPC, message passing | [ipc/README.md](../ipc/README.md) |
+| **vfs** | Virtual filesystem, mount table | [vfs/README.md](../vfs/README.md) |
+| **fs** | Filesystem drivers (FAT32, ext2, ext4) | [fs/README.md](../fs/README.md) |
+| **drivers** | Device drivers (VirtIO, PCI) | [drivers/README.md](../drivers/README.md) |
 | **keyboard** | PS/2 keyboard driver | [keyboard/README.md](../keyboard/README.md) |
 | **util** | Utility functions, panic handler | [util/README.md](../util/README.md) |
 
@@ -49,8 +52,9 @@ Each subsystem has its own README with implementation details:
 
 1. New to Serix? Start with the [main README](../README.md)
 2. Want to contribute? Read [CONTRIBUTING.md](../CONTRIBUTING.md)
-3. Understand the boot process: [BOOT_PROCESS.md](BOOT_PROCESS.md)
-4. Learn the memory layout: [MEMORY_LAYOUT.md](MEMORY_LAYOUT.md)
+3. Understand the architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
+4. Understand the boot process: [BOOT_PROCESS.md](BOOT_PROCESS.md)
+5. Learn the memory layout: [MEMORY_LAYOUT.md](MEMORY_LAYOUT.md)
 
 ### Developer References
 
@@ -61,6 +65,7 @@ Each subsystem has its own README with implementation details:
 
 ### Architecture Deep Dives
 
+- System architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
 - How interrupts work: [INTERRUPT_HANDLING.md](INTERRUPT_HANDLING.md)
 - Memory management: [MEMORY_LAYOUT.md](MEMORY_LAYOUT.md)
 - Graphics system: [GRAPHICS_API.md](GRAPHICS_API.md)

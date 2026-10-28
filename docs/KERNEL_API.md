@@ -629,7 +629,7 @@ Return value in rax
 
 ## serix_write()
 
-Write bytes to file descriptor
+Write bytes to file descriptor backed by a capability.
 
 ```
 
@@ -638,25 +638,29 @@ pub fn serix_write(fd: u64, buf: *const u8, count: u64) -> u64
 ```
 Parameters:
     fd
-        File descriptor (1 = stdout, 2 = stderr)
+        File descriptor (1 = stdout, backed by framebuffer console capability)
 
     buf
-        Pointer to data buffer
+        Pointer to data buffer in userspace
 
     count
         Number of bytes to write
 
 Returns:
-    Number of bytes written, or error code
+    Number of bytes written on success, negative errno on failure
+
+Calling convention:
+    Syscall number: SYS_WRITE(13)
+    Arguments: arg1 = capability slot, arg2 = capability generation, arg3 = buffer pointer, arg4 = length
 
 Example (userspace)
 
 ```
 
-use ulib::serix_write;
+use ulib::{serix_write, STDOUT_CAP};
 
 let msg = b"Hello from userspace\n";
-let written = serix_write(1, msg.as_ptr(), msg.len() as u64);
+let written = serix_write(STDOUT_CAP.slot as u64, msg.as_ptr(), msg.len() as u64);
 
 ```
 Kernel Handler
@@ -664,7 +668,8 @@ Kernel Handler
 ```
 
 // kernel/src/syscall.rs
-fn sys_write(fd: u64, buf: u64, count: u64) -> u64 {
+fn sys_write(cap_slot: usize, cap_gen: u32, buf_ptr: *const u8, len: usize) -> u64 {
+    // Validates WRITE rights on inode capability, then writes via file.inode.write()
 }
 
 ```

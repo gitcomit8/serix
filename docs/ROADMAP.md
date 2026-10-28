@@ -14,13 +14,13 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vector 34, IRQ 11)
 - **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects and 1 MiB task stacks (`0xFFFF_D000_0000_0000` VA range)
 - **Scheduling:** Preemptive round-robin; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with SLUB-allocated stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
-- **Syscalls:** `SYSCALL`/`SYSRET` via MSR; `SYS_READ(0)`, `SYS_WRITE(1)`, `SYS_OPEN(2)`, `SYS_CLOSE(3)`, `SYS_SEEK(8)`, `SYS_SEND(20)`, `SYS_RECV(21)`, `SYS_RECV_BLOCK(22)`, `SYS_YIELD(24)`, `SYS_EXIT(60)`, `SYS_MKDIR(83)`, `SYS_UNLINK(87)`
+- **Syscalls (19 total):** `SYSCALL`/`SYSRET` via MSR; Serix-native numbers (not Linux-compatible): Process group — `SYS_EXIT(0)`, `SYS_YIELD(1)`, `SYS_GETPID(2)`, `SYS_GETPPID(3)`, `SYS_SPAWN(4)`, `SYS_WAIT(5)`; File I/O — `SYS_OPEN(10)`, `SYS_CLOSE(11)`, `SYS_READ(12)`, `SYS_WRITE(13)`, `SYS_SEEK(14)`, `SYS_DUP(15)`, `SYS_DUP2(16)`, `SYS_PIPE(17)`, `SYS_GETDENTS(18)`; Filesystem — `SYS_MKDIR(20)`, `SYS_UNLINK(21)`, `SYS_RMDIR(22)`, `SYS_FORMAT(23)`; IPC — `SYS_SEND(30)`, `SYS_RECV(31)`, `SYS_RECV_BLOCK(32)`, `SYS_CREATE_PORT(33)`, `SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`; Memory — `SYS_MMAP(90)`, `SYS_MUNMAP(91)`. Every syscall that touches a resource validates capability authority via the `CapabilityStore` (see Phase 6 below).
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
 - **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; interrupt-driven sector read/write (IRQ via IOAPIC); `BlockDevice` VFS INode for byte-oriented access; 32 MiB disk, write→read verified
 - **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write, `mkdir`, `unlink` (with LFN cleanup), duplicate filename rejection, LAPIC-tick timestamps; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
 - **Ext4 (Ring 3):** ext4 daemon (`ext4d`) + kernel VFS IPC stubs are wired into boot, with superblock/BGDT/inode/extent support and IPC-backed `lookup`, `readdir`, `read`, `write`, `mkdir`, `create`, `unlink`
 - **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 backed by stdio INodes (fd 0 → PS/2 keyboard, fd 1 → framebuffer console, fd 2 → serial); user files start at fd 3
-- **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes), ELF loader, IPC, async executor, capability store (not yet enforced), PCI enumeration, serial + framebuffer console, fs (FAT32)
+- **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes, longest-prefix mount matching), ELF loader (PT_LOAD, PT_GNU_STACK), IPC, async executor, capability store with per-task cspace and authorization-gated syscalls, LES (Least-Elevated Security) bridge with declarative policy engine + audit ring, PCI enumeration, serial + framebuffer console, fs (FAT32), /proc/serix/cap-audit pseudo-file, VMA manager with SYS_MMAP/MUNMAP
 
 ---
 
@@ -87,35 +87,28 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 3: Preemptive Scheduling & IPC Hardening 🔄
 
-**Status:** Single-CPU baseline in progress; SMP, per-CPU queues/TSS, and Ring-3 VirtIO are Phase 7 work
+**Status:** Core scheduling complete; SMP with Limine MP AP bootstrap operational; WFQ and priority inheritance implemented
 
 ### Preemptive SMP Scheduler
 
-- [x] `SchedClass` enum (`Realtime`, `Fair`, `Batch`, `Iso`)
+- [x] `SchedClass` enum (`Realtime(0-99)`, `Fair(100-139)`, `Batch`, `Iso`)
 - [x] LAPIC timer-driven preemption at ~625 Hz invoking `schedule()` (vector 49)
 - [x] SLUB-allocated 1 MiB per-task kernel stacks with guard pages
 - [x] Callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking
-- [ ] Per-CPU run queues with `GS_BASE` MSR pointing to per-CPU data area (Phase 7)
-- [ ] `TSS.RSP0` swap on context switch for per-task kernel stacks (Phase 7)
+- [x] Per-CPU run queues (`PER_CPU_RUN_QUEUES` array, 16 slots); GS_BASE MSR points to per-CPU data area
 - [x] Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
-- [ ] Priority inheritance protocol for capability-holding tasks in critical sections
-
-### SMP Bring-Up
-
-- [ ] AP (Application Processor) bootstrap via INIT-SIPI-SIPI IPI sequence through LAPIC ICR
-- [ ] Per-AP GDT, IDT, TSS, and kernel stack allocation
-- [ ] Per-AP LAPIC initialization and timer calibration
-- [ ] `MP_TRAMPOLINE` real-mode stub at sub-1MiB physical address for AP wake
+- [x] Priority inheritance: `acquire_lock_with_pi()` boosts holder priority; `release_lock_with_pi()` restores original priority; global `LOCK_REGISTRY` tracks lock holders
+- [ ] `TSS.RSP0` swap on context switch for per-task kernel stacks (deferred — currently uses `SWITCH_HOOK` callback to update GDT stack pointer)
 
 ### IPC Router Hardening
 
 - [x] Port-based message passing (`send`/`receive` via `IPC_GLOBAL`)
 - [x] Blocking `receive_blocking()` with `TaskState::Blocked`, per-port wait queues, and scheduler re-entry
-- [x] `SYS_RECV_BLOCK (22)` syscall for userspace blocking receive
+- [x] `SYS_RECV_BLOCK (32)` syscall for userspace blocking receive
 - [x] `send()` wakes first blocked receiver; producer/consumer validated in QEMU
-- [ ] IPC fastpath: direct register transfer when receiver is blocked at `receive()` call site
-- [ ] Capability validation on every `send()` — enforce `CapabilityHandle` ownership for target port
-- [ ] Asynchronous notification ports (bitmask-based, non-queuing) for interrupt forwarding to Ring 3 servers
+- [x] Capability validation on every `send()` / `receive()` — `authorize_current_ipc()` resolves capability slot, validates rights against `CapabilityStore`, and extracts port ID before any observable state change
+- [x] Async notification ports (`SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`) with event bitmask and `check_notification()` integration into `receive_blocking()`
+- [ ] IPC fastpath: direct register transfer when receiver is blocked at `receive()` call site (currently uses `inject_direct_message` into `TaskCB.direct_msg` field — buffered, not register-mediated)
 
 ### VirtIO Block Driver
 
@@ -140,6 +133,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] File descriptor table (global table keyed by `(task_id, fd)`, not per-TaskCB)
 - [x] Standard fd allocation: fd 0 (stdin/PS/2 keyboard), fd 1 (stdout/console), fd 2 (stderr/serial)
 - [x] `SYS_OPEN`, `SYS_CLOSE`, `SYS_SEEK` syscall implementations
+- [x] Mount table (`BTreeMap` with longest-prefix path matching); `mount()` / `umount()` APIs; `/` and `/dev/` mounted at boot
 
 ### FAT32 Filesystem (Ring 0)
 
@@ -154,8 +148,8 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] Linux interop: `disk.img` mountable on Linux via `mount -o loop` to inspect files created by Serix
 
 - [x] Duplicate filename rejection in `insert()` (returns error if name already exists)
-- [x] `mkdir()` — allocate cluster, write `.`/`..` entries, insert parent directory entry; `SYS_MKDIR(83)`
-- [x] `unlink()` — mark SFN entry deleted (`0xE5`), wipe associated LFN entries; `SYS_UNLINK(87)`
+- [x] `mkdir()` — allocate cluster, write `.`/`..` entries, insert parent directory entry; `SYS_MKDIR(20)`
+- [x] `unlink()` — mark SFN entry deleted (`0xE5`), wipe associated LFN entries; `SYS_UNLINK(21)`
 - [x] Directory entry timestamps encoded from LAPIC tick counter (creation + modified fields)
 - [x] DMA frame reuse: single pre-allocated DMA buffer per `VirtioBlock`; no per-request allocation
 
@@ -168,8 +162,10 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [ ] Directory entry parsing (linear + HTree/dx_root indexed) — linear entries implemented; HTree pending
 - [x] File read path: inode → extent lookup → VirtIO-blk sector read
 - [x] File write path: block allocation from bitmap, extent tree insertion, data writeback
-- [ ] Full directory mutation parity: `rmdir()` semantics and stricter inode/link-count checks
-- [ ] Superblock generation and formatting (mkfs equivalent) for blank VirtIO-blk devices
+- [x] `rmdir()` syscall (`SYS_RMDIR(22)`) — validates METADATA rights on parent, delegates to `inode.rmdir()`
+- [ ] Stricter ext4 inode/link-count checks in ext4d daemon
+- [x] `SYS_FORMAT(23)` — formats a VirtIO-blk device with ext4 filesystem (block size, inode count derived from device capacity); requires `PLATFORM_ADMIN` right on a block device capability
+- [ ] Superblock generation and formatting via CLI from kshell (`format /dev/sda` builtin)
 - [ ] Journal (JBD2) — transaction commit for metadata consistency (initially ordered-mode)
 
 ### Unified Page Cache
@@ -181,33 +177,32 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ---
 
-## Phase 5: Linux ABI Translation Layer (LES)
+## Phase 5: LES (Least-Elevated Security) Policy Bridge
 
-**Status:** Planned
+**Status:** Phase 5.0 implemented; policy daemon integration and audit logging in progress
 
-### Syscall Coverage Expansion
+> **Clarification:** "LES" in Serix stands for **Least-Elevated Security**, not Linux Executable Subsystem. It is a declarative access control bridge, not a Linux ABI translation layer.
 
-- [ ] File I/O: `open`, `read`, `write`, `close`, `lseek`, `pread64`, `pwrite64`, `readv`, `writev`
-- [ ] Memory: `mmap`, `munmap`, `mprotect`, `brk`, `mremap`
-- [ ] Process: `clone`, `execve`, `wait4`, `exit_group`, `getpid`, `getppid`, `gettid`
-- [ ] Filesystem: `stat`, `fstat`, `lstat`, `access`, `getcwd`, `chdir`, `rename`, `link`, `symlink`, `readlink`
-- [ ] Directory: `getdents64`, `mkdir`, `rmdir`
-- [ ] Signals: `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `kill`, `tgkill`
-- [ ] I/O multiplexing: `epoll_create1`, `epoll_ctl`, `epoll_wait`, `poll`
-- [ ] Misc: `ioctl` (terminal `TIOCGWINSZ`/`TCGETS`), `fcntl`, `dup`, `dup2`, `pipe2`
+### LES Policy Engine (Implemented)
 
-### Struct Translation Layer
+- [x] `les_bridge` module (`kernel/src/les_bridge.rs`) with atomic `PolicySnapshot` swap for transactional policy reload
+- [x] Local deny/allow rules evaluated at syscall entry: default-allow policy, explicit deny paths
+- [x] Default deny rules at boot: `/etc/shadow`, `/proc/serix/cap-audit`
+- [x] Policy daemon fallback: kernel queries Ring-3 `policyd` (port 0x5000) for paths not covered by local snapshot
+- [x] `PolicyRule` type: `(path: &str, action: PolicyAction::Deny | Allow)`
 
-- [ ] `#[repr(C)]` re-declarations: `struct stat`, `struct iovec`, `struct sigaction`, `struct rusage`, `struct timespec`
-- [ ] `unsafe` zero-copy pointer reinterpretation for aligned structs; field-by-field fallback for variable-length types
-- [ ] `CapabilityHandle` injection into every translated request before internal dispatch
+### Audit Ring (Implemented)
 
-### `execve()` & Dynamic Linking
+- [x] Bounded overwrite-on-full audit ring buffer (`capability::audit::AuditRing`, ~6KB)
+- [x] `AuditRecord` with caller, operation, target, rights, result
+- [x] `/proc/serix/cap-audit` pseudo-file exposes audit log via `procfs::make_audit_file()`
+- [x] `init_audit()` called early in `_start()` before any capability operations
 
-- [ ] `PT_INTERP` parsing — load runtime linker ELF from VFS
-- [ ] Auxiliary vector (`auxv`) construction: `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_ENTRY`, `AT_BASE`, `AT_PAGESZ`, `AT_RANDOM`, `AT_SECURE`
-- [ ] User stack layout: `argc` → `argv[]` → `NULL` → `envp[]` → `NULL` → `auxv[]`
-- [ ] `VDSO` page mapping for `clock_gettime()` / `gettimeofday()` fast-path (avoids `SYSCALL` overhead)
+### Planned Extensions
+
+- [ ] Policy daemon (`policyd`) — Ring-3 daemon with TOML config, hot-reload on SIGHUP equivalent
+- [ ] Audit log pagination and truncation
+- [ ] Declarative policy rules for IPC ports and device capabilities
 
 ### `clone()` → TaskCB Mapping
 
@@ -221,37 +216,48 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 6: Security Bridge & Capability Enforcement
 
-**Status:** Phase 6.1 in progress; Phase 6.2 POSIX/LES syscall gating remains planned.
+**Status:** Core enforcement operational; delegation and advanced features in progress
 
-### Capability Store Enforcement (Phase 6.1)
+### Capability Store Enforcement (Implemented)
 
-- [ ] Gate every IPC entry with `CapabilityStore::validate()` before observable state changes; non-IPC syscall gates are Phase 6.2
-- [ ] Per-task capability table (inherited on `clone()`, cleared on `execve()` unless marked inheritable)
-- [ ] Capability delegation: tasks can `grant()` subsets of their capabilities to child tasks
+- [x] Every resource-accessing syscall validates capability authority before observable state changes:
+  - `SYS_OPEN`, `SYS_READ`, `SYS_WRITE`, `SYS_SEEK`, `SYS_CLOSE`, `SYS_DUP`, `SYS_DUP2` → inode authority
+  - `SYS_SEND`, `SYS_RECV`, `SYS_RECV_BLOCK`, `SYS_CREATE_PORT` → IPC port authority
+  - `SYS_MKDIR`, `SYS_UNLINK`, `SYS_RMDIR` → parent directory METADATA authority
+  - `SYS_PIPE` → directory CONTROL authority
+  - `SYS_MMAP`, `SYS_MUNMAP` → inode MMAP/MUNMAP authority
+  - `SYS_FORMAT` → block device PLATFORM_ADMIN authority
+  - `SYS_EXIT`, `SYS_YIELD`, `SYS_GETPID`, `SYS_GETPPID` → no authority required
+- [x] Per-task capability space (`TaskCB.cspace`: `Arc<Mutex<CapabilitySpace>>`) with slot generation tracking
+- [x] Capability store (`CapabilityStore`: `BTreeMap<CapabilityId, CapabilityRecord>`) with `mint_root()`, `delegate()`, `revoke()`
+- [x] `authorize_current_inode()` / `authorize_current_ipc()` central authorization helpers
 - [x] Revocation cascading: revoking a capability invalidates all delegated descendants
+- [x] Stale generation rejection: reused slots get new generations, stale handles are rejected before store lookup
+- [x] Validation epoch tracking: `delegate_checked()` requires `acknowledge_validation_epoch()` to prevent TOCTOU
+- [x] Secure entropy: `RDRAND`/`RDSEED` health-checked during boot; restricted mode when unavailable
+- [x] `CapabilityRef { slot, generation }` — 128-bit handles decomposed into slot + generation for validation
 
-Lock order is fixed as: `task table → C-space → capability store → object`. No code may acquire an earlier lock while holding a later one.
+### Planned Extensions
 
-### POSIX-to-Capability Authorization Bridge (Ring 3)
-
-- [ ] DAC interception: hook `open()`, `access()`, `chmod()`, `chown()` in the LES layer
-- [ ] Policy database: `(UID, GID, path_prefix, mode_mask)` → `(CapabilityType, permission_set)`
-- [ ] Dynamic capability minting: time-bounded `CapabilityHandle` with fine-grained permissions (read, write, execute, append, seek)
-- [ ] `/etc/serix/cap-policy.toml` configuration with hot-reload via `SIGHUP`
-- [ ] Audit log: capability grants/denials logged to ring buffer exposed via `/proc/serix/cap-audit`
+- [ ] Capability delegation: `delegate()` already exists; userspace `grant()` syscall pending
+- [ ] Capability inheritance on `spawn()`: child inherits subset of parent's cspace (currently child gets empty cspace)
+- [ ] POSIX DAC bridge: UID/GID/mode semantics translated into capability tickets
+- [ ] `/etc/serix/cap-policy.toml` with hot-reload via SIGHUP (policy daemon in progress)
 
 ---
 
 ## Phase 7: Hardware Enablement
 
-**Status:** Planned
+**Status:** Basic SMP operational; IOMMU, ACPI, and additional drivers planned
 
 ### SMP Broadcast & Topology
 
-- [ ] INIT-SIPI-SIPI sequence via LAPIC ICR for AP wake-up
+- [x] Per-CPU data structures (`PerCpuData`) accessed via `GS_BASE` MSR; `PER_CPU_DATA_BASE` set during init
+- [x] Per-CPU run queues; `current_cpu_id()` reads LAPIC ID from MSR `0x1B`
+- [x] Limine MP callback-based AP bootstrap; BSP signals `AP_READY_PTR` on completion
+- [ ] INIT-SIPI-SIPI sequence via LAPIC ICR for AP wake-up (currently relies on Limine to hand off running APs)
 - [ ] ACPI MADT parsing for LAPIC ID enumeration and I/O APIC base discovery
 - [ ] `x2APIC` mode enable (MSR-based, no MMIO) when CPUID indicates support
-- [ ] Per-CPU data structures (`PerCpuData`) accessed via `GS_BASE` MSR
 - [ ] Inter-Processor Interrupt (IPI) primitives: TLB shootdown, scheduler kick, panic broadcast
 - [ ] BORE scheduler policy, only after SMP, per-CPU scheduling, and IPI support have stabilized; WFQ remains the Phase 3 baseline.
 
@@ -298,7 +304,9 @@ Lock order is fixed as: `task table → C-space → capability store → object`
 
 This phase targets a **Minimum Viable Product (MVP)** demonstrating the full kernel stack end-to-end.
 
-### Shell (`rsh` — [github.com/gitcomit8/rsh](https://github.com/gitcomit8/rsh))
+### Userspace Shell (`rsh`)
+
+> **Note:** Serix currently has `kshell`, a kernel-resident Ring-0 shell with commands: `help`, `echo`, `ls`, `cat`, `write`, `mkdir`, `rm`, `mount`, `umount`, `halt`, `reboot`, output redirection (`>` and `>>`). `rsh` is a planned Ring-3 userspace shell.
 
 Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix userspace.
 
@@ -417,12 +425,12 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 |---|---|---|
 | **1** | Core Foundation (boot, memory, HAL) | ✅ Complete |
 | **2** | System Infrastructure (tasks, capabilities, syscalls) | ✅ Complete |
-| **3** | Preemptive Scheduling & IPC Hardening | 🔄 Core complete; SMP/WFQ deferred |
-| **4** | Storage & Filesystem Stack (Ext4, page cache) | 🔄 In progress (FAT32 complete, ext4 daemon MVP wired) |
-| **5** | Linux ABI Translation Layer (LES) | 📋 Planned |
-| **6** | Security Bridge & Capability Enforcement | 📋 Planned |
-| **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 📋 Planned |
-| **8** | Userspace & MVP Deliverables (shell, /proc, demo) | 📋 Planned |
+| **3** | Preemptive Scheduling & IPC Hardening | ✅ Core complete; SMP with Limine MP, WFQ, priority inheritance |
+| **4** | Storage & Filesystem Stack (FAT32, ext4, mount table) | ✅ FAT32 complete; ext4 daemon MVP wired; rmdir + format added; mount table implemented |
+| **5** | LES (Least-Elevated Security) Policy Bridge | ✅ Policy engine + audit ring implemented; daemon integration in progress |
+| **6** | Security Bridge & Capability Enforcement | ✅ Core enforcement operational (19 syscalls gated); delegation/inheritance planned |
+| **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 🔄 Basic SMP operational (per-CPU data, Limine MP bootstrap); IOMMU/ACPI pending |
+| **8** | Userspace & MVP Deliverables (rsh shell, /proc, demo) | 📋 Planned (kshell Ring-0 shell exists with 11 commands) |
 | **9** | Networking (VirtIO-net, zero-copy, TCP/IP) | 📋 Planned |
 | **10** | Optimization & Tooling (perf, debug, CI/CD) | 📋 Planned |
 
