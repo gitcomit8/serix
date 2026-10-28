@@ -48,10 +48,12 @@ pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
 pub const STDERR: usize = 2;
 
-/// Stdin capability for userspace processes (fd 0, slot 0, gen 1).
+/// Stdin capability — slot 0 in every process's C-space (minted by init_stdio).
 pub const STDIN_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
-/// Stdout capability for userspace processes (fd 1, slot 1, gen 1).
+/// Stdout capability — slot 1 in every process's C-space (minted by init_stdio).
 pub const STDOUT_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 1 };
+/// Stderr capability — slot 2 in every process's C-space (minted by init_stdio).
+pub const STDERR_CAP: CapabilityRef = CapabilityRef { slot: 2, generation: 1 };
 
 /*
  * syscall3 - Generic syscall wrapper for 3 arguments
@@ -162,12 +164,17 @@ unsafe fn syscall5(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapabilityRef { pub slot: usize, pub generation: u32 }
 
-pub const EXT4_REQUEST_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
-pub const EXT4_REPLY_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 2 };
+/// Root directory capability granted to all user processes at spawn time.
+/// Used to open files relative to / (e.g., /hello.txt).
+/// Slot 3 for non-ext4d; slot 5 for ext4d (after IPC caps at 3, 4).
+pub const ROOT_CAP: CapabilityRef = CapabilityRef { slot: 3, generation: 1 };
 
-/// Root directory capability granted to ext4d at spawn time.
+pub const EXT4_REQUEST_CAP: CapabilityRef = CapabilityRef { slot: 3, generation: 1 };
+pub const EXT4_REPLY_CAP: CapabilityRef = CapabilityRef { slot: 4, generation: 1 };
+
+/// Root directory capability for ext4d (slot 5, gen 1).
 /// Used to open files relative to / (e.g., /dev/sda).
-pub const EXT4_ROOT_CAP: CapabilityRef = CapabilityRef { slot: 2, generation: 1 };
+pub const EXT4_ROOT_CAP: CapabilityRef = CapabilityRef { slot: 5, generation: 1 };
 
 /*
  * syscall0 - Generic syscall wrapper for 0 arguments

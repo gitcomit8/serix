@@ -6,13 +6,8 @@
  */
 
 extern crate alloc;
-use crate::{CapabilityRef, read, write as sys_write};
+use crate::{CapabilityRef, read, write as sys_write, STDIN_CAP, STDOUT_CAP};
 use alloc::string::String;
-
-/// Stdin capability for userspace processes (fd 0, slot 0, gen 1).
-pub const STDIN_CAP: CapabilityRef = CapabilityRef { slot: 0, generation: 1 };
-/// Stdout capability for userspace processes (fd 1, slot 1, gen 1).
-pub const STDOUT_CAP: CapabilityRef = CapabilityRef { slot: 1, generation: 1 };
 
 /*
  * read_line - Read a line from stdin with echo
