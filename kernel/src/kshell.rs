@@ -39,7 +39,9 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 	let mut buf = [0u8; LINE_MAX];
 	let mut len: usize = 0;
 
+	graphics::set_kernel_fg_color(0x0000FF00); // Green
 	graphics::kprint!("ksh> ");
+	graphics::set_kernel_fg_color(0x00AAAAAA); // Restore gray
 
 	loop {
 		let byte = read_byte();
@@ -52,7 +54,9 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 					dispatch(line);
 				}
 				len = 0;
+				graphics::set_kernel_fg_color(0x0000FF00); // Green
 				graphics::kprint!("ksh> ");
+				graphics::set_kernel_fg_color(0x00AAAAAA); // Restore gray
 			}
 			/* Backspace / DEL */
 			0x08 | 0x7F => {

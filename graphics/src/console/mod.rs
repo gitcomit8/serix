@@ -175,6 +175,26 @@ impl Tty {
 			}
 		}
 	}
+
+	/*
+	 * set_fg_color - Set the foreground color for text output
+	 * @color: 0x00RRGGBB format
+	 */
+	pub fn set_fg_color(&mut self, color: u32) {
+		self.color_fg = color;
+	}
+}
+
+/*
+ * set_kernel_fg_color - Set the foreground color for kernel console text
+ * @color: 0x00RRGGBB format
+ *
+ * Call before printing colored output; restore default (0x00AAAAAA) after.
+ */
+pub fn set_kernel_fg_color(color: u32) {
+	if let Some(ref mut tty) = *KERNEL_TTY.lock() {
+		tty.set_fg_color(color);
+	}
 }
 
 impl fmt::Write for Tty {
