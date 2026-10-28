@@ -7,7 +7,7 @@
 #![no_std]
 
 pub mod console;
-pub use console::init_console;
+pub use console::{init_console, set_kernel_fg_color};
 
 /*
  * kprint! - Print formatted text to kernel console
