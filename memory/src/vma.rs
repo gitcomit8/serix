@@ -17,10 +17,12 @@ use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, Mapper, PageTableFlags as Flags, Size4KiB};
 use x86_64::VirtAddr;
 
-use crate::heap::HEAP_ALLOCATOR;
+use crate::heap::{HEAP_ALLOCATOR, StaticBootFrameAllocator};
 use crate::PAGE_ALLOC;
 use crate::PAGE_SIZE;
 use crate::hhdm_offset;
+
+use vfs::INode;
 
 /* ------------------------------------------------------------------ */
 /*  VMA permissions                                                     */
@@ -52,6 +54,24 @@ impl VmaPermissions {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Mapping type                                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * enum MappingType - How pages are handled when mapped
+ *
+ * MAP_PRIVATE: Copy-on-write. Writes create a private anonymous page.
+ * The original file-backed page is never modified.
+ * MAP_SHARED: Write-through. Pages are mapped read-write and dirty
+ * pages are tracked in the page cache for later writeback.
+ */
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MappingType {
+	Private,  /* MAP_PRIVATE — CoW */
+	Shared,   /* MAP_SHARED — write-through */
+}
+
+/* ------------------------------------------------------------------ */
 /*  VMA struct                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -59,7 +79,7 @@ impl VmaPermissions {
  * struct Vma - Virtual Memory Area
  *
  * Represents a contiguous region of virtual memory.
- * For file-backed mappings, tracks the file offset.
+ * For file-backed mappings, tracks the file offset and backing inode.
  */
 #[derive(Clone)]
 pub struct Vma {
@@ -69,20 +89,34 @@ pub struct Vma {
 	pub end: VirtAddr,
 	/* Permissions */
 	pub perms: VmaPermissions,
+	/* Mapping type: CoW (Private) or write-through (Shared) */
+	pub mapping_type: MappingType,
 	/* File offset for file-backed mappings */
 	pub file_offset: u64,
-	/* Opaque Arc<dyn INode> pointer of the backing file cap (for MUNMAP identity check) */
+	/* Arc<dyn INode> pointer of the backing file (for munmap identity check) */
 	pub cap_ptr: usize,
+	/* Backing inode for CoW — None for anonymous mappings */
+	pub backing_inode: Option<Arc<dyn vfs::INode>>,
 }
 
 impl Vma {
-	pub fn new(start: VirtAddr, end: VirtAddr, perms: VmaPermissions, file_offset: u64, cap_ptr: usize) -> Self {
+	pub fn new(
+		start: VirtAddr,
+		end: VirtAddr,
+		perms: VmaPermissions,
+		mapping_type: MappingType,
+		file_offset: u64,
+		cap_ptr: usize,
+		backing_inode: Option<Arc<dyn vfs::INode>>,
+	) -> Self {
 		Self {
 			start,
 			end,
 			perms,
+			mapping_type,
 			file_offset,
 			cap_ptr,
+			backing_inode,
 		}
 	}
 
@@ -261,7 +295,6 @@ pub fn map_file_page(
 	let page = Page::<x86_64::structures::paging::Size4KiB>::containing_address(vaddr);
 	let mut alloc = page_alloc.lock();
 	/* Use raw pointers to avoid double mutable borrow of `alloc` */
-	use crate::heap::StaticBootFrameAllocator;
 	let mapper_ptr = &mut alloc.mapper as *mut x86_64::structures::paging::OffsetPageTable<'static>;
 	let frame_alloc_ptr = &mut alloc.frame_alloc as *mut StaticBootFrameAllocator;
 	unsafe {
@@ -285,17 +318,24 @@ pub fn map_file_page(
  * page_fault_handler - Handle page faults for mmap'd pages
  *
  * When a page fault occurs on a VMA-backed address, this function
- * populates the page from pre-read file data.
+ * handles demand paging and copy-on-write:
+ *
+ * - Shared mapping + read fault: demand-load page from backing inode
+ * - Shared mapping + write fault: map writable (page should already exist
+ *   from upfront SYS_MMAP mapping)
+ * - Private mapping + read fault: demand-load page as read-only
+ * - Private mapping + write fault: CoW — allocate private frame, copy
+ *   original page data, mark writable
+ *
+ * The vma_mgr parameter must be the caller's locked reference to the
+ * VMA manager. This avoids a cycle between memory and task crates.
  */
 pub fn handle_page_fault(
+	vma_mgr: &VmaManager,
 	addr: VirtAddr,
 	write: bool,
-	page_data: &[u8; crate::PAGE_SIZE],
 ) -> Result<(), &'static str> {
-	let manager = get_vma_manager()
-		.ok_or("VMA manager not initialized")?;
-
-	let vma = manager
+	let vma = vma_mgr
 		.find_vma(addr)
 		.ok_or("no VMA for faulting address")?;
 
@@ -304,6 +344,76 @@ pub fn handle_page_fault(
 		return Err("write to read-only mapping");
 	}
 
-	/* Map the page */
-	map_file_page(addr, page_data, vma.perms)
+	/* CoW path: private mapping on write */
+	if vma.mapping_type == MappingType::Private && write {
+		return cow_fault(&vma, addr);
+	}
+
+	/* Shared or private-read: demand-load from backing inode */
+	let backing = vma
+		.backing_inode
+		.as_ref()
+		.ok_or("no backing inode for demand load")?;
+	let page_offset_in_file = (addr.as_u64() - vma.start.as_u64() + vma.file_offset) as usize;
+	let mut page_data = [0u8; crate::PAGE_SIZE];
+	let n = backing.read(page_offset_in_file, &mut page_data);
+	if n == 0 {
+		return Err("EOF during demand load");
+	}
+	map_file_page(addr, &page_data, vma.perms)
+}
+
+/*
+ * cow_fault - Copy-on-write page fault handler
+ *
+ * On write fault for a MAP_PRIVATE mapping, allocate a new private frame,
+ * read original page data from the backing inode, and map the new frame
+ * writable.
+ */
+fn cow_fault(vma: &Vma, addr: VirtAddr) -> Result<(), &'static str> {
+	/* Allocate a new private frame */
+	let page_alloc = PAGE_ALLOC.get().ok_or("page allocator not initialized")?;
+	let frame = {
+		let mut alloc = page_alloc.lock();
+		alloc
+			.frame_alloc
+			.allocate_frame()
+			.ok_or("no free frames")?
+	};
+
+	/* Read original page data from backing inode */
+	let backing = vma
+		.backing_inode
+		.as_ref()
+		.ok_or("no backing inode for CoW")?;
+	let page_offset_in_file = (addr.as_u64() - vma.start.as_u64() + vma.file_offset) as usize;
+	let mut page_data = [0u8; crate::PAGE_SIZE];
+	let n = backing.read(page_offset_in_file, &mut page_data);
+	if n == 0 {
+		return Err("EOF during CoW fault");
+	}
+
+	/* Map the new frame writable */
+	let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(addr);
+	let page_alloc = PAGE_ALLOC.get().ok_or("page allocator not initialized")?;
+	let mut alloc = page_alloc.lock();
+	let mut flags = Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE;
+
+	let mapper_ptr = &mut alloc.mapper as *mut x86_64::structures::paging::OffsetPageTable<'static>;
+	let frame_alloc_ptr = &mut alloc.frame_alloc as *mut StaticBootFrameAllocator;
+	unsafe {
+		(*mapper_ptr)
+			.map_to(page, frame, flags, &mut *frame_alloc_ptr)
+			.map_err(|_| "failed to map CoW page")?;
+	}
+
+	/* Copy page data into the new frame */
+	let hhdm = hhdm_offset();
+	let frame_virt = hhdm + frame.start_address().as_u64();
+	let frame_ptr = frame_virt.as_mut_ptr::<u8>();
+	unsafe {
+		core::ptr::copy_nonoverlapping(page_data.as_ptr(), frame_ptr, crate::PAGE_SIZE);
+	}
+
+	Ok(())
 }

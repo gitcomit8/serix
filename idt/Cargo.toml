@@ -9,4 +9,6 @@ hal = { path = "../hal" }
 util = { path = "../util" }
 keyboard = { path = "../keyboard" }
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+task = { path = "../task" }
+memory = { path = "../memory" }
 

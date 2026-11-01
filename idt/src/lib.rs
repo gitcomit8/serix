@@ -60,8 +60,8 @@ extern "x86-interrupt" fn divide_by_zero_handler(_stack: InterruptStackFrame) {
  * @stack: Interrupt stack frame with fault information
  * @err: Page fault error code
  *
- * First checks if the faulting address is in a VMA (mmap'd region).
- * If so, populates the page from the backing file.
+ * Checks if the faulting address is in a VMA. If so, delegates to
+ * memory::vma::handle_page_fault for demand paging or CoW.
  * Otherwise, prints diagnostic information and halts.
  */
 extern "x86-interrupt" fn page_fault_handler(stack: InterruptStackFrame, err: PageFaultErrorCode) {
@@ -73,8 +73,17 @@ extern "x86-interrupt" fn page_fault_handler(stack: InterruptStackFrame, err: Pa
 	let fault_addr = x86_64::VirtAddr::new(cr2);
 	let write = err.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
 
-	/* VMA page faults are handled by the mmap syscall (upfront mapping).
-	 * If we reach here, the address is not mapped — oops. */
+	/* Try to handle as a VMA page fault (demand paging / CoW) */
+	if let Some(task_arc) = task::scheduler::current_task_arc() {
+		let task_ref = task_arc.lock();
+		if let Err(_) = memory::vma::handle_page_fault(&task_ref.vma_manager, fault_addr, write) {
+			drop(task_ref);
+			/* Fall through to oops below */
+		} else {
+			/* Handled — return to the faulting instruction */
+			return;
+		}
+	}
 
 	serial_println!(
 		"Page fault at instruction pointer: {:#x}",

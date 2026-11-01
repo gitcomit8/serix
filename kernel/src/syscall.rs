@@ -1343,22 +1343,32 @@ extern "C" fn syscall_dispatcher(
 		SYS_MMAP => {
 			/*
 			 * Memory-map a file.
-			 * arg1: cap_slot, arg2: cap_gen
-			 * arg3: mapping offset (page-aligned)
-			 * arg4: mapping length
+			 * arg1: cap_slot
+			 * arg2: cap_gen
+			 * arg3: flags (0 = MAP_SHARED, 1 = MAP_PRIVATE)
+			 * arg4: mapping offset (page-aligned)
+			 * arg5: mapping length
 			 * Returns: virtual address on success, errno on failure
 			 */
 			let inode = match authorize_current_inode(arg1 as usize, arg2 as u32, capability::Rights::MMAP) {
 				Ok(ino) => ino,
 				Err(errno) => return errno,
 			};
-			let offset = arg3;
-			let length = arg4 as usize;
+			let flags = arg3;
+			let offset = arg4;
+			let length = arg5 as usize;
 			let cap_ptr = Arc::as_ptr(&inode) as *const () as usize;
 
 			if length == 0 {
 				return ERRNO_EINVAL;
 			}
+
+			/* Determine mapping type */
+			let mapping_type = if flags & 1 != 0 {
+				memory::vma::MappingType::Private  /* MAP_PRIVATE */
+			} else {
+				memory::vma::MappingType::Shared   /* MAP_SHARED */
+			};
 
 			/* Per-task VMA manager — hold lock for entire operation */
 			let task = match task::scheduler::current_task_arc() {
@@ -1373,41 +1383,48 @@ extern "C" fn syscall_dispatcher(
 				None => return ERRNO_ENOMEM,
 			};
 
-			/* Create VMA */
+			/* Create VMA with mapping type and backing inode */
 			let perms = memory::vma::VmaPermissions::new(true, true, false);
 			let vma = memory::vma::Vma::new(
 				start,
 				start + (length as u64),
 				perms,
+				mapping_type,
 				offset as u64,
 				cap_ptr,
+				Some(Arc::clone(&inode)),
 			);
 			vma_mgr.add_vma(vma);
 
-			/* Map pages: read each page from file and map it */
-			let n_pages = (length + memory::PAGE_SIZE - 1) / memory::PAGE_SIZE;
-			for i in 0..n_pages {
-				let page_addr = start.as_u64() + (i as u64 * memory::PAGE_SIZE as u64);
-				let page_vaddr = x86_64::VirtAddr::new(page_addr);
-				let file_off = offset + (i as u64 * memory::PAGE_SIZE as u64);
+			/* MAP_PRIVATE (CoW): create VMA only, pages populated on fault */
+			if mapping_type == memory::vma::MappingType::Private {
+				start.as_u64()
+			} else {
+				/* MAP_SHARED: map pages upfront, read from file */
+				let n_pages = (length + memory::PAGE_SIZE - 1) / memory::PAGE_SIZE;
+				let mut success = true;
+				for i in 0..n_pages {
+					let page_addr = start.as_u64() + (i as u64 * memory::PAGE_SIZE as u64);
+					let page_vaddr = x86_64::VirtAddr::new(page_addr);
+					let file_off = offset + (i as u64 * memory::PAGE_SIZE as u64);
 
-				/* Read page from file */
-				let mut page_data = [0u8; memory::PAGE_SIZE];
-				let n = inode.read(file_off as usize, &mut page_data);
-				if n == 0 {
-					/* EOF or read error: unwind */
-					vma_mgr.remove_vma(start.as_u64());
-					return ERRNO_EINVAL;
-				}
+					/* Read page from file */
+					let mut page_data = [0u8; memory::PAGE_SIZE];
+					let n = inode.read(file_off as usize, &mut page_data);
+					if n == 0 {
+						/* EOF or read error: unwind */
+						vma_mgr.remove_vma(start.as_u64());
+						return ERRNO_EINVAL;
+					}
 
-				if let Err(_) = memory::vma::map_file_page(page_vaddr, &page_data, perms) {
-					/* Partial mapping: remove VMA on failure */
-					vma_mgr.remove_vma(start.as_u64());
-					return ERRNO_ENOMEM;
+					if let Err(_) = memory::vma::map_file_page(page_vaddr, &page_data, perms) {
+						/* Partial mapping: remove VMA on failure */
+						vma_mgr.remove_vma(start.as_u64());
+						return ERRNO_ENOMEM;
+					}
 				}
+				start.as_u64()
 			}
-
-			start.as_u64()
 		}
 
 		SYS_MUNMAP => {
