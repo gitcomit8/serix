@@ -65,4 +65,16 @@ pub fn init_scheduler(core_type: CoreType) {
 			graphics::fb_println!("kshell: spawn failed");
 		}
 	}
+
+	/* Spawn the policy daemon */
+	match crate::process::spawn_user_process("/policyd", 0) {
+		Ok(pid) => {
+			serial_println!("policyd: daemon spawned PID={}", pid);
+			graphics::fb_println!("policyd: daemon spawned PID={}", pid);
+		}
+		Err(e) => {
+			serial_println!("policyd: spawn failed: {}", e);
+			graphics::fb_println!("policyd: spawn failed");
+		}
+	}
 }
