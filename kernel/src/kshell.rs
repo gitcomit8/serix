@@ -19,6 +19,28 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt::Write as FmtWrite;
 
+/*
+ * syscall4 - Direct syscall wrapper for kernel-side syscalls.
+ *
+ * kshell runs as a Ring-0 task, so it can invoke syscalls directly
+ * without going through the userspace ulib wrappers.
+ */
+unsafe fn syscall4(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> usize {
+	let ret: usize;
+	core::arch::asm!(
+		"syscall",
+		in("rax") nr,
+		in("rdi") arg1,
+		in("rsi") arg2,
+		in("rdx") arg3,
+		in("r10") arg4,
+		lateout("rax") ret,
+		out("rcx") _,
+		out("r11") _,
+	);
+	ret
+}
+
 const LINE_MAX: usize = 256;
 
 /* ------------------------------------------------------------------ */
@@ -195,6 +217,8 @@ fn run_output_command(line: &str, out: &mut String) {
 			let _ = writeln!(out, "  rm <path>            - remove file");
 			let _ = writeln!(out, "  mount <dev> <path>   - mount filesystem");
 			let _ = writeln!(out, "  umount <path>        - unmount filesystem");
+			let _ = writeln!(out, "  policy list          - show active policy rules");
+			let _ = writeln!(out, "  policy reload [path] - reload policy from config");
 			let _ = writeln!(out, "  halt                 - stop the CPU");
 			let _ = writeln!(out, "  reboot               - triple-fault reboot");
 		}
@@ -288,6 +312,7 @@ fn run_side_effect_command(line: &str) {
 	let arg2 = parts.next().unwrap_or("").trim();
 
 	match cmd {
+		"policy" => handle_policy_command(arg1, arg2),
 		"write" => {
 			/* write <file> <data...> */
 			if arg1.is_empty() {
@@ -499,6 +524,106 @@ fn write_to_file(path: &str, data: &[u8], mode: RedirMode) {
 		RedirMode::Append => node.size(),
 	};
 	node.write(offset, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Policy management                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * handle_policy_command - Handle `policy` subcommands from kshell.
+ *
+ * Subcommands:
+ *   list       - Read and display the policy config file
+ *   reload     - Reload policy from config (with optional custom path)
+ */
+fn handle_policy_command(subcmd: &str, arg: &str) {
+	match subcmd {
+		"list" => policy_list(),
+		"reload" => policy_reload(arg),
+		_ => {
+			graphics::kprintln!("usage: policy list|reload [path]");
+		}
+	}
+}
+
+/*
+ * policy_list - Read and display the policy config file.
+ *
+ * Reads /etc/serix/policy.toml from the VFS and prints its contents
+ * to the framebuffer console.
+ */
+fn policy_list() {
+	let path = "/etc/serix/policy.toml";
+	let node = match vfs::lookup_path(path) {
+		Some(n) => n,
+		None => {
+			graphics::kprintln!("policy: {} not found", path);
+			return;
+		}
+	};
+
+	let size = node.size();
+	if size == 0 {
+		graphics::kprintln!("policy: {} is empty", path);
+		return;
+	}
+
+	let mut offset = 0usize;
+	let mut chunk = [0u8; 512];
+	graphics::kprintln!("=== Active Policy Rules (from {}) ===", path);
+
+	while offset < size {
+		let remaining = size - offset;
+		let chunk_size = core::cmp::min(remaining, chunk.len());
+		let n = node.read(offset, &mut chunk[..chunk_size]);
+		if n == 0 {
+			break;
+		}
+
+		if let Ok(s) = core::str::from_utf8(&chunk[..n]) {
+			graphics::kprint!("{}", s);
+		} else {
+			/* Non-UTF8: show as hex pairs */
+			for b in &chunk[..n] {
+				graphics::kprint!("{:02x} ", b);
+			}
+		}
+		offset += n;
+	}
+
+	graphics::kprintln!();
+}
+
+/*
+ * policy_reload - Reload policy from config file.
+ *
+ * Sends a SYS_POLICY_RELOAD syscall to reload the LES policy snapshot
+ * and notify policyd to reload its config.
+ *
+ * If a path is provided, uses that path instead of the default.
+ */
+fn policy_reload(path: &str) {
+	let config_path = if path.is_empty() {
+		"/etc/serix/policy.toml"
+	} else {
+		path
+	};
+
+	/* Use a syscall to reload the policy */
+	let ret = unsafe {
+		syscall4(93u64 as usize,  /* SYS_POLICY_RELOAD */
+			3,                              /* root cap slot */
+			1,                              /* root cap gen */
+			config_path.as_ptr() as usize,
+			config_path.len())
+	};
+
+	if ret == 0 {
+		graphics::kprintln!("policy: reloaded from {}", config_path);
+	} else {
+		graphics::kprintln!("policy: reload failed (errno={})", ret);
+	}
 }
 
 /* ------------------------------------------------------------------ */

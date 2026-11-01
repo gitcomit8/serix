@@ -6,7 +6,7 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run iso disk clean limine kernel ext4d ext4disk
+.PHONY: all run iso disk clean limine kernel ext4d ext4disk policyd
 
 all: iso
 
@@ -14,7 +14,11 @@ ext4d:
 	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
 	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem -p ext4d --release --target x86_64-unknown-none
 
-kernel: ext4d
+policyd:
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem -p policyd --release --target x86_64-unknown-none
+
+kernel: ext4d policyd
 	cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
 
 limine:

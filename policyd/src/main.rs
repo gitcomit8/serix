@@ -7,7 +7,7 @@
  *
  * Port topology:
  *   Listens on: POLICY_REQ_PORT  (0x5000)
- *   Replies to: POLICY_REPLY_BASE + sender_id
+ *   Replies to: POLICY_REPLY_CAP (0x5001)
  *
  * Message protocol:
  *   header: [4 bytes opcode, 4 bytes flags]
@@ -17,7 +17,11 @@
  *   LOAD   (1)  — Load new policy from serialized rules
  *   QUERY  (2)  — Query: is path allowed for rights?
  *   LIST   (3)  — List all active rules
- *   RELOAD (4)  — Transactional reload (atomic swap)
+ *   RELOAD (4)  — Reload policy from config file
+ *
+ * Config file (TOML):
+ *   Loaded at startup from /etc/serix/policy.toml
+ *   Hot-reload via RELOAD opcode (file polling) or kshell `policy reload`
  */
 
 #![no_std]
@@ -68,30 +72,37 @@ unsafe impl GlobalAlloc for BumpAllocator {
 /*
  * Global allocator.
  *
- * This is intentionally left WITHOUT a cfg guard. The bump allocator
- * is only used when policyd is built standalone or alongside ext4d.
- * When Cargo links workspace binaries together (full `cargo build`),
- * the kernel's memory crate allocator takes precedence because the
- * kernel is the primary x86_64-unknown-none binary in the workspace.
- *
- * The `#[allow(unused)]` attribute suppresses warnings when this
- * allocator is not the one being linked.
+ * Used when policyd is built standalone (no_std, no kernel).
+ * When policyd is built alongside the kernel, the kernel's memory
+ * crate allocator takes precedence — this one is ignored.
  */
-#[global_allocator]
 #[allow(unused)]
+#[global_allocator]
 static POLICYD_ALLOCATOR: BumpAllocator = BumpAllocator;
+
+/* ------------------------------------------------------------------ */
+/*  Config parser module                                               */
+/* ------------------------------------------------------------------ */
+
+mod config;
+use config::{config_rules_to_policy, parse_config};
 
 /* ------------------------------------------------------------------ */
 /*  IPC protocol                                                       */
 /* ------------------------------------------------------------------ */
 
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
+use capability::Rights;
 use fs::policy::{MatchType, PolicyAction, PolicyRule, PolicySnapshot};
 use ulib::{recv_ipc_blocking, send_ipc, IpcMsg, CapabilityRef, IPC_MAX_DATA};
 extern crate spin;
 
+use core::cell::UnsafeCell;
 use core::panic::PanicInfo;
+
+static LAST_CONFIG_SIZE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -106,16 +117,16 @@ const MSG_QUERY: u64 = 2;
 const MSG_LIST: u64 = 3;
 const MSG_RELOAD: u64 = 4;
 
+/* Config file path — used by RELOAD to find the source file */
+const CONFIG_FILE_PATH: &str = "/etc/serix/policy.toml";
+
+/* Config parent capability — slot 5 (after stdio 0-2, IPC caps 3-4) */
+const CONFIG_PARENT_SLOT: usize = 5;
+const CONFIG_PARENT_GEN: u32 = 1;
+
 /* ------------------------------------------------------------------ */
 /*  In-memory policy store (synchronized via Mutex)                    */
 /* ------------------------------------------------------------------ */
-
-use core::cell::UnsafeCell;
-
-struct SyncPolicy(UnsafeCell<PolicySnapshot>);
-
-unsafe impl Send for SyncPolicy {}
-unsafe impl Sync for SyncPolicy {}
 
 struct PolicyStore {
 	snapshot: UnsafeCell<PolicySnapshot>,
@@ -181,50 +192,6 @@ fn serialize_rule(rule: &PolicyRule, buf: &mut [u8]) -> usize {
 	off
 }
 
-/// Deserialize a PolicyRule from a binary buffer.
-/// Returns (rule, bytes_consumed) or (None, 0) on error.
-fn deserialize_rule(buf: &[u8]) -> Option<(PolicyRule, usize)> {
-	if buf.len() < 6 {
-		return None;
-	}
-
-	let path_len = buf[0] as usize;
-	if 1 + path_len + 1 + 4 + 1 > buf.len() {
-		return None;
-	}
-
-	let path = core::str::from_utf8(&buf[1..1 + path_len]).ok()?;
-	let match_type = match buf[1 + path_len] {
-		0 => MatchType::Exact,
-		1 => MatchType::Prefix,
-		2 => MatchType::Glob,
-		_ => return None,
-	};
-
-	let required_rights = u32::from_le_bytes([
-		buf[1 + path_len + 1],
-		buf[1 + path_len + 2],
-		buf[1 + path_len + 3],
-		buf[1 + path_len + 4],
-	]);
-	let action = match buf[1 + path_len + 5] {
-		0 => PolicyAction::Allow,
-		1 => PolicyAction::Deny,
-		_ => return None,
-	};
-
-	let consumed = 1 + path_len + 6;
-	Some((
-		PolicyRule {
-			path: path.to_string(),
-			match_type,
-			required_rights: capability::Rights(required_rights),
-			action,
-		},
-		consumed,
-	))
-}
-
 /* ------------------------------------------------------------------ */
 /*  Request handler                                                    */
 /* ------------------------------------------------------------------ */
@@ -272,22 +239,64 @@ impl Handler {
 
 		let rule_count = u16::from_le_bytes([data[0], data[1]]) as usize;
 		let mut off = 2usize;
-		let mut rules = Vec::with_capacity(rule_count);
+		let mut rules = vec::Vec::with_capacity(rule_count);
 
 		for _ in 0..rule_count {
 			if off >= data.len() {
 				break;
 			}
-			match deserialize_rule(&data[off..]) {
-				Some((rule, consumed)) => {
-					rules.push(rule);
-					off += consumed;
-				}
-				None => {
+			if off + 6 > data.len() {
+				self.reply.data[0] = 2;
+				return;
+			}
+
+			let path_len = data[off] as usize;
+			if off + 1 + path_len + 5 > data.len() {
+				self.reply.data[0] = 2;
+				return;
+			}
+
+			let path = match core::str::from_utf8(&data[off + 1..off + 1 + path_len]) {
+				Ok(s) => s.to_string(),
+				Err(_) => {
 					self.reply.data[0] = 2;
 					return;
 				}
-			}
+			};
+
+			let match_type = match data[off + 1 + path_len] {
+				0 => MatchType::Exact,
+				1 => MatchType::Prefix,
+				2 => MatchType::Glob,
+				_ => {
+					self.reply.data[0] = 2;
+					return;
+				}
+			};
+
+			let required_rights = u32::from_le_bytes([
+				data[off + 1 + path_len + 1],
+				data[off + 1 + path_len + 2],
+				data[off + 1 + path_len + 3],
+				data[off + 1 + path_len + 4],
+			]);
+			let action = match data[off + 1 + path_len + 5] {
+				0 => PolicyAction::Allow,
+				1 => PolicyAction::Deny,
+				_ => {
+					self.reply.data[0] = 2;
+					return;
+				}
+			};
+
+			rules.push(PolicyRule {
+				path,
+				match_type,
+				required_rights: Rights(required_rights),
+				action,
+			});
+
+			off += 1 + path_len + 6;
 		}
 
 		let snapshot = PolicySnapshot::new(rules);
@@ -322,7 +331,7 @@ impl Handler {
 			data[1 + path_len + 2],
 			data[1 + path_len + 3],
 		]);
-		let caps_rights = capability::Rights(rights);
+		let caps_rights = Rights(rights);
 
 		let snapshot = unsafe { &*get_store().snapshot.get() };
 		let allowed = snapshot.allows(path, caps_rights);
@@ -332,7 +341,7 @@ impl Handler {
 
 	/*
 	 * MSG_LIST: List all active rules.
-	 * Response: [rule_count:u16, rules...]
+	 * Response: [rule_count:u8, rules...]
 	 * Each rule: [path_len:u8, path:u8[path_len], match_type:u8, rights:u32, action:u8]
 	 */
 	fn handle_list(&mut self, _data: &[u8; IPC_MAX_DATA]) {
@@ -349,7 +358,7 @@ impl Handler {
 
 		for rule in snapshot.iter() {
 			let consumed = serialize_rule(rule, &mut self.reply.data[off..]);
-			if consumed == 0 || off > IPC_MAX_DATA {
+			if consumed == 0 || off + consumed > IPC_MAX_DATA {
 				break;
 			}
 			off += consumed;
@@ -359,49 +368,97 @@ impl Handler {
 	}
 
 	/*
-	 * MSG_RELOAD: Transactional reload — atomically swap in new policy.
-	 * Format: same as MSG_LOAD.
-	 * Response: [old_count:u16, new_count:u16, success:u8]
+	 * MSG_RELOAD: Reload policy from config file.
+	 * Format: [config_path_len:u8, config_path:u8[path_path_len]]
+	 *          or empty payload (use default CONFIG_FILE_PATH).
+	 * Response: [result:u8 (0=ok, 1=file not found, 2=parse error),
+	 *            old_count:u16, new_count:u16]
 	 */
 	fn handle_reload(&mut self, data: &[u8; IPC_MAX_DATA]) {
-		if data.len() < 2 {
-			self.reply.data[0] = 1;
+		let config_path = if data.len() >= 2 {
+			let path_len = data[0] as usize;
+			if path_len > 0 && 1 + path_len <= data.len() {
+				core::str::from_utf8(&data[1..1 + path_len]).unwrap_or(CONFIG_FILE_PATH)
+			} else {
+				CONFIG_FILE_PATH
+			}
+		} else {
+			CONFIG_FILE_PATH
+		};
+
+		/* Read and parse the config file */
+		let mut buf = [0u8; 4096];
+		let n = unsafe {
+			syscall_file_read(CONFIG_PARENT_SLOT, CONFIG_PARENT_GEN as usize, config_path, &mut buf)
+		};
+
+		if n == 0 {
+			self.reply.data[0] = 1; /* file not found */
+			let old_count = unsafe { (&*get_store().snapshot.get()).rule_count() } as u16;
+			self.reply.data[1..3].copy_from_slice(&old_count.to_le_bytes());
+			self.reply.len = 3;
 			return;
 		}
 
-		let rule_count = u16::from_le_bytes([data[0], data[1]]) as usize;
-		let mut off = 2usize;
-		let mut rules = Vec::with_capacity(rule_count);
+		let text = match core::str::from_utf8(&buf[..n as usize]) {
+			Ok(s) => s,
+			Err(_) => {
+				self.reply.data[0] = 2; /* parse error */
+				self.reply.len = 3;
+				return;
+			}
+		};
 
-		for _ in 0..rule_count {
-			if off >= data.len() {
-				break;
-			}
-			match deserialize_rule(&data[off..]) {
-				Some((rule, consumed)) => {
-					rules.push(rule);
-					off += consumed;
-				}
-				None => {
-					self.reply.data[0] = 2;
-					return;
-				}
-			}
+		let config_rules = parse_config(text);
+		if config_rules.is_empty() {
+			self.reply.data[0] = 2; /* parse error — no rules */
+			self.reply.len = 3;
+			return;
 		}
 
-		let new_snapshot = PolicySnapshot::new(rules);
+		/* Convert config rules to policy rules */
+		let rules = config_rules_to_policy(&config_rules);
+
 		let old_snapshot = unsafe { core::ptr::read(get_store().snapshot.get()) };
 		let old_count = old_snapshot.rule_count() as u16;
+
+		let new_snapshot = PolicySnapshot::new(rules);
+		let new_count = new_snapshot.rule_count() as u16;
 
 		unsafe {
 			*get_store().snapshot.get() = new_snapshot;
 		}
 
-		self.reply.data[0..2].copy_from_slice(&old_count.to_le_bytes());
-		self.reply.data[2..4].copy_from_slice(&(rule_count as u16).to_le_bytes());
-		self.reply.data[4] = 0; /* success */
+		self.reply.data[0] = 0; /* success */
+		self.reply.data[1..3].copy_from_slice(&old_count.to_le_bytes());
+		self.reply.data[3..5].copy_from_slice(&new_count.to_le_bytes());
 		self.reply.len = 5;
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/*  Direct syscall wrapper (no_std userspace)                         */
+/* ------------------------------------------------------------------ */
+
+/// Direct syscall wrapper for SYS_FILE_READ (92).
+/// Used to read config files at boot and during hot-reload.
+unsafe fn syscall_file_read(cap_slot: usize, cap_gen: usize, path: &str, buf: &mut [u8]) -> usize {
+	let ret: usize;
+	core::arch::asm!(
+		"syscall",
+		in("rax") 92u64,
+		in("rdi") cap_slot,
+		in("rsi") cap_gen,
+		in("rdx") path.as_ptr() as usize,
+		in("r10") path.len(),
+		in("r8") buf.as_mut_ptr() as usize,
+		in("r9") buf.len(),
+		out("rcx") _,
+		out("r11") _,
+		lateout("rax") ret,
+		options(nostack),
+	);
+	ret
 }
 
 /* ------------------------------------------------------------------ */
@@ -414,12 +471,37 @@ pub extern "C" fn _start() -> ! {
 }
 
 fn main() -> ! {
-	/* Main service loop */
+	/* Load config from file at startup */
+	let mut buf = [0u8; 4096];
+	let n = unsafe {
+		syscall_file_read(CONFIG_PARENT_SLOT, CONFIG_PARENT_GEN as usize, CONFIG_FILE_PATH, &mut buf)
+	};
+
+	if n > 0 {
+		if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+			let config_rules = parse_config(text);
+			let rules = config_rules_to_policy(&config_rules);
+			if !rules.is_empty() {
+				get_store().load(PolicySnapshot::new(rules));
+			}
+		}
+	}
+
+	/* Main service loop with file polling for hot-reload */
+	LAST_CONFIG_SIZE.store(n as usize, core::sync::atomic::Ordering::Relaxed);
+
 	loop {
+		/* Check config file size for changes (simple polling) */
+		if check_config_changed(CONFIG_FILE_PATH) {
+			if let Ok(rules) = load_and_parse_config() {
+				get_store().load(PolicySnapshot::new(rules));
+			}
+		}
+
+		/* Block waiting for a request */
 		let mut req = IpcMsg::default();
 		let mut resp = IpcMsg::default();
 
-		/* Block waiting for a request */
 		recv_ipc_blocking(
 			CapabilityRef {
 				slot: POLICY_REQ_PORT,
@@ -439,5 +521,45 @@ fn main() -> ! {
 			},
 			&handler.reply,
 		);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/*  Hot-reload helpers                                                 */
+/* ------------------------------------------------------------------ */
+
+/// Check if the config file has changed by comparing its size.
+fn check_config_changed(path: &str) -> bool {
+	let mut buf = [0u8; 1];
+	let n = unsafe { syscall_file_read(CONFIG_PARENT_SLOT, CONFIG_PARENT_GEN as usize, path, &mut buf) };
+
+	if n != 0 {
+		let current_size = n as usize;
+		let old_size = LAST_CONFIG_SIZE.load(core::sync::atomic::Ordering::Relaxed);
+		let changed = current_size != old_size;
+		LAST_CONFIG_SIZE.store(current_size, core::sync::atomic::Ordering::Relaxed);
+		changed
+	} else {
+		false
+	}
+}
+
+/// Load and parse the config file, returning policy rules.
+fn load_and_parse_config() -> Result<Vec<PolicyRule>, ()> {
+	let mut buf = [0u8; 4096];
+	let n = unsafe { syscall_file_read(CONFIG_PARENT_SLOT, CONFIG_PARENT_GEN as usize, CONFIG_FILE_PATH, &mut buf) };
+
+	if n == 0 {
+		return Err(());
+	}
+
+	let text = core::str::from_utf8(&buf[..n as usize]).map_err(|_| ())?;
+	let config_rules = parse_config(text);
+	let rules = config_rules_to_policy(&config_rules);
+
+	if rules.is_empty() {
+		Err(())
+	} else {
+		Ok(rules)
 	}
 }
