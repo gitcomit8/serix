@@ -21,12 +21,13 @@
  */
 
 use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use capability::Rights;
-use fs::policy::{PolicyAction, PolicyRule, PolicySnapshot};
+use fs::policy::{MatchType, PolicyAction, PolicyRule, PolicySnapshot};
 
 /* ------------------------------------------------------------------ */
 /*  Local policy store (atomic swap)                                   */
@@ -175,12 +176,200 @@ pub fn init_default_policy() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  TOML config parsing                                                */
+/* ------------------------------------------------------------------ */
+
+/// Parse policy rules from a TOML-like config string.
+///
+/// Format:
+///   [[rule]]
+///   target = "/path"
+///   match_type = "exact" | "prefix" | "glob"
+///   action = "allow" | "deny"
+///   required_rights = "READ", "WRITE", etc.
+pub fn parse_rules_from_toml(text: &str) -> Vec<PolicyRule> {
+	let mut rules = Vec::new();
+	let mut current_target: Option<String> = None;
+	let mut current_match_type = MatchType::Exact;
+	let mut current_action = PolicyAction::Allow;
+	let mut current_rights: u32 = 0;
+
+	for raw_line in text.lines() {
+		let line = trim_comments(raw_line).trim();
+
+		if line.is_empty() || (line.starts_with('[') && !line.starts_with("[[")) {
+			/* Section header or blank — flush pending rule */
+			if let Some(target) = current_target.take() {
+				rules.push(PolicyRule {
+					path: target,
+					match_type: current_match_type,
+					required_rights: capability::Rights(current_rights),
+					action: current_action,
+				});
+			}
+			current_match_type = MatchType::Exact;
+			current_action = PolicyAction::Allow;
+			current_rights = 0;
+			continue;
+		}
+
+		if line == "[[rule]]" {
+			/* Flush previous rule */
+			if let Some(target) = current_target.take() {
+				rules.push(PolicyRule {
+					path: target,
+					match_type: current_match_type,
+					required_rights: capability::Rights(current_rights),
+					action: current_action,
+				});
+			}
+			current_target = None;
+			current_match_type = MatchType::Exact;
+			current_action = PolicyAction::Allow;
+			current_rights = 0;
+			continue;
+		}
+
+		if let Some((key, value)) = line.split_once('=') {
+			let key = key.trim();
+			let value = value.trim();
+
+			match key {
+				"target" => current_target = Some(parse_string(value)),
+				"match_type" => current_match_type = parse_match_type(value),
+				"action" => current_action = parse_action(value),
+				"required_rights" => current_rights = parse_rights(value),
+				_ => {}
+			}
+		}
+	}
+
+	/* Flush last rule */
+	if let Some(target) = current_target {
+		rules.push(PolicyRule {
+			path: target,
+			match_type: current_match_type,
+			required_rights: capability::Rights(current_rights),
+			action: current_action,
+		});
+	}
+
+	rules
+}
+
+/* TOML-like parsing helpers */
+fn trim_comments(line: &str) -> &str {
+	let mut in_string = false;
+	let mut escape = false;
+	for (i, ch) in line.char_indices() {
+		if escape {
+			escape = false;
+			continue;
+		}
+		if ch == '\\' && in_string {
+			escape = true;
+			continue;
+		}
+		if ch == '"' {
+			in_string = !in_string;
+			continue;
+		}
+		if ch == '#' && !in_string {
+			return &line[..i];
+		}
+	}
+	line
+}
+
+fn parse_string(value: &str) -> String {
+	let value = value.trim();
+	if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+		value[1..value.len() - 1].to_string()
+	} else {
+		value.to_string()
+	}
+}
+
+fn parse_match_type(value: &str) -> MatchType {
+	match value.trim().to_lowercase().as_str() {
+		"exact" => MatchType::Exact,
+		"prefix" => MatchType::Prefix,
+		"glob" => MatchType::Glob,
+		_ => MatchType::Exact,
+	}
+}
+
+fn parse_action(value: &str) -> PolicyAction {
+	match value.trim().to_lowercase().as_str() {
+		"allow" => PolicyAction::Allow,
+		"deny" => PolicyAction::Deny,
+		_ => PolicyAction::Allow,
+	}
+}
+
+fn parse_rights(value: &str) -> u32 {
+	let mut bits: u32 = 0;
+	for token in value.split(',') {
+		let token = token.trim().to_lowercase();
+		bits |= match token.as_str() {
+			"read" => 1 << 0,
+			"write" => 1 << 1,
+			"execute" => 1 << 2,
+			"seek" => 1 << 3,
+			"append" => 1 << 4,
+			"metadata" => 1 << 5,
+			"lookup" => 1 << 6,
+			"send" => 1 << 7,
+			"recv" => 1 << 8,
+			"notify" => 1 << 9,
+			"control" => 1 << 10,
+			"mmap" => 1 << 11,
+			"munmap" => 1 << 12,
+			"spawn" => 1 << 13,
+			"wait" => 1 << 14,
+			"dup" => 1 << 15,
+			"platform_admin" => 1 << 16,
+			_ => 0,
+		};
+	}
+	bits
+}
+
+/* ------------------------------------------------------------------ */
+/*  Notify policyd to reload                                          */
+/* ------------------------------------------------------------------ */
+
+/// Send a RELOAD notification to the policy daemon.
+///
+/// This is best-effort — if policyd is not running or the IPC fails,
+/// the kernel's local policy is still updated (above).
+pub fn notify_policyd() {
+	use ipc::Message;
+
+	let msg = Message {
+		sender_id: 0,
+		id: 4, /* MSG_RELOAD */
+		len: 1,
+		data: {
+			let mut d = [0u8; 128];
+			d[0] = 0; /* success */
+			d
+		},
+	};
+
+	if let Some(port) = ipc::IPC_GLOBAL.get_port(0x5000) {
+		let _ = port.send(msg);
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /*  Unit tests                                                         */
 /* ------------------------------------------------------------------ */
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
 
 	#[test]
 	fn evaluate_no_policy_defaults_allow() {

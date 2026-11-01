@@ -77,4 +77,54 @@ pub fn init_filesystem() {
 		}
 		serial_println!("ext4d: ELF inserted into VFS");
 	}
+
+	/* Insert policyd daemon ELF into VFS root */
+	{
+		let policyd_file: Arc<dyn INode> =
+			Arc::new(vfs::RamFile::new_with_data(include_bytes!(
+				"../../../target/x86_64-unknown-none/release/policyd"
+			)));
+		if let Some(root) = vfs::lookup_path("/") {
+			root.insert("policyd", policyd_file).ok();
+		}
+		serial_println!("policyd: ELF inserted into VFS");
+	}
+
+	/* Create /etc/serix/ directory and insert default policy.toml config */
+	{
+		if let Some(root) = vfs::lookup_path("/") {
+			if root.mkdir("etc").is_ok() {
+				if let Some(serixd) = vfs::lookup_path("/etc/serix") {
+					let default_config = "\
+# Serix Policy Daemon Configuration\n\
+# Path-based access control rules\n\
+\n\
+[[rule]]\
+target = \"/etc/shadow\"\
+match_type = \"exact\"\
+action = \"deny\"\
+required_rights = \"READ\"\
+
+[[rule]]\
+target = \"/proc/serix/cap-audit\"\
+match_type = \"exact\"\
+action = \"deny\"\
+required_rights = \"READ\"\
+
+[[rule]]\
+target = \"/\"\
+match_type = \"prefix\"\
+action = \"allow\"\
+required_rights = \"READ,WRITE,LOOKUP\"\
+";
+					let config_file: Arc<dyn INode> =
+						Arc::new(vfs::RamFile::new_with_data(default_config.as_bytes()));
+					if let Some(serixd) = vfs::lookup_path("/etc/serix") {
+						serixd.insert("policy.toml", config_file).ok();
+					}
+					serial_println!("policy.toml: default config inserted at /etc/serix/policy.toml");
+				}
+			}
+		}
+	}
 }
