@@ -287,11 +287,17 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 	 * They replace the former assumption that a well-known port number
 	 * conveys authority. For ext4d, IPC slots come after stdio
 	 * (slots 3 = request/RECV, 4 = reply/SEND), and the root directory
-	 * inode lands at slot 5. For all other processes the root inode
+	 * inode lands at slot 5. For policyd, IPC slots are slots 3 (RECV)
+	 * and 4 (SEND). For all other processes the root inode
 	 * is the next capability (slot 3). */
 	if path == "/ext4d" {
 		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REQ_PORT, capability::Rights::RECV)?;
 		grant_bootstrap_ipc(&mut tcb, fs::ext4::ipc::EXT4_REPLY_BASE, capability::Rights::SEND)?;
+	}
+
+	if path == "/policyd" {
+		grant_bootstrap_ipc(&mut tcb, 0x5000, capability::Rights::RECV)?;
+		grant_bootstrap_ipc(&mut tcb, 0x5001, capability::Rights::SEND)?;
 	}
 
 	/* Grant a LOOKUP capability on the root directory to all user
