@@ -544,6 +544,7 @@ pub fn spawn_kshell() -> Result<u64, &'static str> {
 		blocked_on: None,
 		direct_msg_ptr: core::sync::atomic::AtomicUsize::new(0),
 		direct_msg_valid: core::sync::atomic::AtomicBool::new(false),
+		vma_manager: task::VmaManager::new(),
 	};
 
 	task::scheduler::enqueue_task(alloc::sync::Arc::new(spin::Mutex::new(tcb)));
