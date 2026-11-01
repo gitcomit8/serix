@@ -190,9 +190,11 @@ pub fn get_vma_manager() -> Option<&'static VmaManager> {
  * Userspace is 0x0000_0000_0000_0000 to 0x0000_8000_0000_0000 (128 TiB).
  * We allocate from the bottom up, aligned to 4 KiB.
  *
+ * Uses the given VMA manager to find gaps.
+ *
  * Returns the start address, or None if no space available.
  */
-pub fn allocate_vma_region(size: usize) -> Option<VirtAddr> {
+pub fn allocate_vma_region(manager: &VmaManager, size: usize) -> Option<VirtAddr> {
 	/* Align size to 4 KiB */
 	let aligned_size = (size + 0xFFF) & !0xFFF;
 
@@ -203,19 +205,17 @@ pub fn allocate_vma_region(size: usize) -> Option<VirtAddr> {
 	/* Find first gap that fits */
 	let mut next_free = start.as_u64();
 
-	if let Some(manager) = get_vma_manager() {
-		let maps = manager.maps.lock();
-		for (_, vma) in maps.iter() {
-			if vma.start.as_u64() > next_free {
-				/* Gap between next_free and vma.start */
-				let gap = vma.start.as_u64() - next_free;
-				if gap >= aligned_size as u64 {
-					return Some(VirtAddr::new(next_free));
-				}
+	let maps = manager.maps.lock();
+	for (_, vma) in maps.iter() {
+		if vma.start.as_u64() > next_free {
+			/* Gap between next_free and vma.start */
+			let gap = vma.start.as_u64() - next_free;
+			if gap >= aligned_size as u64 {
+				return Some(VirtAddr::new(next_free));
 			}
-			if vma.end.as_u64() > next_free {
-				next_free = vma.end.as_u64();
-			}
+		}
+		if vma.end.as_u64() > next_free {
+			next_free = vma.end.as_u64();
 		}
 	}
 

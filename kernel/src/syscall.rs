@@ -1360,13 +1360,15 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EINVAL;
 			}
 
-			/* Allocate VMA region */
-			let vma_mgr = match memory::vma::get_vma_manager() {
-				Some(m) => m,
-				None => return ERRNO_ENOMEM,
+			/* Per-task VMA manager — hold lock for entire operation */
+			let task = match task::scheduler::current_task_arc() {
+				Some(t) => t,
+				None => return ERRNO_EPERM,
 			};
+			let task_ref = task.lock();
+			let vma_mgr = &task_ref.vma_manager;
 
-			let start = match memory::vma::allocate_vma_region(length) {
+			let start = match memory::vma::allocate_vma_region(vma_mgr, length) {
 				Some(addr) => addr,
 				None => return ERRNO_ENOMEM,
 			};
@@ -1393,7 +1395,7 @@ extern "C" fn syscall_dispatcher(
 				let mut page_data = [0u8; memory::PAGE_SIZE];
 				let n = inode.read(file_off as usize, &mut page_data);
 				if n == 0 {
-					/* EOF or read error */
+					/* EOF or read error: unwind */
 					vma_mgr.remove_vma(start.as_u64());
 					return ERRNO_EINVAL;
 				}
@@ -1422,10 +1424,11 @@ extern "C" fn syscall_dispatcher(
 			};
 			let cap_ptr = Arc::as_ptr(&_inode) as *const () as usize;
 
-			let vma_mgr = match memory::vma::get_vma_manager() {
-				Some(m) => m,
+			let task = match task::scheduler::current_task_arc() {
+				Some(t) => t,
 				None => return ERRNO_EINVAL,
 			};
+			let vma_mgr = &task.lock().vma_manager;
 
 			if let Some(vma) = vma_mgr.find_vma(x86_64::VirtAddr::new(arg3)) {
 				if vma.cap_ptr == cap_ptr {

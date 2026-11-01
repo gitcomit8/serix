@@ -193,6 +193,40 @@ impl PageCache {
 	}
 
 	/*
+	 * flush_inode_pages - Write all dirty pages for a given inode to disk
+	 *
+	 * Iterates the radix tree, finds dirty pages matching inode_id,
+	 * calls the writeback closure for each, then marks them clean.
+	 *
+	 * @inode_id: Inode whose dirty pages should be flushed
+	 * @writeback: Closure invoked for each dirty page:
+	 *             fn(u32 inode_id, u32 page_offset, &[u8; PAGE_SIZE])
+	 * @returns: Number of pages successfully flushed
+	 */
+	pub fn flush_inode_pages<F>(&self, inode_id: u32, mut writeback: F) -> usize
+	where
+		F: FnMut(u32, u32, &[u8; PAGE_SIZE]),
+	{
+		let tree = self.tree.lock();
+		let mut flushed = 0usize;
+
+		for ((id, offset), page) in tree.iter() {
+			if *id != inode_id {
+				continue;
+			}
+			let mut p = page.lock();
+			if !p.is_dirty() {
+				continue;
+			}
+			writeback(*id, *offset, p.data());
+			p.mark_clean();
+			flushed += 1;
+		}
+
+		flushed
+	}
+
+	/*
 	 * count - Number of pages in the cache
 	 */
 	pub fn count(&self) -> usize {
@@ -307,27 +341,24 @@ where
  * @inode_id: Inode ID
  * @offset: Byte offset to write to
  * @buf: Data to write
- * @disk_write: Function to flush dirty pages to disk
+ *
+ * Pages are marked dirty but NOT flushed immediately.
+ * Call `flush_inode_pages()` to write dirty pages back to disk later.
+ *
+ * Returns the number of bytes written.
  */
-pub fn write_with_cache<F>(
+pub fn write_with_cache(
 	inode_id: u32,
 	offset: usize,
 	buf: &[u8],
-	mut disk_write: F,
-) -> usize
-where
-	F: FnMut(),
-{
+) -> usize {
 	if buf.is_empty() {
 		return 0;
 	}
 
 	let cache = match get_page_cache() {
 		Some(c) => c,
-		None => {
-			disk_write();
-			return buf.len();
-		}
+		None => return buf.len(), /* No cache: just return, caller handles disk I/O */
 	};
 
 	let mut done = 0usize;
@@ -352,7 +383,7 @@ where
 			cache.get_page(inode_id, cur_page).unwrap()
 		};
 
-		/* Write data to page */
+		/* Write data to page and mark dirty */
 		{
 			let mut p = page.lock();
 			let data = p.data_mut();
@@ -363,9 +394,6 @@ where
 		done += to_copy;
 		cur_page += 1;
 	}
-
-	/* Flush dirty pages to disk */
-	disk_write();
 
 	done
 }

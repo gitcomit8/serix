@@ -27,6 +27,7 @@ pub use scheduler::{
 	current_task_arc, lock_register, lock_unregister, wake_task, acquire_lock_with_pi,
 	release_lock_with_pi, lock_find_holder, inject_direct_message, consume_direct_message,
 };
+pub use memory::vma::VmaManager;
 use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 use x86_64::structures::paging::PhysFrame;
@@ -271,7 +272,6 @@ impl Default for CPUContext {
  * @waiting_for_child: True when task is blocked in SYS_WAIT4
  * @cspace: Per-task capability space (slot → CapabilityId + generation)
  */
-#[derive(Debug)]
 pub struct TaskCB {
 	pub id: TaskId,
 	pub state: TaskState,
@@ -299,6 +299,8 @@ pub struct TaskCB {
 	/* direct_msg_valid: Atomic flag — set when direct_msg_ptr is non-zero.
 	 * Read with Acquire, written with Release. */
 	pub direct_msg_valid: AtomicBool,
+	/* Per-task VMA manager for mmap/munmap. Replaces the old global VMA manager. */
+	pub vma_manager: memory::vma::VmaManager,
 }
 
 /*
@@ -372,6 +374,7 @@ impl TaskCB {
 			blocked_on: None,
 			direct_msg_ptr: AtomicUsize::new(0),
 			direct_msg_valid: AtomicBool::new(false),
+			vma_manager: memory::vma::VmaManager::new(),
 		}
 	}
 
@@ -400,6 +403,7 @@ impl TaskCB {
 			blocked_on: None,
 			direct_msg_ptr: AtomicUsize::new(0),
 			direct_msg_valid: AtomicBool::new(false),
+			vma_manager: memory::vma::VmaManager::new(),
 		}
 	}
 

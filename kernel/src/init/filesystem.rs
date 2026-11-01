@@ -51,8 +51,7 @@ pub fn init_filesystem() {
 		serial_println!("VFS: /proc/serix/cap-audit ready");
 	}
 
-	/* Initialize VMA manager for mmap */
-	unsafe { memory::vma::init_vma_manager() };
+	/* VMA manager is per-task (stored in TaskCB) */
 
 	/* Expose VirtIO block device as /dev/sda */
 	let sda_dev = Arc::new(fs::VirtioBlockDev);
