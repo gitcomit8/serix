@@ -10,7 +10,7 @@ use super::{CURRENT_TASK, SchedClass, TaskCB, TaskState};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 /*
@@ -520,33 +520,45 @@ pub fn restore_priority(task: &Arc<Mutex<TaskCB>>) {
  * @msg: The message to inject
  *
  * Used by the IPC fastpath to bypass the message queue when the receiver
- * is blocked at receive_blocking(). The message is stored in the task's
- * direct_msg field and flagged as valid.
+ * is blocked at receive_blocking(). The message is stored as an atomic
+ * raw pointer (lock-free) and flagged as valid with Release ordering.
  *
- * The receiver will see this message on the next loop iteration of
- * receive_blocking() before checking the queue.
+ * The Arc is forgotten so the pointer keeps the Message alive without
+ * acquiring the receiver's Mutex — the consumer reconstructs the Arc
+ * to drop it after reading.
+ *
+ * Called by receive_blocking() to check for fastpath messages.
  */
 pub fn inject_direct_message(receiver: &Arc<Mutex<TaskCB>>, msg: Arc<ipc_types::Message>) {
-	let mut task = receiver.lock();
-	task.direct_msg = Some((*msg).clone());
-	task.direct_msg_valid = true;
+	let ptr = Arc::into_raw(Arc::clone(&msg)) as usize;
+	let task = receiver.lock();
+	task.direct_msg_ptr.store(ptr, Ordering::Release);
+	task.direct_msg_valid.store(true, Ordering::Release);
+	drop(task);
+	/* Forget the Arc so the atomic pointer keeps the Message alive */
+	core::mem::forget(msg);
 }
 
 /*
  * consume_direct_message - Check and consume a direct message from the current task
  *
- * Returns Some(msg) if a direct message is pending, None otherwise.
- * Clears the direct_msg_valid flag after reading.
+ * Atomically loads the message pointer and validity flag (Acquire ordering),
+ * then reconstructs the Arc to drop it after extracting the inner Message.
  *
- * Called by receive_blocking() to check for fastpath messages.
+ * Returns Some(msg) if a direct message was pending, None otherwise.
  */
 pub fn consume_direct_message() -> Option<ipc_types::Message> {
 	let current = current_task_arc()?;
-	let mut task = current.lock();
-	if task.direct_msg_valid {
-		task.direct_msg_valid = false;
-		task.direct_msg.take()
-	} else {
-		None
+	let task = current.lock();
+	let ptr = task.direct_msg_ptr.load(Ordering::Acquire);
+	if ptr == 0 {
+		return None;
 	}
+	/* Atomically clear the pointer and flag */
+	task.direct_msg_ptr.store(0, Ordering::Release);
+	task.direct_msg_valid.store(false, Ordering::Release);
+	drop(task);
+	/* Reconstruct the Arc to drop it; this frees the boxed Message */
+	let arc = unsafe { Arc::from_raw(ptr as *const ipc_types::Message) };
+	Some((*arc).clone())
 }

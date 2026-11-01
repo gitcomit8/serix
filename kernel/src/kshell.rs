@@ -542,8 +542,8 @@ pub fn spawn_kshell() -> Result<u64, &'static str> {
 		virtual_runtime: 0,
 		inherited_priority: None,
 		blocked_on: None,
-		direct_msg: None,
-		direct_msg_valid: false,
+		direct_msg_ptr: core::sync::atomic::AtomicUsize::new(0),
+		direct_msg_valid: core::sync::atomic::AtomicBool::new(false),
 	};
 
 	task::scheduler::enqueue_task(alloc::sync::Arc::new(spin::Mutex::new(tcb)));
