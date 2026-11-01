@@ -71,6 +71,12 @@ pub const SYS_FORMAT: u64 = 23;
 pub const SYS_MMAP: u64 = 90;
 pub const SYS_MUNMAP: u64 = 91;
 
+/* File utility group (92): */
+pub const SYS_FILE_READ: u64 = 92;
+
+/* Policy management group (93-94): */
+pub const SYS_POLICY_RELOAD: u64 = 93;
+
 pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
 pub const SYS_RECV_BLOCK: u64 = 32;
@@ -127,6 +133,8 @@ pub const fn authorization_for(nr: u64) -> SyscallAuthorization {
 		SYS_FORMAT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
 		SYS_MMAP => SyscallAuthorization::Capability { rights: Rights::MMAP },
 		SYS_MUNMAP => SyscallAuthorization::Capability { rights: Rights::MUNMAP },
+		SYS_FILE_READ => SyscallAuthorization::Capability { rights: Rights::READ },
+		SYS_POLICY_RELOAD => SyscallAuthorization::Unprotected,
 		SYS_SEND => SyscallAuthorization::Capability { rights: Rights::SEND },
 		SYS_RECV | SYS_RECV_BLOCK => SyscallAuthorization::Capability { rights: Rights::RECV },
 		SYS_CREATE_PORT | SYS_CREATE_NOTIFICATION_PORT => SyscallAuthorization::Capability { rights: Rights::CONTROL },
@@ -1459,6 +1467,140 @@ extern "C" fn syscall_dispatcher(
 			} else {
 				ERRNO_EINVAL
 			}
+		}
+
+		SYS_FILE_READ => {
+			/*
+			 * Read an entire file into a userspace buffer (up to 4KB).
+			 * arg1: parent_cap_slot, arg2: parent_cap_gen
+			 * arg3: file path pointer (userspace)
+			 * arg4: file path length
+			 * arg5: output buffer pointer (userspace)
+			 *
+			 * Opens the file via the parent capability, reads all contents
+			 * (capped at 4096 bytes), and writes them to the output buffer.
+			 * Returns bytes read, or errno on failure.
+			 */
+			let path_ptr = arg3 as *const u8;
+			let path_len = arg4 as usize;
+			let buf_ptr = arg5 as *mut u8;
+			const CAPACITY: usize = 4096;
+
+			if !is_user_accessible(path_ptr, path_len) || !is_user_accessible(buf_ptr, CAPACITY) {
+				return ERRNO_EFAULT;
+			}
+
+			let path_str = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path_ptr, path_len) }) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Look up the file in the VFS */
+			let inode = match vfs::lookup_path(path_str) {
+				Some(node) => node,
+				None => return ERRNO_ENOENT,
+			};
+
+			/* Get file size */
+			let size = inode.size();
+			if size == 0 {
+				return 0;
+			}
+
+			/* Read file contents into userspace buffer (capped at capacity) */
+			let read_len = core::cmp::min(size, CAPACITY);
+			let mut offset = 0usize;
+			let mut chunk = [0u8; 512];
+			while offset < read_len {
+				let remaining = read_len - offset;
+				let chunk_size = core::cmp::min(remaining, chunk.len());
+				let n = inode.read(offset, &mut chunk[..chunk_size]);
+				if n == 0 {
+					break;
+				}
+				unsafe {
+					core::ptr::copy_nonoverlapping(
+						chunk.as_ptr(),
+						buf_ptr.add(offset),
+						n,
+					);
+				}
+				offset += n;
+			}
+
+			offset as u64
+		}
+
+		SYS_POLICY_RELOAD => {
+			/*
+			 * Reload policy from config file.
+			 * arg1: parent_cap_slot, arg2: parent_cap_gen
+			 * arg3: config path pointer (userspace)
+			 * arg4: config path length
+			 *
+			 * Reads the TOML config file, parses it, and updates the
+			 * LES bridge's local policy snapshot atomically.
+			 * Also triggers the policy daemon to reload by sending
+			 * an IPC message to its request port.
+			 *
+			 * Returns: 0 on success, errno on failure
+			 */
+			let path_ptr = arg3 as *const u8;
+			let path_len = arg4 as usize;
+
+			if !is_user_accessible(path_ptr, path_len) {
+				return ERRNO_EFAULT;
+			}
+
+			let path_str = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path_ptr, path_len) }) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Read and parse the config file */
+			let inode = match vfs::lookup_path(path_str) {
+				Some(node) => node,
+				None => return ERRNO_ENOENT,
+			};
+
+			let size = inode.size();
+			if size == 0 {
+				return ERRNO_EINVAL;
+			}
+
+			let mut data = alloc::vec::Vec::with_capacity(size.min(4096));
+			let read_max = size.min(4096);
+			let mut offset = 0usize;
+			let mut chunk = [0u8; 512];
+			while offset < read_max {
+				let remaining = read_max - offset;
+				let chunk_size = core::cmp::min(remaining, chunk.len());
+				let n = inode.read(offset, &mut chunk[..chunk_size]);
+				if n == 0 {
+					break;
+				}
+				data.extend_from_slice(&chunk[..n]);
+				offset += n;
+			}
+
+			let text = match core::str::from_utf8(&data) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Parse rules using the policy engine */
+			let rules = crate::les_bridge::parse_rules_from_toml(text);
+			if rules.is_empty() {
+				return ERRNO_EINVAL;
+			}
+
+			/* Atomically update the local policy snapshot */
+			crate::les_bridge::set_policy(rules);
+
+			/* Notify policyd to reload (async — don't block on IPC) */
+			crate::les_bridge::notify_policyd();
+
+			0
 		}
 
 		_ => {

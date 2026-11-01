@@ -36,6 +36,7 @@ const SYS_FORMAT: usize = 23;
 
 const SYS_MMAP: usize = 90;
 const SYS_MUNMAP: usize = 91;
+const SYS_FILE_READ: usize = 92;
 
 const SYS_SEND: usize = 30;
 const SYS_RECV: usize = 31;
@@ -155,6 +156,15 @@ unsafe fn syscall5(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize
 	let ret: usize;
 	asm!("syscall", in("rax") nr, in("rdi") arg1, in("rsi") arg2, in("rdx") arg3,
 		in("r10") arg4, in("r8") arg5, lateout("rax") ret, out("rcx") _, out("r11") _);
+	ret
+}
+
+#[inline(always)]
+unsafe fn syscall6(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> usize {
+	let ret: usize;
+	asm!("syscall", in("rax") nr, in("rdi") arg1, in("rsi") arg2, in("rdx") arg3,
+		in("r10") arg4, in("r8") arg5, in("r9") arg6, lateout("rax") ret,
+		out("rcx") _, out("r11") _);
 	ret
 }
 
@@ -426,11 +436,33 @@ pub fn getpid() -> usize {
 	unsafe { syscall0(SYS_GETPID) }
 }
 
-/* serix_yield - Voluntarily yield the CPU to the scheduler */
+/*
+ * serix_yield - Voluntarily yield the CPU to the scheduler
+ */
 pub fn serix_yield() {
 	unsafe {
 		syscall0(SYS_YIELD);
 	}
+}
+
+/*
+ * file_read - Read an entire file into a buffer
+ * @parent_cap: Capability reference to the parent directory
+ * @path: File path to read
+ * @buf: Output buffer
+ *
+ * Opens the file, reads all contents into buf (capped at buf.len()),
+ * and returns the number of bytes read.
+ *
+ * Return: Bytes read on success, -1 on error (errno encoded)
+ */
+pub fn file_read(parent_cap: CapabilityRef, path: &str, buf: &mut [u8]) -> isize {
+	let ret = unsafe {
+		syscall6(SYS_FILE_READ, parent_cap.slot, parent_cap.generation as usize,
+			path.as_ptr() as usize, path.len(),
+			buf.as_mut_ptr() as usize, buf.len())
+	};
+	ret as isize
 }
 
 /* serix_getpid - Return the calling task's ID */
