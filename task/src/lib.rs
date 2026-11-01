@@ -21,7 +21,7 @@ use crate::context_switch::context_switch;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 pub use scheduler::{
 	current_task_arc, lock_register, lock_unregister, wake_task, acquire_lock_with_pi,
@@ -271,7 +271,7 @@ impl Default for CPUContext {
  * @waiting_for_child: True when task is blocked in SYS_WAIT4
  * @cspace: Per-task capability space (slot → CapabilityId + generation)
  */
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TaskCB {
 	pub id: TaskId,
 	pub state: TaskState,
@@ -292,10 +292,13 @@ pub struct TaskCB {
 	pub inherited_priority: Option<u8>,
 	/* blocked_on: Task we're blocked on (for priority inheritance) */
 	pub blocked_on: Option<Arc<Mutex<TaskCB>>>,
-	/* direct_msg: Message injected directly by sender (IPC fastpath) */
-	pub direct_msg: Option<ipc_types::Message>,
-	/* direct_msg_valid: True when direct_msg contains a valid message */
-	pub direct_msg_valid: bool,
+	/* direct_msg_ptr: Atomic raw pointer to an Arc<Message> for lock-free IPC fastpath.
+	 * 0 means no message pending. Non-zero = cast to *const ipc_types::Message.
+	 * Stored via forget(Arc) to keep the message alive without any lock. */
+	pub direct_msg_ptr: AtomicUsize,
+	/* direct_msg_valid: Atomic flag — set when direct_msg_ptr is non-zero.
+	 * Read with Acquire, written with Release. */
+	pub direct_msg_valid: AtomicBool,
 }
 
 /*
@@ -367,8 +370,8 @@ impl TaskCB {
 			virtual_runtime: 0,
 			inherited_priority: None,
 			blocked_on: None,
-			direct_msg: None,
-			direct_msg_valid: false,
+			direct_msg_ptr: AtomicUsize::new(0),
+			direct_msg_valid: AtomicBool::new(false),
 		}
 	}
 
@@ -395,8 +398,8 @@ impl TaskCB {
 			virtual_runtime: 0,
 			inherited_priority: None,
 			blocked_on: None,
-			direct_msg: None,
-			direct_msg_valid: false,
+			direct_msg_ptr: AtomicUsize::new(0),
+			direct_msg_valid: AtomicBool::new(false),
 		}
 	}
 

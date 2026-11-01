@@ -272,8 +272,8 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 		virtual_runtime: 0,
 		inherited_priority: None,
 		blocked_on: None,
-		direct_msg: None,
-		direct_msg_valid: false,
+		direct_msg_ptr: core::sync::atomic::AtomicUsize::new(0),
+		direct_msg_valid: core::sync::atomic::AtomicBool::new(false),
 	};
 
 	/* 9. Initialise stdio fds — must come before any capability grants

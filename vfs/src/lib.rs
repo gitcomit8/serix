@@ -14,6 +14,7 @@ extern crate alloc;
 
 pub mod page_cache;
 
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -111,18 +112,15 @@ pub trait INode: Send + Sync {
 /*  Mount table                                                         */
 /* ------------------------------------------------------------------ */
 
-struct MountEntry {
-	path: String, /* e.g. "/" or "/dev/" — always ends with / */
-	root: Arc<dyn INode>,
-}
-
 /*
- * MOUNT_TABLE - All active mounts, sorted longest-path-first.
+ * MOUNT_TABLE - All active mounts, keyed by mount-point path (BTreeMap
+ * preserves lexicographic order; longest-path-first matching is done
+ * by iterating in reverse, so the first match is the most specific).
  *
- * Longest-first ordering means the first matching entry in a linear scan
- * is always the most specific mount for any given path.
+ * E.g. "/dev/sda/" sorts after "/" — reverse iteration finds "/dev/sda/"
+ * before "/" for paths under /dev/sda/.
  */
-static MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
+static MOUNT_TABLE: Mutex<BTreeMap<String, Arc<dyn INode>>> = Mutex::new(BTreeMap::new());
 
 /*
  * normalize_mount_path - Ensure path ends with '/' (root stays "/")
@@ -146,13 +144,11 @@ pub fn mount(path: &str, root: Arc<dyn INode>) {
 	let key = normalize_mount_path(path);
 	let mut table = MOUNT_TABLE.lock();
 	/* Replace existing entry if present */
-	if let Some(entry) = table.iter_mut().find(|e| e.path == key) {
-		entry.root = root;
+	if let Some(existing) = table.get_mut(&key) {
+		*existing = root;
 		return;
 	}
-	table.push(MountEntry { path: key, root });
-	/* Keep sorted longest-path-first for correct prefix matching */
-	table.sort_unstable_by(|a, b| b.path.len().cmp(&a.path.len()));
+	table.insert(key, root);
 }
 
 /*
@@ -164,8 +160,7 @@ pub fn mount(path: &str, root: Arc<dyn INode>) {
 pub fn umount(path: &str) -> Result<(), &'static str> {
 	let key = normalize_mount_path(path);
 	let mut table = MOUNT_TABLE.lock();
-	if let Some(pos) = table.iter().position(|e| e.path == key) {
-		table.remove(pos);
+	if table.remove(&key).is_some() {
 		Ok(())
 	} else {
 		Err("not mounted")
@@ -185,41 +180,37 @@ pub fn set_root(root: Arc<dyn INode>) {
  * lookup_path - Resolve an absolute path to an INode
  * @path: Absolute path (must start with '/')
  *
- * Finds the longest matching mount prefix, uses that mount's root as
- * the starting INode, then traverses remaining path components.
+ * Finds the longest matching mount prefix by iterating the BTreeMap
+ * in reverse (longest keys first), then traverses the remaining path
+ * components from that mount's root INode.
  *
  * Return: Some(inode) if found, None if path or any component is absent.
  */
 pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
 	let table = MOUNT_TABLE.lock();
-	if table.is_empty() {
-		return None;
-	}
 
-	/* Find the longest mount prefix that path starts with */
-	let entry = table.iter().find(|e| {
-		if e.path == "/" {
+	/* Find the longest mount prefix that path starts with (reverse = longest first) */
+	let (mount_path, root) = table.iter().rev().find(|(p, root)| {
+		let p = p.as_str();
+		if p == "/" {
 			path.starts_with('/')
 		} else {
-			/* Exact match on mount point or path is inside mount */
-			path == e.path.trim_end_matches('/') || path.starts_with(e.path.as_str())
+			path == p.trim_end_matches('/') || path.starts_with(p)
 		}
 	})?;
 
 	/* Strip the mount prefix to get the remainder to traverse */
-	let remainder = if entry.path == "/" {
+	let remainder = if *mount_path == "/" {
 		path.trim_start_matches('/')
 	} else {
-		path.strip_prefix(entry.path.as_str())
-			.unwrap_or("")
-			.trim_start_matches('/')
+		path.strip_prefix(mount_path.as_str()).unwrap_or("").trim_start_matches('/')
 	};
 
 	if remainder.is_empty() {
-		return Some(Arc::clone(&entry.root));
+		return Some(Arc::clone(root));
 	}
 
-	let mut node = Arc::clone(&entry.root);
+	let mut node = Arc::clone(root);
 	for component in remainder.split('/').filter(|c| !c.is_empty()) {
 		node = node.lookup(component)?;
 	}
