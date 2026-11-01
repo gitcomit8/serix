@@ -29,14 +29,26 @@ use core::arch::naked_asm;
  * then restores them from the new context. Records the new task's
  * ID in PER_CPU_DATA (GS_BASE points to the current CPU's data area).
  *
+ * Register-mediated IPC: if the new context has ipc_msg_valid set and
+ * ipc_msg_ptr non-zero, the message pointer is loaded into rbx, size
+ * into r12, and opcode into r13 BEFORE normal register restoration.
+ * This places the IPC data in SysV calling-convention argument registers
+ * (rdi=rbx, rsi=r12, rdx=r13) so the receiver can access it directly.
+ *
  * Stack convention: the saved RSP is the caller's RSP BEFORE the
  * `call context_switch` instruction (i.e., after popping the return
  * address). On restore, the saved RIP is pushed and `ret` is used,
  * so the caller sees the same RSP as after a normal function return.
+ *
+ * CPUContext field offsets (#[repr(C)], 8-byte fields):
+ *   rsp=0, rbp=8, rbx=16, r12=24, r13=32, r14=40, r15=48
+ *   rip=56, rflags=64, cs=72, ss=80, fs=88, gs=96, ds=104, es=112
+ *   fs_base=120, gs_base=128, cr3=136, ipc_msg_ptr=144, ipc_msg_valid=152
  */
 #[unsafe(naked)]
 pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUContext) {
 	naked_asm!(
+		/* ---- Save current context (old = RDI) ---- */
 		/* Pop the return address — this gives us the pre-call RSP */
 		"pop rax",
 		"mov [rdi + 56], rax", /* Save RIP (return address) */
@@ -59,6 +71,19 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"mov r13, [rsi + 32]",
 		"mov r14, [rsi + 40]",
 		"mov r15, [rsi + 48]",
+
+		/* ---- Register-mediated IPC: load after normal restore ---- */
+		/* Overwrite rbx/r12/r13 with IPC data if flag is set.
+		 * These are the SysV first/second/third integer arg registers,
+		 * so the receiver sees IPC data as function arguments.
+		 * IPC fields stay in CPUContext for consume_direct_message to read. */
+		"mov cl, byte ptr [rsi + 152]", /* ipc_msg_valid */
+		"test cl, cl",
+		"jz 2f",
+		"mov rbx, [rsi + 144]", /* ipc_msg_ptr → rbx (arg1 = msg ptr) */
+		"mov r12, [rsi + 156]", /* padding/size → r12 (arg2 = size) */
+		"mov r13, [rsi + 160]", /* padding → r13 (arg3 = opcode) */
+		"2:",
 
 		/* ---- Restore CR3 — skip if unchanged to avoid TLB flush ---- */
 		"mov rax, [rsi + 136]",

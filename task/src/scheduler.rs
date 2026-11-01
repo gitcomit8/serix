@@ -519,37 +519,54 @@ pub fn restore_priority(task: &Arc<Mutex<TaskCB>>) {
  * @receiver: The task that will receive the message
  * @msg: The message to inject
  *
- * Used by the IPC fastpath to bypass the message queue when the receiver
- * is blocked at receive_blocking(). The message is stored as an atomic
- * raw pointer (lock-free) and flagged as valid with Release ordering.
+ * Delivers the message via register-mediated IPC: the message pointer
+ * is stored in the receiver's CPUContext.ipc_msg_ptr and flagged as
+ * valid. When context_switch runs, it loads this into rbx/r12/r13
+ * (SysV calling-convention argument registers) so the receiver sees
+ * IPC data in the registers it would use for function arguments.
  *
  * The Arc is forgotten so the pointer keeps the Message alive without
  * acquiring the receiver's Mutex — the consumer reconstructs the Arc
  * to drop it after reading.
- *
- * Called by receive_blocking() to check for fastpath messages.
  */
 pub fn inject_direct_message(receiver: &Arc<Mutex<TaskCB>>, msg: Arc<ipc_types::Message>) {
-	let ptr = Arc::into_raw(Arc::clone(&msg)) as usize;
-	let task = receiver.lock();
-	task.direct_msg_ptr.store(ptr, Ordering::Release);
-	task.direct_msg_valid.store(true, Ordering::Release);
+	/* Store message pointer in receiver's CPUContext for register transfer */
+	let msg_ptr = Arc::into_raw(Arc::clone(&msg)) as u64;
+	let mut task = receiver.lock();
+	task.context.ipc_msg_ptr = msg_ptr;
+	task.context.ipc_msg_valid = true;
 	drop(task);
-	/* Forget the Arc so the atomic pointer keeps the Message alive */
+	/* Forget the Arc — context_switch + consumer will reclaim it */
 	core::mem::forget(msg);
 }
 
 /*
  * consume_direct_message - Check and consume a direct message from the current task
  *
- * Atomically loads the message pointer and validity flag (Acquire ordering),
- * then reconstructs the Arc to drop it after extracting the inner Message.
+ * Checks the register-mediated IPC path first: reads the message pointer
+ * from the current task's CPUContext.ipc_msg_ptr (set by context_switch
+ * into rbx/r12/r13). If valid, reconstructs the Arc to drop it.
+ *
+ * Also checks the atomic fallback (direct_msg_ptr/direct_msg_valid) for
+ * compatibility with non-register-mediated paths.
  *
  * Returns Some(msg) if a direct message was pending, None otherwise.
  */
 pub fn consume_direct_message() -> Option<ipc_types::Message> {
 	let current = current_task_arc()?;
-	let task = current.lock();
+	let mut task = current.lock();
+
+	/* Check register-mediated IPC path first (CPUContext fields) */
+	if task.context.ipc_msg_valid {
+		let ptr = task.context.ipc_msg_ptr as usize;
+		task.context.ipc_msg_valid = false;
+		task.context.ipc_msg_ptr = 0;
+		drop(task);
+		let arc = unsafe { Arc::from_raw(ptr as *const ipc_types::Message) };
+		return Some((*arc).clone());
+	}
+
+	/* Atomic fallback */
 	let ptr = task.direct_msg_ptr.load(Ordering::Acquire);
 	if ptr == 0 {
 		return None;

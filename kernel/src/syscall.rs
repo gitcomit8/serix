@@ -567,6 +567,8 @@ extern "C" fn syscall_dispatcher(
 						fs_base: 0,
 						gs_base: 0,
 						cr3: 0,
+						ipc_msg_ptr: 0,
+						ipc_msg_valid: false,
 					};
 					unsafe {
 						/*

@@ -182,24 +182,18 @@ impl Default for SchedClass {
 
 /*
  * struct CPUContext - CPU context for task switching
- * @rsp: Stack pointer
- * @rbp: Base pointer
- * @rbx: Callee-saved register
- * @r12: Callee-saved register
- * @r13: Callee-saved register
- * @r14: Callee-saved register
- * @r15: Callee-saved register
- * @rip: Instruction pointer
- * @rflags: CPU flags register
- * @cs: Code segment selector
- * @ss: Stack segment selector
- * @fs: FS segment selector
- * @gs: GS segment selector
- * @ds: DS segment selector
- * @es: ES segment selector
- * @fs_base: FS base MSR value
- * @gs_base: GS base MSR value
- * @cr3: Page table base address
+ *
+ * Callee-saved registers (SYS-V ABI): rsp, rbp, rbx, r12-r15
+ * Execution context: rip, rflags
+ * Segments: cs, ss, fs, gs, ds, es
+ * MSRs/CR: fs_base, gs_base, cr3
+ *
+ * IPC register-mediated transfer (sender → receiver):
+ *   ipc_msg_ptr: non-zero = sender passed IPC msg, ptr → msg.data
+ *   ipc_msg_valid: true = ipc_msg_ptr is valid (set during context switch)
+ *
+ * Context switch loads these into rbx/r12/r13 (arg1/arg2/arg3 registers)
+ * so the receiver sees IPC data in SysV calling convention registers.
  */
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -229,6 +223,12 @@ pub struct CPUContext {
 	pub fs_base: u64,
 	pub gs_base: u64,
 	pub cr3: u64,
+
+	/* IPC register-mediated transfer fields.
+	 * Set by context_switch() when the sender has a direct_msg_pending
+	 * flag. Loaded into rbx/r12/r13 before restoring normal registers. */
+	pub ipc_msg_ptr: u64,
+	pub ipc_msg_valid: bool,
 }
 
 impl Default for CPUContext {
@@ -252,6 +252,8 @@ impl Default for CPUContext {
 			fs_base: 0,
 			gs_base: 0,
 			cr3: 0,
+			ipc_msg_ptr: 0,
+			ipc_msg_valid: false,
 		}
 	}
 }
