@@ -102,7 +102,9 @@ pub extern "C" fn _start() -> ! {
 	/* ------------------------------------------------------------------ */
 	serial_println!("Phase 1: init_memory...");
 	let mem = unsafe { init::memory::init_memory(&MMAP_REQ) };
-	let _platform_topology = unsafe { init::acpi::discover(&MMAP_REQ) };
+	let _platform_topology = unsafe {
+		init::acpi::discover(&MMAP_REQ, mem.phys_mem_offset.as_u64())
+	};
 	serial_println!("Phase 1 complete");
 
 	/* Initialize global audit ring (before any capability operations).
