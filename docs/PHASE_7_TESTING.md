@@ -48,7 +48,15 @@ On serial output, first look for `x2APIC enabled` or `x2APIC unsupported; using 
 
 The normal expected path includes `x2APIC enabled`, an RSDP virtual and physical address, a validated FADT, and a MADT CPU list. A four-CPU QEMU boot should report four MADT CPU entries and three AP callback initialization messages. The no-RSDP or invalid-MADT messages are deliberate degraded-mode diagnostics; malformed ACPI must not prevent the existing boot path from continuing.
 
+The `enabled=true` MADT flag means the processor is available now. `hotplug_capable=false` only means firmware does not advertise that disabled processor as a future hotplug target; it is normal for an enabled CPU. `[CPU]` lines probe CPUID leaf `0x1A` on the BSP and in each AP callback. `Unknown` with `leaf_1a=false` means the CPU model lacks the leaf; `leaf_1a=true raw=0x00` means the hypervisor exposed the leaf but did not provide a recognized core type.
+
+The default `make run` uses TCG and `-cpu max`, so `Unknown` core types are expected. On a Linux host with KVM, `make run-host` uses `-cpu host`, the host socket count, and one guest core for each available host logical CPU (capped at 16). This avoids fabricating a uniform SMT layout for a hybrid host. QEMU's `-smp` topology describes guest vCPUs; it does not pin each guest vCPU to a corresponding host P-core or E-core. Host passthrough can still leave leaf `0x1A` unavailable or uniform across vCPUs.
+
 If the QEMU machine configuration includes NVMe or xHCI hardware, PCI discovery logs lines beginning with `PCI Nvme` or `PCI Xhci`, including decoded BAR0 and MSI-X table/PBA locations. These are read-only inventory values; the kernel does not map the BAR for these devices or enable their interrupts.
+
+QEMU does not expose an Intel IOMMU/DMAR table by default, so `[ACPI] no DMAR table` is expected with `make run`. Use `make run-iommu` to add QEMU's emulated Intel IOMMU and check that ACPI finds its DMAR table. Serix currently parses and reports DMAR only; the message does not mean device DMA is isolated. `reset register false` means the FADT did not provide an extended reset GAS; it is a firmware capability report, not an ACPI parsing error.
+
+After framebuffer initialization, every `hal::serial_println!` record is mirrored to the framebuffer console. Output records are serialized across CPUs, so AP messages should no longer be garbled together. In the kernel shell, enter `clear` to clear the framebuffer and reset the console cursor.
 
 For a one-CPU baseline, use the same build artifacts and run:
 
