@@ -10,10 +10,10 @@
 
 use core::sync::atomic::Ordering;
 use hal::serial_println;
-use limine::request::MpRequest;
+use limine::{mp::RequestFlags, request::MpRequest};
 
 /* Limine request for multiprocessor info */
-static MP_REQ: MpRequest = MpRequest::new();
+static MP_REQ: MpRequest = MpRequest::new().with_flags(RequestFlags::X2APIC);
 
 /*
  * init_smp - Initialize SMP timer and AP boot infrastructure
