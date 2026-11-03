@@ -16,6 +16,7 @@ Check that the no-std parser also compiles for the kernel target:
 
 ```sh
 cargo check -p acpi --target x86_64-unknown-none
+cargo check -p drivers --target x86_64-unknown-none
 ```
 
 ## 2. Build the kernel
@@ -46,6 +47,8 @@ On serial output, look for ACPI messages after `Phase 1: init_memory...`, includ
 - `[ACPI] Limine did not provide an RSDP; firmware features disabled`
 
 The first is the normal expected path on QEMU. The remaining messages are deliberate degraded-mode diagnostics. A malformed ACPI table must not prevent the kernel from continuing into its existing boot path.
+
+If the QEMU machine configuration includes NVMe or xHCI hardware, PCI discovery logs lines beginning with `PCI Nvme` or `PCI Xhci`, including decoded BAR0 and MSI-X table/PBA locations. These are read-only inventory values; the kernel does not map the BAR for these devices or enable their interrupts.
 
 For a one-CPU baseline, use the same build artifacts and run:
 

@@ -20,6 +20,42 @@ const REG_COMMAND: u8 = 0x04;
 const REG_HEADER_TYPE: u8 = 0x0E;
 const REG_BAR0: u8 = 0x10;
 const REG_CAP_PTR: u8 = 0x34;
+const REG_CLASS_REVISION: u8 = 0x08;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceClass {
+	Nvme,
+	Xhci,
+	Other {
+		class: u8,
+		subclass: u8,
+		prog_if: u8,
+	},
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarKind {
+	Memory32,
+	Memory64,
+	Io,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarInfo {
+	pub index: u8,
+	pub kind: BarKind,
+	pub base: u64,
+	pub prefetchable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsixInfo {
+	pub table_size: u16,
+	pub table_bir: u8,
+	pub table_offset: u32,
+	pub pba_bir: u8,
+	pub pba_offset: u32,
+}
 
 /*
  * struct PciDevice - Represents a PCI device
@@ -36,9 +72,73 @@ pub struct PciDevice {
 	pub function: u8,
 	pub vendor_id: u16,
 	pub device_id: u16,
+	pub class_code: u8,
+	pub subclass: u8,
+	pub prog_if: u8,
 }
 
 impl PciDevice {
+	pub fn class(&self) -> DeviceClass {
+		match (self.class_code, self.subclass, self.prog_if) {
+			(0x01, 0x08, 0x02) => DeviceClass::Nvme,
+			(0x0c, 0x03, 0x30) => DeviceClass::Xhci,
+			(class, subclass, prog_if) => DeviceClass::Other {
+				class,
+				subclass,
+				prog_if,
+			},
+		}
+	}
+
+	/// Decode the assigned BAR without writing all ones to config space.
+	/// BAR length must come from trusted firmware/resource assignment until a
+	/// quiesced probing mechanism is implemented.
+	pub unsafe fn bar_info(&self, index: u8) -> Option<BarInfo> {
+		if index > 5 {
+			return None;
+		}
+		let offset = REG_BAR0 + index * 4;
+		let low = self.read_u32(offset);
+		if low & 1 != 0 {
+			return Some(BarInfo {
+				index,
+				kind: BarKind::Io,
+				base: (low & !3) as u64,
+				prefetchable: false,
+			});
+		}
+		let ty = (low >> 1) & 3;
+		let base = match ty {
+			0 => (low & !0xF) as u64,
+			2 if index < 5 => (self.read_u32(offset + 4) as u64) << 32 | (low & !0xF) as u64,
+			_ => return None,
+		};
+		Some(BarInfo {
+			index,
+			kind: if ty == 2 {
+				BarKind::Memory64
+			} else {
+				BarKind::Memory32
+			},
+			base,
+			prefetchable: low & 8 != 0,
+		})
+	}
+
+	/// Read MSI-X layout metadata. This does not enable MSI-X or expose its table.
+	pub unsafe fn msix_info(&self) -> Option<MsixInfo> {
+		let ptr = self.find_capability(0x11)?;
+		let control = self.read_u16(ptr + 2);
+		let table = self.read_u32(ptr + 4);
+		let pba = self.read_u32(ptr + 8);
+		Some(MsixInfo {
+			table_size: (control & 0x07ff) + 1,
+			table_bir: (table & 7) as u8,
+			table_offset: table & !7,
+			pba_bir: (pba & 7) as u8,
+			pba_offset: pba & !7,
+		})
+	}
 	/*
 	 * read_u8 - Read 8-bit value from configuration space
 	 * @offset: Register offset to read from
@@ -102,29 +202,12 @@ impl PciDevice {
 	 * Return: Option containing (physical_address, size) tuple
 	 */
 	pub unsafe fn get_bar(&self, index: u8) -> Option<(u64, u32)> {
-		if index > 5 {
-			return None;
+		let bar = self.bar_info(index)?;
+		if bar.kind == BarKind::Io {
+			None
+		} else {
+			Some((bar.base, 0))
 		}
-
-		let offset = REG_BAR0 + (index * 4);
-		let bar_low = self.read_u32(offset);
-
-		// Check for MMIO (bit 0 must be 0)
-		if bar_low & 1 != 0 {
-			return None; // IO Space not supported in this simple driver yet
-		}
-
-		// Check type (bits 1-2): 00=32bit, 10=64bit
-		let bar_type = (bar_low >> 1) & 0x3;
-		let mut address = (bar_low & 0xFFFFFFF0) as u64;
-
-		if bar_type == 0x2 {
-			let bar_high = self.read_u32(offset + 4);
-			address |= (bar_high as u64) << 32;
-		}
-
-		// To get size, we write all 1s and read back (omitted for brevity/safety)
-		Some((address, 0))
 	}
 
 	/*
@@ -198,13 +281,22 @@ impl PciDevice {
 			return None; // Capabilities List bit not set
 		}
 
-		let mut ptr = self.read_u8(REG_CAP_PTR);
+		let mut ptr = self.read_u8(REG_CAP_PTR) & !3;
+		let mut visited = [false; 64];
 		while ptr != 0 {
+			if !(0x40..=0xfc).contains(&ptr) {
+				return None;
+			}
+			let slot = ((ptr - 0x40) / 4) as usize;
+			if visited[slot] {
+				return None;
+			}
+			visited[slot] = true;
 			let id = self.read_u8(ptr);
 			if id == cap_id {
 				return Some(ptr);
 			}
-			ptr = self.read_u8(ptr + 1); // Next pointer
+			ptr = self.read_u8(ptr + 1) & !3; // Next pointer, DWORD aligned
 		}
 		None
 	}
@@ -229,6 +321,9 @@ pub fn enumerate_pci() -> Vec<PciDevice> {
 				function: 0,
 				vendor_id: 0,
 				device_id: 0,
+				class_code: 0,
+				subclass: 0,
+				prog_if: 0,
 			};
 
 			let vendor = unsafe { dummy.read_u16(0) };
@@ -247,14 +342,21 @@ pub fn enumerate_pci() -> Vec<PciDevice> {
 					function: func as u8,
 					vendor_id: 0,
 					device_id: 0,
+					class_code: 0,
+					subclass: 0,
+					prog_if: 0,
 				};
 
 				let vendor = unsafe { dev.read_u16(0) };
 				if vendor != 0xFFFF {
 					let device_id = unsafe { dev.read_u16(2) };
+					let class_revision = unsafe { dev.read_u32(REG_CLASS_REVISION) };
 					devices.push(PciDevice {
 						vendor_id: vendor,
 						device_id,
+						class_code: (class_revision >> 24) as u8,
+						subclass: (class_revision >> 16) as u8,
+						prog_if: (class_revision >> 8) as u8,
 						..dev
 					});
 				}
