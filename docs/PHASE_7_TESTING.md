@@ -46,7 +46,7 @@ On serial output, first look for `x2APIC enabled` or `x2APIC unsupported; using 
 - `[ACPI] no valid MADT; retain degraded legacy APIC setup`
 - `[ACPI] Limine did not provide an RSDP; firmware features disabled`
 
-The normal expected path includes `x2APIC enabled`, an RSDP virtual and physical address, a validated FADT, and a MADT CPU list. A four-CPU QEMU boot should report four MADT CPU entries and three AP callback initialization messages. The no-RSDP or invalid-MADT messages are deliberate degraded-mode diagnostics; malformed ACPI must not prevent the existing boot path from continuing.
+The normal expected path includes `x2APIC enabled`, an RSDP virtual and physical address, a validated FADT, a validated DMAR table, and a MADT CPU list. A four-CPU QEMU boot should report four MADT CPU entries and three AP callback initialization messages. The no-RSDP or invalid-MADT messages are deliberate degraded-mode diagnostics; malformed ACPI must not prevent the existing boot path from continuing.
 
 The `enabled=true` MADT flag means the processor is available now. `hotplug_capable=false` only means firmware does not advertise that disabled processor as a future hotplug target; it is normal for an enabled CPU. `[CPU]` lines probe CPUID leaf `0x1A` on the BSP and in each AP callback. `Unknown` with `leaf_1a=false` means the CPU model lacks the leaf; `leaf_1a=true raw=0x00` means the hypervisor exposed the leaf but did not provide a recognized core type.
 
@@ -54,9 +54,9 @@ The default `make run` uses TCG and `-cpu max`, so `Unknown` core types are expe
 
 If the QEMU machine configuration includes NVMe or xHCI hardware, PCI discovery logs lines beginning with `PCI Nvme` or `PCI Xhci`, including decoded BAR0 and MSI-X table/PBA locations. These are read-only inventory values; the kernel does not map the BAR for these devices or enable their interrupts.
 
-QEMU does not expose an Intel IOMMU/DMAR table by default, so `[ACPI] no DMAR table` is expected with `make run`. Use `make run-iommu` to add QEMU's emulated Intel IOMMU and check that ACPI finds its DMAR table. Serix currently parses and reports DMAR only; the message does not mean device DMA is isolated. `reset register false` means the FADT did not provide an extended reset GAS; it is a firmware capability report, not an ACPI parsing error.
+The default `make run` adds QEMU's emulated Intel IOMMU, so ACPI should report a validated DMAR table. `QEMU_IOMMU=` disables the emulated device for a no-IOMMU comparison. Serix currently parses and reports DMAR only; detecting the table does not mean device DMA is isolated. `reset register false` means the FADT did not provide an extended reset GAS; it is a firmware capability report, not an ACPI parsing error.
 
-After framebuffer initialization, every `hal::serial_println!` record is mirrored to the framebuffer console. Output records are serialized across CPUs, so AP messages should no longer be garbled together. In the kernel shell, enter `clear` to clear the framebuffer and reset the console cursor.
+Serial output records are serialized across CPUs, so AP messages should no longer be garbled together. The HAL retains the newest 32 KiB of serial output in a memory ring buffer. In the kernel shell, enter `logs` to display the newest 4 KiB, or `clear` to clear the framebuffer console and reset its cursor. Serial output is not mirrored to the framebuffer; use `logs` when you need to review boot messages from kshell.
 
 For a one-CPU baseline, use the same build artifacts and run:
 
@@ -64,10 +64,11 @@ For a one-CPU baseline, use the same build artifacts and run:
 qemu-system-x86_64 -cpu max -m 4G -smp 1 -boot d -cdrom serix.iso \
   -drive file=disk.img,if=none,format=raw,id=x0 \
   -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off \
+  -device intel-iommu \
   -serial stdio
 ```
 
-For a four-CPU topology check, use `-smp 4` in place of `-smp 1`. Compare the ACPI logical/APIC entries with QEMU's CPU topology and verify the system reaches `Serix OS ... ready.` in both runs. APs still start through Limine's MP callback; normal boot does not yet use the kernel INIT/SIPI helper.
+For a four-CPU topology check, use `-smp 4` in place of `-smp 1`. Compare the ACPI logical/APIC entries with QEMU's CPU topology, confirm one `[CPU]` line for every vCPU, and verify the system reaches `Serix OS ... ready.` In kshell, run `logs` to review recent serial output and `clear` to clear the framebuffer. APs still start through Limine's MP callback; normal boot does not yet use the kernel INIT/SIPI helper.
 
 To exercise the xAPIC fallback, use the same command with `-cpu max,-x2apic -smp 1`. Expected output starts with `xAPIC enabled` and continues through the ACPI diagnostics.
 

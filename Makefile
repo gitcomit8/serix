@@ -6,7 +6,7 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run run-host run-iommu iso disk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host iso disk clean limine kernel ext4d ext4disk policyd
 
 all: iso
 
@@ -87,7 +87,7 @@ QEMU_SOCKETS ?= 1
 QEMU_CORES ?= $(QEMU_SMP_CPUS)
 QEMU_THREADS ?= 1
 QEMU_MAXCPUS ?= $(shell expr $(QEMU_SOCKETS) \* $(QEMU_CORES) \* $(QEMU_THREADS))
-QEMU_IOMMU ?=
+QEMU_IOMMU ?= -device intel-iommu
 
 HOST_QEMU_CPUS ?= $(shell nproc | awk '{ print ($$1 > 16) ? 16 : $$1 }')
 HOST_QEMU_SOCKETS ?= $(shell lscpu -b -p=SOCKET | awk -F, '!/^#/ { seen[$$1]=1 } END { print length(seen) }')
@@ -113,11 +113,6 @@ run-host: iso disk
 	  QEMU_SMP_CPUS=$(HOST_QEMU_CPUS) QEMU_SOCKETS=$(HOST_QEMU_SOCKETS) \
 	  QEMU_CORES=$(HOST_QEMU_CORES) QEMU_THREADS=$(HOST_QEMU_THREADS) \
 	  QEMU_MAXCPUS=$(HOST_QEMU_MAXCPUS)
-
-# Expose a virtual Intel VT-d device so ACPI discovery can see its DMAR table.
-# This does not enable a Serix IOMMU backend or isolate device DMA.
-run-iommu: iso disk
-	$(MAKE) run QEMU_IOMMU="-device intel-iommu"
 
 run-nographic: iso disk
 	qemu-system-x86_64 $(QEMU_COMMON) -nographic
