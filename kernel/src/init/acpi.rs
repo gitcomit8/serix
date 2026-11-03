@@ -1,19 +1,14 @@
 use acpi::{PlatformTopology, Rsdp, Sdt};
 use hal::serial_println;
-use limine::request::{HhdmRequest, MemoryMapRequest, RsdpRequest};
+use limine::request::{MemoryMapRequest, RsdpRequest};
 
 static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
-static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
 /// Discover firmware tables after the HHDM is active. Invalid firmware disables
 /// ACPI-dependent setup, while the existing BSP path remains available.
-pub unsafe fn discover(mmap: &MemoryMapRequest) -> Option<PlatformTopology> {
+pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<PlatformTopology> {
 	let Some(response) = RSDP_REQUEST.get_response() else {
 		serial_println!("[ACPI] Limine did not provide an RSDP; firmware features disabled");
-		return None;
-	};
-	let Some(hhdm) = HHDM_REQUEST.get_response() else {
-		serial_println!("[ACPI] HHDM unavailable; firmware features disabled");
 		return None;
 	};
 	let entries = mmap.get_response()?.entries();
@@ -22,7 +17,7 @@ pub unsafe fn discover(mmap: &MemoryMapRequest) -> Option<PlatformTopology> {
 		serial_println!("[ACPI] RSDP address outside memory map");
 		return None;
 	}
-	let rsdp_virt = hhdm.offset().checked_add(rsdp_phys)?;
+	let rsdp_virt = hhdm_offset.checked_add(rsdp_phys)?;
 	let rsdp_bytes = core::slice::from_raw_parts(rsdp_virt as *const u8, 36);
 	let revision = *rsdp_bytes.get(15)?;
 	let rsdp_len = if revision == 0 { 20 } else { 36 };
@@ -32,7 +27,7 @@ pub unsafe fn discover(mmap: &MemoryMapRequest) -> Option<PlatformTopology> {
 	};
 	let (root_phys, root_sig) = rsdp.xsdt_address.filter(|a| *a != 0).map(|a| (a, *b"XSDT"))
 		.unwrap_or((rsdp.rsdt_address as u64, *b"RSDT"));
-	let root = match read_sdt(root_phys, root_sig, &entries, hhdm.offset()) {
+	let root = match read_sdt(root_phys, root_sig, &entries, hhdm_offset) {
 		Ok(root) => root,
 		Err(err) => { serial_println!("[ACPI] invalid root table: {:?}", err); return None; }
 	};
@@ -45,11 +40,11 @@ pub unsafe fn discover(mmap: &MemoryMapRequest) -> Option<PlatformTopology> {
 	let mut fadt_found = false;
 	for address in addresses {
 		if !covered(&entries, address, 36) { continue; }
-		let header_virt = match hhdm.offset().checked_add(address) { Some(v) => v, None => continue };
+		let header_virt = match hhdm_offset.checked_add(address) { Some(v) => v, None => continue };
 		let header = core::slice::from_raw_parts(header_virt as *const u8, 36);
 		let sig: [u8; 4] = match header[..4].try_into() { Ok(s) => s, Err(_) => continue };
 		if !matches!(&sig, b"APIC" | b"DMAR" | b"FACP") { continue; }
-		match read_sdt(address, sig, &entries, hhdm.offset()) {
+		match read_sdt(address, sig, &entries, hhdm_offset) {
 			Ok(table) if sig == *b"APIC" => match PlatformTopology::parse_madt(table) {
 				Ok(parsed) => topology = Some(parsed),
 				Err(err) => serial_println!("[ACPI] MADT rejected: {:?}", err),
