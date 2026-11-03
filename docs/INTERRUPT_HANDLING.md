@@ -43,9 +43,17 @@ Legacy PIC   Disabled, not used                   Ports 0x20/0x21, 0xA0/0xA1
 Current vector assignments in v0.0.6
 
 ```
+0x21 (33)  PS/2 keyboard
+0x22 (34)  VirtIO block
+0x31 (49)  LAPIC timer
+0xF0        TLB shootdown IPI
+0xF1        Scheduler kick IPI
+0xF2        Panic-stop IPI
 
 
 ```
+
+Vectors `0xF0`–`0xF2` are kernel-reserved and must not be assigned to device MSI/MSI-X. The current scheduler kick only records a coalesced pending bit; scheduler queue integration is pending. TLB shootdown is an explicit caller-supplied logical CPU list, with a bounded acknowledgement wait. Callers must flush locally, pass only CPUs running the affected address space, and retain frames when the API returns an error. A timeout quarantines the target mailbox from reuse. The panic-stop handler EOIs, disables interrupts, and halts.
 
 ## Interrupt Architecture
 

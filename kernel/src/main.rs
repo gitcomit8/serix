@@ -77,6 +77,7 @@ pub extern "C" fn _start() -> ! {
 		/* I/O APIC initialization moved to after virtual address remapping */
 		/* Register interrupt handlers before IDT is loaded */
 		apic::timer::register_handler();
+		apic::ipi::register_handlers();
 		/* Register keyboard handler (defined in init/cpu to avoid circular deps) */
 		idt::register_interrupt_handler(33, init::cpu::keyboard_interrupt_handler);
 	}

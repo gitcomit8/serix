@@ -53,6 +53,7 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
 
     /* Enable interrupts for this AP */
     x86_64::instructions::interrupts::enable();
+	let _ = apic::ipi::set_cpu_online(cpu_id);
 
     /* Unmask timer interrupt — now safe to receive timer IRQs */
     unsafe { apic::timer::unmask_timer() };

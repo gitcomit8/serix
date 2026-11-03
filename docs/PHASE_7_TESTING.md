@@ -61,8 +61,10 @@ qemu-system-x86_64 -cpu max -m 4G -smp 1 -boot d -cdrom serix.iso \
 
 For a four-CPU topology check, use `-smp 4` in place of `-smp 1`. Compare the ACPI logical/APIC entries with QEMU's CPU topology and verify the system reaches `Serix OS ... ready.` in both runs. APs still start through Limine's MP callback; normal boot does not yet use the kernel INIT/SIPI helper.
 
+The APIC mode line verifies which register path was selected. A dedicated cross-CPU IPI/TLB integration test is not wired to a user command yet; the mailbox and shootdown APIs have compile coverage only. Do not infer a successful shootdown from seeing the APs start.
+
 ## 4. Current implementation boundary
 
 ACPI table discovery currently validates RSDP, root SDT, child SDT checksums and bounds, and parses MADT topology, DMAR remapping-unit descriptors, and selected FADT fields. DMAR/FADT are diagnostic only. MADT data is not yet the source of I/O APIC routing or AP startup. The kernel still uses its existing APIC setup and Limine MP callback path.
 
-Do not use this branch to test IOMMU isolation, Ring 3 NVMe/XHCI drivers, ACPI power transitions, x2APIC, AP startup via INIT/SIPI, or TLB shootdown; those Phase 7 deliverables are not implemented yet. The roadmap remains unchecked for those items.
+Do not use this branch to test IOMMU isolation, Ring 3 NVMe/XHCI drivers, ACPI power transitions, kernel AP startup via INIT/SIPI, or end-to-end TLB shootdown; those Phase 7 deliverables are not implemented yet. x2APIC selection and IPI mailbox code are present, but runtime validation is still pending. The roadmap remains unchecked for the end-to-end deliverables.
