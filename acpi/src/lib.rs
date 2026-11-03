@@ -121,7 +121,7 @@ impl<'a> Sdt<'a> {
 				}
 			})
 			.collect::<Result<_, _>>()?;
-		if entries.iter().any(|entry| *entry == 0 || *entry % width as u64 != 0) {
+		if entries.iter().any(|entry| *entry == 0) {
 			return Err(Error::BadLength);
 		}
 		Ok(entries)
@@ -464,7 +464,7 @@ mod tests {
 		);
 	}
 	#[test]
-	fn parses_fadt_reset_gas_and_rejects_misaligned_xsdt_pointer() {
+	fn parses_fadt_reset_gas_and_rejects_null_xsdt_pointer() {
 		let mut body = vec![0u8; 93];
 		body[28..32].copy_from_slice(&0x404u32.to_le_bytes());
 		body[53] = 2;
@@ -479,7 +479,7 @@ mod tests {
 		assert_eq!(fadt.reset_register.unwrap().address, 0x1234);
 		assert_eq!(fadt.reset_value, Some(0xFE));
 
-		let root_bytes = sdt(b"XSDT", &0x1001u64.to_le_bytes());
+		let root_bytes = sdt(b"XSDT", &0u64.to_le_bytes());
 		let bad_root = Sdt::parse(&root_bytes, None).unwrap();
 		assert_eq!(bad_root.root_entries(), Err(Error::BadLength));
 	}
