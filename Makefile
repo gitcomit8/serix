@@ -6,7 +6,7 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run iso disk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host run-iommu iso disk clean limine kernel ext4d ext4disk policyd
 
 all: iso
 
@@ -80,12 +80,44 @@ disk:
 		echo "disk.img already ext2, skipping format"; \
 	fi
 
-QEMU_COMMON = -m 4G -smp 4 -boot d -cdrom $(ISO) \
+QEMU_ACCEL ?= tcg
+QEMU_CPU ?= max
+QEMU_SMP_CPUS ?= 4
+QEMU_SOCKETS ?= 1
+QEMU_CORES ?= $(QEMU_SMP_CPUS)
+QEMU_THREADS ?= 1
+QEMU_MAXCPUS ?= $(shell expr $(QEMU_SOCKETS) \* $(QEMU_CORES) \* $(QEMU_THREADS))
+QEMU_IOMMU ?=
+
+HOST_QEMU_CPUS ?= $(shell nproc | awk '{ print ($$1 > 16) ? 16 : $$1 }')
+HOST_QEMU_SOCKETS ?= $(shell lscpu -b -p=SOCKET | awk -F, '!/^#/ { seen[$$1]=1 } END { print length(seen) }')
+# QEMU -smp requires a rectangular topology. Present each available host
+# logical CPU as one guest core; this avoids inventing SMT siblings on hybrid CPUs.
+HOST_QEMU_CORES ?= $(shell expr $(HOST_QEMU_CPUS) / $(HOST_QEMU_SOCKETS))
+HOST_QEMU_THREADS ?= 1
+HOST_QEMU_MAXCPUS ?= $(shell expr $(HOST_QEMU_SOCKETS) \* $(HOST_QEMU_CORES) \* $(HOST_QEMU_THREADS))
+
+QEMU_COMMON = -machine q35,accel=$(QEMU_ACCEL) -cpu $(QEMU_CPU) -m 4G \
+	-smp cpus=$(QEMU_SMP_CPUS),sockets=$(QEMU_SOCKETS),cores=$(QEMU_CORES),threads=$(QEMU_THREADS),maxcpus=$(QEMU_MAXCPUS) \
+	-boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off
+	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off $(QEMU_IOMMU)
 
 run: iso disk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio
+
+# KVM host CPU passthrough with the host's socket/core/thread counts. The
+# kernel currently supports 16 online CPUs; excess host logical CPUs are capped.
+run-host: iso disk
+	$(MAKE) run QEMU_ACCEL=kvm QEMU_CPU=host \
+	  QEMU_SMP_CPUS=$(HOST_QEMU_CPUS) QEMU_SOCKETS=$(HOST_QEMU_SOCKETS) \
+	  QEMU_CORES=$(HOST_QEMU_CORES) QEMU_THREADS=$(HOST_QEMU_THREADS) \
+	  QEMU_MAXCPUS=$(HOST_QEMU_MAXCPUS)
+
+# Expose a virtual Intel VT-d device so ACPI discovery can see its DMAR table.
+# This does not enable a Serix IOMMU backend or isolate device DMA.
+run-iommu: iso disk
+	$(MAKE) run QEMU_IOMMU="-device intel-iommu"
 
 run-nographic: iso disk
 	qemu-system-x86_64 $(QEMU_COMMON) -nographic

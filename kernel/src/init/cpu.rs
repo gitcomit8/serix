@@ -57,6 +57,15 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
     unsafe {
         scheduler::init(core::ptr::addr_of!(PER_CPU_DATA) as usize, cpu_id as u8);
     }
+	let core_info = hal::topology::get_core_type_info();
+	serial_println!(
+		"[CPU] logical={} apic={} core_type={:?} leaf_1a={} raw={:#04x}",
+		cpu_id,
+		cpu.lapic_id,
+		core_info.kind,
+		core_info.leaf_supported,
+		core_info.raw_type
+	);
 
     /* Enable interrupts for this AP */
     x86_64::instructions::interrupts::enable();

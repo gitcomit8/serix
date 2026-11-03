@@ -142,8 +142,16 @@ pub extern "C" fn _start() -> ! {
 	/* ------------------------------------------------------------------ */
 	/* Phase 5: Scheduler initialization                                    */
 	/* ------------------------------------------------------------------ */
-	let core_type = hal::topology::get_core_type();
-	init::scheduler::init_scheduler(core_type);
+	let core_info = hal::topology::get_core_type_info();
+	let bsp_apic_id = unsafe { apic::smp::read_apic_id() };
+	serial_println!(
+		"[CPU] logical=0 apic={} core_type={:?} leaf_1a={} raw={:#04x}",
+		bsp_apic_id,
+		core_info.kind,
+		core_info.leaf_supported,
+		core_info.raw_type
+	);
+	init::scheduler::init_scheduler();
 
 	/* ------------------------------------------------------------------ */
 	/* Phase 6: SMP / Timer initialization                                  */

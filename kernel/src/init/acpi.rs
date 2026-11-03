@@ -67,12 +67,12 @@ pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<Plat
 			Err(err) => serial_println!("[ACPI] child table rejected: {:?}", err),
 		}
 	}
-	if !dmar_found { serial_println!("[ACPI] no DMAR table; IOMMU unavailable"); }
+	if !dmar_found { serial_println!("[ACPI] no DMAR table; firmware has not exposed an IOMMU"); }
 	if !fadt_found { serial_println!("[ACPI] no FADT table; ACPI power controls unavailable"); }
 	if let Some(ref t) = topology {
 		serial_println!("[ACPI] MADT topology: {} CPU entries, {} I/O APIC(s), LAPIC {:#x}", t.cpus.len(), t.io_apics.len(), t.lapic_address);
 		for (logical, cpu) in t.cpus.iter().enumerate() {
-			serial_println!("[ACPI] cpu logical={} apic={} enabled={} online_capable={}", logical, cpu.apic_id, cpu.enabled, cpu.online_capable);
+			serial_println!("[ACPI] cpu logical={} apic={} enabled={} hotplug_capable={}", logical, cpu.apic_id, cpu.enabled, cpu.online_capable);
 		}
 	} else {
 		serial_println!("[ACPI] no valid MADT; retain degraded legacy APIC setup");
