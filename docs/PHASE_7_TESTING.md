@@ -56,7 +56,7 @@ If the QEMU machine configuration includes NVMe or xHCI hardware, PCI discovery 
 
 The default `make run` adds QEMU's emulated Intel IOMMU, so ACPI should report a validated DMAR table. `QEMU_IOMMU=` disables the emulated device for a no-IOMMU comparison. Serix currently parses and reports DMAR only; detecting the table does not mean device DMA is isolated. `reset register false` means the FADT did not provide an extended reset GAS; it is a firmware capability report, not an ACPI parsing error.
 
-Serial output records are serialized across CPUs, so AP messages should no longer be garbled together. The HAL retains the newest 32 KiB of serial output in a memory ring buffer. In the kernel shell, enter `logs` to display the newest 4 KiB, or `clear` to clear the framebuffer console and reset its cursor. Serial output is not mirrored to the framebuffer; use `logs` when you need to review boot messages from kshell.
+Serial output records are serialized across CPUs, so AP messages should no longer be garbled together. The HAL retains the newest 32 KiB of serial output in a memory ring buffer. In the kernel shell, enter `logs` to display the newest 4 KiB, or `clear` to clear the framebuffer console and reset its cursor. Serial output is not mirrored to the framebuffer; use `logs` when you need to review boot messages from kshell. Non-ASCII glyphs in the output render as `?` because the console font only covers ASCII.
 
 For a one-CPU baseline, use the same build artifacts and run:
 

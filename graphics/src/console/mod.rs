@@ -153,7 +153,7 @@ impl Tty {
 	fn draw_char(&mut self, cx: usize, cy: usize, c: char) {
 		let glyph_index = match c {
 			' '..='~' => c as usize,
-			_ => 0xFE,
+			_ => b'?' as usize,
 		};
 
 		let screen_x = cx * FONT_WIDTH;
