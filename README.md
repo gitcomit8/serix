@@ -60,8 +60,11 @@ Quick start:
 ```
 
 This builds the kernel, creates a bootable ISO with Limine, and launches
-QEMU with serial output redirected to stdio. Successful boot displays a
-blue framebuffer with memory map visualization and serial console output.
+QEMU with serial output redirected to stdio and an emulated Intel IOMMU.
+Successful boot displays a blue framebuffer with memory map visualization;
+serial logs remain on stdio. The kernel keeps the newest 32 KiB in memory;
+kshell `logs` displays the latest 4 KiB. Use `clear` to clear the framebuffer
+console.
 
 [Asciinema recording placeholder: Build process from clean state]
 Alt text: "Terminal recording showing complete build process: cargo build output, make iso creating bootable image, and QEMU launch with kernel booting to blue screen, approximately 60 seconds"
@@ -84,7 +87,7 @@ No automated test suite exists. Validation is manual:
  2. Verify serial output shows all initialization checkpoints
  3. Verify blue framebuffer appears with memory map bars
  4. Test keyboard input (characters appear on framebuffer console)
- 5. Test kshell commands: `help`, `ls`, `cat`, `mkdir`, `rm`
+ 5. Test kshell commands: `help`, `ls`, `cat`, `mkdir`, `rm`, `logs`, `clear`
  6. Verify timer interrupts via tick count increments in serial output
 
 Some crates have unit tests runnable via `cargo test` (e.g., `capability/`, `task/`).
