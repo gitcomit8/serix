@@ -156,30 +156,36 @@ pub unsafe fn enable() {
 	/* Disable legacy PIC first */
 	disable_pic();
 
-	/* Enable LAPIC in IA32_APIC_BASE MSR (MSR 0x1B) */
-	let mut apic_base = rdmsr(0x1B);
-
-	/* Set bit 11 (APIC Global Enable) */
-	if (apic_base & (1 << 11)) == 0 {
-		apic_base |= 1 << 11;
-		wrmsr(0x1B, apic_base);
-	}
 	let features = core::arch::x86_64::__cpuid(1);
 	if features.ecx & (1 << 21) != 0 {
-		/* Select x2APIC on the BSP before APs are started. */
-		apic_base |= 1 << 10;
-		wrmsr(0x1B, apic_base);
+		/* Record a system-wide mode before APs are started. Each CPU enables it locally. */
 		X2APIC_ENABLED.store(true, Ordering::Release);
-		serial_println!("x2APIC enabled");
 	} else {
-		serial_println!("x2APIC unsupported; using xAPIC");
+		X2APIC_ENABLED.store(false, Ordering::Release);
 	}
+	let _ = enable_current_cpu();
+	serial_println!("{} enabled", if x2apic_enabled() { "x2APIC" } else { "xAPIC" });
+	serial_println!("APIC enabled");
+}
 
+
+/// Enable the already-selected APIC mode on the current logical CPU.
+/// The BSP selects mode with `enable()` before any AP is released.
+pub unsafe fn enable_current_cpu() -> bool {
+	let mut apic_base = rdmsr(0x1B) | (1 << 11);
+	if x2apic_enabled() {
+		let features = core::arch::x86_64::__cpuid(1);
+		if features.ecx & (1 << 21) == 0 {
+			serial_println!("x2APIC selected but unsupported on this CPU");
+			return false;
+		}
+		apic_base |= 1 << 10;
+	}
+	wrmsr(0x1B, apic_base);
 	/* Enable LAPIC by setting bit 8 in Spurious Interrupt Vector Register */
 	let val = lapic_read(0xF0) | 0x100;
 	lapic_write(0xF0, val);
-
-	serial_println!("APIC enabled");
+	true
 }
 
 /*
