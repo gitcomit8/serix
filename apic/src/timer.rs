@@ -3,7 +3,7 @@
  *
  * Implements Local APIC timer for periodic interrupts and timekeeping.
  */
-use crate::{lapic_reg, send_eoi};
+use crate::{lapic_write, send_eoi};
 use core::sync::atomic::{AtomicU64, Ordering};
 use task;
 use task::scheduler::TIME_SLICE_TICKS;
@@ -81,13 +81,13 @@ pub unsafe fn register_handler() {
  */
 pub unsafe fn init_hardware() {
 	/* Configure timer divider */
-	lapic_reg(0x3E0).write_volatile(TIMER_DIVIDE_CONFIG);
+	lapic_write(0x3E0, TIMER_DIVIDE_CONFIG);
 
 	/* Set timer vector and enable periodic mode (bit 17) */
-	lapic_reg(0x320).write_volatile((TIMER_VECTOR as u32) | 0x20000);
+	lapic_write(0x320, (TIMER_VECTOR as u32) | 0x20000);
 
 	/* Set initial count to start timer */
-	lapic_reg(0x380).write_volatile(TIMER_INITIAL_COUNT);
+	lapic_write(0x380, TIMER_INITIAL_COUNT);
 
 	/* Enable interrupts */
 	hal::cpu::enable_interrupts();
@@ -100,7 +100,7 @@ pub unsafe fn init_hardware() {
  * Used on APs before init to prevent premature timer interrupts.
  */
 pub unsafe fn mask_timer() {
-	lapic_reg(0x350).write_volatile(0x10000); /* Mask bit */
+	lapic_write(0x350, 0x10000); /* Mask bit */
 }
 
 /*
@@ -109,7 +109,7 @@ pub unsafe fn mask_timer() {
  * Clears bit 16 in the LVT timer register to enable timer interrupts.
  */
 pub unsafe fn unmask_timer() {
-	lapic_reg(0x350).write_volatile(TIMER_VECTOR as u32 | 0x20000);
+	lapic_write(0x350, TIMER_VECTOR as u32 | 0x20000);
 }
 
 /*

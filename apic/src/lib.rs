@@ -8,7 +8,7 @@
 #![feature(abi_x86_interrupt)]
 #![no_std]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use hal::serial_println;
 
 pub mod ioapic;
@@ -21,6 +21,7 @@ pub mod timer;
  * These should be updated to virtual higher-half addresses once paging is up.
  */
 static APIC_BASE: AtomicU64 = AtomicU64::new(0xFEE00000);
+static X2APIC_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /*
  * set_bases - Update the base addresses for APIC components
@@ -38,6 +39,74 @@ pub fn set_bases(lapic: u64) {
  */
 fn lapic_reg(offset: u32) -> *mut u32 {
 	(APIC_BASE.load(Ordering::Relaxed) + offset as u64) as *mut u32
+}
+
+fn rdmsr(msr: u32) -> u64 {
+	let low: u32;
+	let high: u32;
+	unsafe {
+		core::arch::asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nostack, nomem));
+	}
+	((high as u64) << 32) | low as u64
+}
+
+fn wrmsr(msr: u32, value: u64) {
+	unsafe {
+		core::arch::asm!("wrmsr", in("ecx") msr, in("eax") value as u32, in("edx") (value >> 32) as u32, options(nostack, nomem));
+	}
+}
+
+pub fn lapic_read(offset: u32) -> u32 {
+	if X2APIC_ENABLED.load(Ordering::Acquire) {
+		rdmsr(0x800 + offset / 16) as u32
+	} else {
+		unsafe { lapic_reg(offset).read_volatile() }
+	}
+}
+
+pub fn lapic_write(offset: u32, value: u32) {
+	if X2APIC_ENABLED.load(Ordering::Acquire) {
+		wrmsr(0x800 + offset / 16, value as u64);
+	} else {
+		unsafe {
+			lapic_reg(offset).write_volatile(value);
+		}
+	}
+}
+
+pub fn x2apic_enabled() -> bool {
+	X2APIC_ENABLED.load(Ordering::Acquire)
+}
+
+/// Send a fixed-delivery IPI to a physical APIC ID. Returns false on an
+/// unsupported xAPIC destination or a bounded xAPIC delivery timeout.
+pub fn send_ipi(destination_id: u32, command: u32) -> bool {
+	if x2apic_enabled() {
+		wrmsr(0x830, ((destination_id as u64) << 32) | command as u64);
+		return true;
+	}
+	if destination_id > u8::MAX as u32 {
+		return false;
+	}
+	let mut spins = 1_000_000usize;
+	while lapic_read(0x300) & (1 << 12) != 0 {
+		if spins == 0 {
+			return false;
+		}
+		spins -= 1;
+		core::hint::spin_loop();
+	}
+	lapic_write(0x310, destination_id << 24);
+	lapic_write(0x300, command);
+	spins = 1_000_000;
+	while lapic_read(0x300) & (1 << 12) != 0 {
+		if spins == 0 {
+			return false;
+		}
+		spins -= 1;
+		core::hint::spin_loop();
+	}
+	true
 }
 /*
  * disable_pic - Disable legacy 8259 PIC
@@ -87,21 +156,27 @@ pub unsafe fn enable() {
 	disable_pic();
 
 	/* Enable LAPIC in IA32_APIC_BASE MSR (MSR 0x1B) */
-	let mut apic_base: u64;
-	core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_base, lateout("edx") _);
+	let mut apic_base = rdmsr(0x1B);
 
 	/* Set bit 11 (APIC Global Enable) */
 	if (apic_base & (1 << 11)) == 0 {
 		apic_base |= 1 << 11;
-		let eax = (apic_base & 0xFFFFFFFF) as u32;
-		let edx = ((apic_base >> 32) & 0xFFFFFFFF) as u32;
-		core::arch::asm!("wrmsr", in("ecx") 0x1Bu32, in("eax") eax, in("edx") edx, options(nostack, nomem));
+		wrmsr(0x1B, apic_base);
+	}
+	let features = core::arch::x86_64::__cpuid(1);
+	if features.ecx & (1 << 21) != 0 {
+		/* Select x2APIC on the BSP before APs are started. */
+		apic_base |= 1 << 10;
+		wrmsr(0x1B, apic_base);
+		X2APIC_ENABLED.store(true, Ordering::Release);
+		serial_println!("x2APIC enabled");
+	} else {
+		serial_println!("x2APIC unsupported; using xAPIC");
 	}
 
 	/* Enable LAPIC by setting bit 8 in Spurious Interrupt Vector Register */
-	let svr = lapic_reg(0xF0);
-	let val = svr.read_volatile() | 0x100;
-	svr.write_volatile(val);
+	let val = lapic_read(0xF0) | 0x100;
+	lapic_write(0xF0, val);
 
 	serial_println!("APIC enabled");
 }
@@ -115,9 +190,9 @@ pub unsafe fn enable() {
  * Configures the Local APIC timer with the specified parameters.
  */
 pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32) {
-	lapic_reg(0x3E0).write_volatile(divide);
-	lapic_reg(0x320).write_volatile((vector as u32) | 0x20000);
-	lapic_reg(0x380).write_volatile(initial_count);
+	lapic_write(0x3E0, divide);
+	lapic_write(0x320, (vector as u32) | 0x20000);
+	lapic_write(0x380, initial_count);
 }
 
 /*
@@ -126,6 +201,5 @@ pub unsafe fn set_timer(vector: u8, divide: u32, initial_count: u32) {
  * Signals to the Local APIC that interrupt processing is complete.
  */
 pub unsafe fn send_eoi() {
-	let eoi = lapic_reg(0xB0);
-	eoi.write_volatile(0);
+	lapic_write(0xB0, 0);
 }

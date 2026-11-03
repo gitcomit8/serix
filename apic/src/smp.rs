@@ -28,7 +28,7 @@ unsafe fn spin_loop_delay(iterations: usize) {
  */
 pub static mut AP_READY: [bool; 16] = [false; 16];
 pub static mut AP_COUNT: usize = 0;
-pub static mut BSP_ID: u8 = 0;
+pub static mut BSP_ID: u32 = 0;
 
 /*
  * set_ap_count - Set the number of APs detected
@@ -40,7 +40,7 @@ pub unsafe fn set_ap_count(count: usize) {
 /*
  * set_bsp_id - Set the BSP LAPIC ID
  */
-pub unsafe fn set_bsp_id(id: u8) {
+pub unsafe fn set_bsp_id(id: u32) {
 	BSP_ID = id;
 }
 
@@ -71,22 +71,35 @@ pub fn ap_ready(id: u8) -> bool {
  * 5. Send second SIPI (required for AP to start executing)
  * 6. Wait 200us
  */
-pub unsafe fn wakeup_ap(lapic_id: u8, bootstrap_addr: u64) {
+pub unsafe fn wakeup_ap(lapic_id: u32, bootstrap_addr: u64) {
 	/* 1. Send INIT IPI */
-	write_icr(0xF5u32, lapic_id);
+	if !write_icr(0xC500, lapic_id) {
+		return;
+	}
 	spin_loop_delay(10_000); /* Wait 10ms */
+	if !write_icr(0x8500, lapic_id) {
+		return;
+	}
 
 	/* 2. Send first SIPI */
 	let vector = (bootstrap_addr / 4096) as u8;
-	let sipi_vector = (vector as u32) << 8;
-	write_icr((0x00 | sipi_vector) as u32, lapic_id);
+	let sipi_vector = 0x600 | vector as u32;
+	if !write_icr(sipi_vector, lapic_id) {
+		return;
+	}
 	spin_loop_delay(200); /* Wait 200us */
 
 	/* 3. Send second SIPI */
-	write_icr((0x00 | sipi_vector) as u32, lapic_id);
+	if !write_icr(sipi_vector, lapic_id) {
+		return;
+	}
 	spin_loop_delay(200); /* Wait 200us */
 
-	serial_println!("AP {} woken (bootstrap addr: {:#x})", lapic_id, bootstrap_addr);
+	serial_println!(
+		"AP {} woken (bootstrap addr: {:#x})",
+		lapic_id,
+		bootstrap_addr
+	);
 }
 
 /*
@@ -94,14 +107,8 @@ pub unsafe fn wakeup_ap(lapic_id: u8, bootstrap_addr: u64) {
  * @value: Value to write
  * @lapic_id: Target LAPIC ID
  */
-unsafe fn write_icr(value: u32, lapic_id: u8) {
-	let icr = super::lapic_reg(0x300);
-	icr.write_volatile(value);
-
-	/* Wait for ICR write to complete (bit 12 = Write Acknowledge) */
-	while (icr.read_volatile() & 0x1000) != 0 {
-		core::hint::spin_loop();
-	}
+unsafe fn write_icr(value: u32, lapic_id: u32) -> bool {
+	super::send_ipi(lapic_id, value)
 }
 
 /*
@@ -109,10 +116,12 @@ unsafe fn write_icr(value: u32, lapic_id: u8) {
  *
  * Returns the APIC ID which matches BSP/AP numbering.
  */
-pub unsafe fn read_apic_id() -> u8 {
-	let mut apic_id: u64;
-	core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_id, lateout("edx") _);
-	(apic_id & 0xFF) as u8
+pub unsafe fn read_apic_id() -> u32 {
+	if super::x2apic_enabled() {
+		super::lapic_read(0x20)
+	} else {
+		super::lapic_read(0x20) >> 24
+	}
 }
 
 /*
@@ -125,53 +134,24 @@ pub unsafe fn read_apic_id() -> u8 {
  *         The array is filled sequentially; unused entries are 0.
  */
 pub unsafe fn enumerate_apics() -> usize {
-	let mut aps = [0u8; 16];
-	let mut count = 0;
-
-	/* Read LAPIC registers for debugging */
-	let lapic_ver = super::lapic_reg(0x30);
-	let version = lapic_ver.read_volatile();
-
-	let lapic_id = super::lapic_reg(0x20);
-	let id = lapic_id.read_volatile();
-
-	let lapic_svr = super::lapic_reg(0xF0);
-	let svr = lapic_svr.read_volatile();
-
-	serial_println!("LAPIC base: {:#x}", super::APIC_BASE.load(Ordering::Relaxed));
-	serial_println!("LAPIC version reg (0x30): {:#x}", version);
-	serial_println!("LAPIC ID reg (0x20): {:#x}", id);
-	serial_println!("LAPIC SVR reg (0xF0): {:#x}", svr);
-
-	/* Read LAPIC ID register to get our own ID */
-	let our_id = (id >> 24) as u8;
-	serial_println!("Our LAPIC ID: {}", our_id);
-
-	/* QEMU with -smp N has LAPIC IDs 0..N-1 */
-	/* We can't read other CPUs' IDs, so we try a heuristic: */
-	/* If SVR has bit 8 set (APIC enabled), assume QEMU-style topology */
-	let max_lapic_id = if (svr & 0x100) != 0 {
-		/* APIC enabled, assume QEMU-style: IDs 0..3 for -smp 4 */
-		4
+	let version = super::lapic_read(0x30);
+	let id = if super::x2apic_enabled() {
+		super::lapic_read(0x20)
 	} else {
-		0
+		super::lapic_read(0x20) >> 24
 	};
-
-	serial_println!("Assumed max LAPIC ID: {}", max_lapic_id);
-
-	/* Check each LAPIC ID from 1 to max-1 (0 is BSP) */
-	serial_println!("Iterating LAPIC IDs 1..{}", max_lapic_id);
-	for candidate_id in 1..max_lapic_id {
-		if count >= 16 {
-			break;
-		}
-		aps[count] = candidate_id;
-		count += 1;
-		serial_println!("  Added AP ID {}", candidate_id);
-	}
-
-	serial_println!("Found {} AP(s)", count);
-	count
+	serial_println!(
+		"LAPIC mode={} id={} version={:#x}",
+		if super::x2apic_enabled() {
+			"x2APIC"
+		} else {
+			"xAPIC"
+		},
+		id,
+		version
+	);
+	serial_println!("AP enumeration requires validated firmware topology; no AP IDs guessed");
+	0
 }
 
 /*
@@ -181,8 +161,13 @@ pub unsafe fn enumerate_apics() -> usize {
  * Iterates over all detected APs and sends the INIT-SIPI-SIPI sequence.
  */
 pub unsafe fn wakeup_all_aps(bootstrap_addr: u64) {
-	let ap_count = enumerate_apics();
-	for ap_id in 0..ap_count {
-		wakeup_ap(ap_id as u8, bootstrap_addr);
+	let _ = bootstrap_addr;
+	enumerate_apics();
+}
+
+/// Start only APIC IDs supplied by a validated topology parser.
+pub unsafe fn wakeup_apic_ids(apic_ids: &[u32], bootstrap_addr: u64) {
+	for &apic_id in apic_ids {
+		wakeup_ap(apic_id, bootstrap_addr);
 	}
 }
