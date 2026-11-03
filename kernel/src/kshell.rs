@@ -184,7 +184,7 @@ fn dispatch(line: &str) {
 	/* Commands that produce text output — buffered so we can redirect */
 	let is_output_cmd = {
 		let first = cmd_line.split_whitespace().next().unwrap_or("");
-		matches!(first, "ls" | "cat" | "echo" | "help")
+		matches!(first, "ls" | "cat" | "echo" | "help" | "logs")
 	};
 
 	if is_output_cmd {
@@ -220,6 +220,7 @@ fn run_output_command(line: &str, out: &mut String) {
 			let _ = writeln!(out, "Available commands:");
 			let _ = writeln!(out, "  help                 - show this message");
 			let _ = writeln!(out, "  clear                - clear the framebuffer console");
+			let _ = writeln!(out, "  logs                 - show recent serial log output");
 			let _ = writeln!(out, "  echo <text>          - print text");
 			let _ = writeln!(out, "  ls [path]            - list directory");
 			let _ = writeln!(out, "  cat <file>           - print file contents");
@@ -236,6 +237,16 @@ fn run_output_command(line: &str, out: &mut String) {
 
 		"echo" => {
 			let _ = writeln!(out, "{}", args);
+		}
+
+		"logs" => {
+			let mut bytes = [0u8; 4096];
+			let len = hal::copy_recent_log(&mut bytes);
+			if len == 0 {
+				let _ = writeln!(out, "(serial log buffer is empty)");
+			} else {
+				out.push_str(&String::from_utf8_lossy(&bytes[..len]));
+			}
 		}
 
 		"ls" => {

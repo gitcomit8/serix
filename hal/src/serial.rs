@@ -112,9 +112,48 @@ impl SerialPort {
 use spin::Mutex;
 use spin::Once;
 
-/* Keep a formatted log record atomic across all CPUs and both output devices. */
+const LOG_CAPACITY: usize = 32 * 1024;
+
+/* Keep each formatted serial record atomic across CPUs and retain recent output. */
 static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
-static LOG_MIRROR: Mutex<Option<fn(&str)>> = Mutex::new(None);
+static LOG_BUFFER: Mutex<LogBuffer> = Mutex::new(LogBuffer::new());
+
+struct LogBuffer {
+	bytes: [u8; LOG_CAPACITY],
+	start: usize,
+	len: usize,
+}
+
+impl LogBuffer {
+	const fn new() -> Self {
+		Self { bytes: [0; LOG_CAPACITY], start: 0, len: 0 }
+	}
+
+	fn append(&mut self, bytes: &[u8]) {
+		for &byte in bytes {
+			if self.len < LOG_CAPACITY {
+				let index = (self.start + self.len) % LOG_CAPACITY;
+				self.bytes[index] = byte;
+				self.len += 1;
+			} else {
+				self.bytes[self.start] = byte;
+				self.start = (self.start + 1) % LOG_CAPACITY;
+			}
+		}
+	}
+
+	fn copy_recent(&self, dst: &mut [u8]) -> usize {
+		let count = self.len.min(dst.len());
+		let skip = self.len - count;
+		let offset = (self.start + skip) % LOG_CAPACITY;
+		let first = count.min(LOG_CAPACITY - offset);
+		dst[..first].copy_from_slice(&self.bytes[offset..offset + first]);
+		if first < count {
+			dst[first..count].copy_from_slice(&self.bytes[..count - first]);
+		}
+		count
+	}
+}
 
 /* Global serial port instance */
 static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
@@ -139,20 +178,16 @@ pub fn serial_print(s: &str) {
 	});
 }
 
-/// Install a secondary destination for future serial log output.
-/// The kernel uses this to mirror logs to the framebuffer after it is ready.
-pub fn set_log_mirror(mirror: fn(&str)) {
-	*LOG_MIRROR.lock() = Some(mirror);
-}
-
 fn write_outputs(s: &str) {
 	if let Some(serial) = SERIAL_PORT.get() {
 		serial.lock().write_str(s);
 	}
-	let mirror = *LOG_MIRROR.lock();
-	if let Some(mirror) = mirror {
-		mirror(s);
-	}
+	LOG_BUFFER.lock().append(s.as_bytes());
+}
+
+/// Copy the newest retained serial log bytes into `dst` in chronological order.
+pub fn copy_recent_log(dst: &mut [u8]) -> usize {
+	LOG_BUFFER.lock().copy_recent(dst)
 }
 
 /*
@@ -210,6 +245,7 @@ pub fn _serial_print(args: core::fmt::Arguments) {
 			Ok(())
 		}
 	}
+
 	x86_64::instructions::interrupts::without_interrupts(|| {
 		let _output_guard = OUTPUT_LOCK.lock();
 		SerialWriter.write_fmt(args).ok();
