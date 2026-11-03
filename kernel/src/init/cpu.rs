@@ -26,7 +26,14 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
     /* CPU index set by BSP in Cpu.extra */
     let cpu_id = cpu.extra.load(core::sync::atomic::Ordering::Relaxed) as usize;
 
-    /* Mask timer interrupt — prevent premature timer IRQ before init complete */
+	/* Select the BSP's APIC mode on this CPU before any APIC register access. */
+	if !unsafe { apic::enable_current_cpu() } {
+		hal::serial_println!("AP startup stopped: local APIC mode mismatch");
+		x86_64::instructions::interrupts::disable();
+		loop { x86_64::instructions::hlt(); }
+	}
+
+	/* Mask timer interrupt — prevent premature timer IRQ before init complete */
     unsafe { apic::timer::mask_timer() };
 
     /* Wait for BSP to signal kernel init is complete */
