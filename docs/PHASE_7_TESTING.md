@@ -40,7 +40,7 @@ The normal `make run` target builds the ISO and starts QEMU with four CPUs and t
 make run
 ```
 
-On serial output, look for ACPI messages after `Phase 1: init_memory...`, including one of:
+On serial output, first look for `x2APIC enabled` or `x2APIC unsupported; using xAPIC`, then ACPI messages after `Phase 1: init_memory...`, including one of:
 
 - `[ACPI] MADT topology: ...` followed by logical CPU/APIC ID entries
 - `[ACPI] no valid MADT; retain degraded legacy APIC setup`
@@ -53,13 +53,13 @@ If the QEMU machine configuration includes NVMe or xHCI hardware, PCI discovery 
 For a one-CPU baseline, use the same build artifacts and run:
 
 ```sh
-qemu-system-x86_64 -m 4G -smp 1 -boot d -cdrom serix.iso \
+qemu-system-x86_64 -cpu max -m 4G -smp 1 -boot d -cdrom serix.iso \
   -drive file=disk.img,if=none,format=raw,id=x0 \
   -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off \
   -serial stdio
 ```
 
-For a four-CPU topology check, use `-smp 4` in place of `-smp 1`. Compare the ACPI logical/APIC entries with QEMU's CPU topology and verify the system reaches `Serix OS ... ready.` in both runs.
+For a four-CPU topology check, use `-smp 4` in place of `-smp 1`. Compare the ACPI logical/APIC entries with QEMU's CPU topology and verify the system reaches `Serix OS ... ready.` in both runs. APs still start through Limine's MP callback; normal boot does not yet use the kernel INIT/SIPI helper.
 
 ## 4. Current implementation boundary
 
