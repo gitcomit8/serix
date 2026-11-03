@@ -250,7 +250,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 7: Hardware Enablement
 
-**Status:** Basic SMP operational; IOMMU, ACPI, and additional drivers planned
+**Status:** Basic SMP operational; ACPI table discovery/parsing added; firmware-driven APIC routing, IOMMU, power controls, and isolated device servers remain in progress
 
 ### SMP Broadcast & Topology
 
@@ -259,6 +259,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] Limine MP callback-based AP bootstrap; BSP signals `AP_READY_PTR` on completion
 - [ ] INIT-SIPI-SIPI sequence via LAPIC ICR for AP wake-up (currently relies on Limine to hand off running APs)
 - [ ] ACPI MADT parsing for LAPIC ID enumeration and I/O APIC base discovery
+- [x] ACPI RSDP/root/SDT validation and MADT/DMAR/FADT decoding (discovery diagnostics; not yet wired into APIC routing or controllers)
 - [ ] `x2APIC` mode enable (MSR-based, no MMIO) when CPUID indicates support
 - [ ] Inter-Processor Interrupt (IPI) primitives: TLB shootdown, scheduler kick, panic broadcast
 - [ ] BORE scheduler policy, only after SMP, per-CPU scheduling, and IPI support have stabilized; WFQ remains the Phase 3 baseline.
