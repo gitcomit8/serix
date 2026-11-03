@@ -10,7 +10,7 @@ Run the parser tests on the host target so Rust's test harness is available:
 cargo test -p acpi --target x86_64-unknown-linux-gnu
 ```
 
-The tests cover SDT signature/checksum validation, malformed MADT entries, duplicate enabled APIC IDs, sparse/high APIC IDs, ISA IRQ override lookup, and short DMAR structures. Expected result: all tests pass.
+The tests cover legacy and extended RSDP checksums, SDT signature/checksum validation, malformed MADT entries, duplicate enabled APIC IDs, sparse/high APIC IDs, ISA IRQ override lookup, short DMAR structures, FADT reset GAS parsing, and malformed XSDT pointers. Expected result: all tests pass.
 
 Check that the no-std parser also compiles for the kernel target:
 

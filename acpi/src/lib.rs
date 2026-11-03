@@ -387,6 +387,26 @@ mod tests {
 		t
 	}
 	#[test]
+	fn validates_legacy_and_extended_rsdp_checksums() {
+		let mut legacy = vec![0u8; 20];
+		legacy[..8].copy_from_slice(b"RSD PTR ");
+		legacy[16..20].copy_from_slice(&0x1000u32.to_le_bytes());
+		legacy[8] = 0u8.wrapping_sub(checksum(&legacy));
+		assert_eq!(Rsdp::parse(&legacy).unwrap().rsdt_address, 0x1000);
+
+		let mut extended = vec![0u8; 36];
+		extended[..8].copy_from_slice(b"RSD PTR ");
+		extended[15] = 2;
+		extended[16..20].copy_from_slice(&0x1000u32.to_le_bytes());
+		extended[20..24].copy_from_slice(&36u32.to_le_bytes());
+		extended[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+		extended[8] = 0u8.wrapping_sub(checksum(&extended[..20]));
+		extended[32] = 0u8.wrapping_sub(checksum(&extended));
+		assert_eq!(Rsdp::parse(&extended).unwrap().xsdt_address, Some(0x2000));
+		extended[32] ^= 1;
+		assert!(matches!(Rsdp::parse(&extended), Err(Error::BadChecksum)));
+	}
+	#[test]
 	fn validates_sdt_signature_length_checksum() {
 		let t = sdt(b"TEST", &[]);
 		assert!(Sdt::parse(&t, Some(*b"TEST")).is_ok());
@@ -442,5 +462,25 @@ mod tests {
 			parse_dmar(Sdt::parse(&t, None).unwrap()),
 			Err(Error::BadEntry)
 		);
+	}
+	#[test]
+	fn parses_fadt_reset_gas_and_rejects_misaligned_xsdt_pointer() {
+		let mut body = vec![0u8; 93];
+		body[28..32].copy_from_slice(&0x404u32.to_le_bytes());
+		body[53] = 2;
+		body[80] = 1;
+		body[81] = 32;
+		body[84..92].copy_from_slice(&0x1234u64.to_le_bytes());
+		body[92] = 0xFE;
+		let fadt_bytes = sdt(b"FACP", &body);
+		let table = Sdt::parse(&fadt_bytes, None).unwrap();
+		let fadt = parse_fadt(table).unwrap();
+		assert_eq!(fadt.pm1a_control_block, 0x404);
+		assert_eq!(fadt.reset_register.unwrap().address, 0x1234);
+		assert_eq!(fadt.reset_value, Some(0xFE));
+
+		let root_bytes = sdt(b"XSDT", &0x1001u64.to_le_bytes());
+		let bad_root = Sdt::parse(&root_bytes, None).unwrap();
+		assert_eq!(bad_root.root_entries(), Err(Error::BadLength));
 	}
 }
