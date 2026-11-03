@@ -109,20 +109,30 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 /*
  * read_byte - Block until a key arrives.
  *
- * Serial (COM1) is checked first so QEMU -serial stdio works out of the
- * box.  PS/2 is checked second for bare-metal use once the QEMU graphical
- * window has keyboard focus (click to capture, Ctrl+Alt+G to release).
+ * PS/2 keyboard is checked first so QEMU window input works directly.
+ * Serial (COM1) is checked second as a fallback for -serial stdio mode.
  */
 fn read_byte() -> u8 {
+	let mut observed_isr_count = keyboard::get_isr_fire_count();
 	loop {
 		x86_64::instructions::interrupts::enable();
 
-		if let Some(b) = hal::serial::serial_read_byte() {
+		let isr_count = keyboard::get_isr_fire_count();
+		if isr_count != observed_isr_count {
+			observed_isr_count = isr_count;
+			hal::serial_println!(
+				"[DIAG] Keyboard IRQ count={}, last scancode={:#04x}",
+				isr_count,
+				keyboard::get_last_scancode()
+			);
+		}
+
+		if let Some(b) = keyboard::pop_key() {
 			x86_64::instructions::interrupts::disable();
 			return b;
 		}
 
-		if let Some(b) = keyboard::pop_key() {
+		if let Some(b) = hal::serial::serial_read_byte() {
 			x86_64::instructions::interrupts::disable();
 			return b;
 		}

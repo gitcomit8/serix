@@ -62,8 +62,8 @@ unsafe fn ioapic_write(reg: u32, value: u32) {
  */
 pub unsafe fn map_irq(irq: u8, vector: u8) {
 	let reg = 0x10 + (irq as u32 * 2);
-	/* Set vector and enable (mask bit = 0) */
-	let low = vector as u32; // Bits 0-7 = vector, bit 16 = 0 (enabled)
+	/* Set vector; explicitly clear mask bit (bit 16 = 0 → unmasked) */
+	let low = (vector as u32) & !(1 << 16);
 	ioapic_write(reg, low);
 	/* Upper 32 bits: destination (0 = BSP/CPU 0) */
 	ioapic_write(reg + 1, 0);
@@ -79,4 +79,13 @@ pub unsafe fn init_ioapic() {
 	map_irq(1, 33);
 	/* Route IRQ 0 to vector 32 (timer) */
 	map_irq(0, 32);
+
+	/* Verify IRQ 1 redirection entry was written correctly */
+	/* Read low 32 bits of IRQ 1 entry */
+	ioapic_reg(0x00).write_volatile(0x12);
+	let low: u32 = ioapic_reg(0x10).read_volatile();
+	/* Read high 32 bits of IRQ 1 entry */
+	ioapic_reg(0x00).write_volatile(0x13);
+	let high: u32 = ioapic_reg(0x10).read_volatile();
+	hal::serial_println!("[IOAPIC] IRQ 1 redir: low={:#010x}, high={:#010x}", low, high);
 }

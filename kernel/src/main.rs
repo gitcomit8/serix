@@ -84,18 +84,24 @@ pub extern "C" fn _start() -> ! {
 	/* Setup CPU exception handlers and load IDT */
 	idt::init_idt();
 
-	/* Initialize keyboard */
-	serial_println!("Keyboard ready for input!");
+	/* Initialize PS/2 keyboard controller (must happen before interrupts) */
+	serial_println!("Initializing PS/2 keyboard...");
+	unsafe { init::cpu::init_ps2_keyboard(); }
+	serial_println!("PS/2 init complete, enabling interrupts...");
 
 	/* Enable interrupts globally */
 	x86_64::instructions::interrupts::enable();
+	serial_println!("Global interrupts ENABLED");
 
 	init_executor();
+	serial_println!("Executor initialized");
 
 	/* ------------------------------------------------------------------ */
 	/* Phase 1: Memory initialization                                       */
 	/* ------------------------------------------------------------------ */
+	serial_println!("Phase 1: init_memory...");
 	let mem = unsafe { init::memory::init_memory(&MMAP_REQ) };
+	serial_println!("Phase 1 complete");
 
 	/* Initialize global audit ring (before any capability operations).
 	 * AuditRing::new() creates a ~6KB local array — must fit on boot stack. */
@@ -145,6 +151,15 @@ pub extern "C" fn _start() -> ! {
 	graphics::kprintln!("Timer: LAPIC ~625 Hz started");
 	graphics::kprintln!("");
 	graphics::kprintln!("Serix OS v0.0.6 ready.");
+
+	/* Diagnostic: check if keyboard ISR has fired */
+	let isr_count = keyboard::get_isr_fire_count();
+	let last_scancode = keyboard::get_last_scancode();
+	serial_println!(
+		"[DIAG] Keyboard ISR fire count: {}, last scancode: {:#04x}",
+		isr_count,
+		last_scancode
+	);
 
 	/* Idle loop — timer interrupts drive preemptive scheduling */
 	loop {
