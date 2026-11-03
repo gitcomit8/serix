@@ -12,12 +12,18 @@ pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<Plat
 		return None;
 	};
 	let entries = mmap.get_response()?.entries();
-	let rsdp_phys = response.address() as u64;
+	let response_address = response.address() as u64;
+	let (rsdp_phys, rsdp_virt) = if hhdm_offset != 0 && response_address >= hhdm_offset {
+		(response_address - hhdm_offset, response_address)
+	} else {
+		let Some(virt) = hhdm_offset.checked_add(response_address) else { return None; };
+		(response_address, virt)
+	};
+	serial_println!("[ACPI] Limine RSDP virtual={:#x} physical={:#x}", rsdp_virt, rsdp_phys);
 	if !covered(&entries, rsdp_phys, 36) {
 		serial_println!("[ACPI] RSDP address outside memory map");
 		return None;
 	}
-	let rsdp_virt = hhdm_offset.checked_add(rsdp_phys)?;
 	let rsdp_bytes = core::slice::from_raw_parts(rsdp_virt as *const u8, 36);
 	let revision = *rsdp_bytes.get(15)?;
 	let rsdp_len = if revision == 0 { 20 } else { 36 };
