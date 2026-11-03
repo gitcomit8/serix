@@ -4,7 +4,7 @@ Serix is a hybrid-kernel x86_64 operating system written in `#![no_std]` Rust wi
 
 ## Status
 
-Current release: v0.0.6
+Current release: v0.0.8
 
 The kernel successfully boots to a graphical console, initializes core
 subsystems (APIC, IDT, heap, VFS), spawns the Ring-3 `ext4d` daemon and
