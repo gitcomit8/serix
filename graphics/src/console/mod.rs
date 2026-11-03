@@ -429,6 +429,13 @@ pub unsafe fn init_console(base: *mut u8, width: usize, height: usize, pitch: us
 	*KERNEL_TTY.lock() = Some(tty);
 }
 
+/// Clear the global kernel text console and reset its cursor.
+pub fn clear_kernel_console() {
+	if let Some(tty) = KERNEL_TTY.lock().as_mut() {
+		tty.clear();
+	}
+}
+
 /*
  * fb_print! - Print formatted text to framebuffer
  *
