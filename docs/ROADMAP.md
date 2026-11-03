@@ -1,12 +1,12 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-04-01 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.6
+> **Last Updated:** 2026-11-04 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.8
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
 
 For architectural context on the subsystems referenced below, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Current Status (v0.0.6)
+## Current Status (v0.0.8)
 
 The kernel has completed Phases 1–2 and the four core features of Phase 3. Current operational capabilities:
 
