@@ -261,7 +261,9 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [ ] ACPI MADT parsing for LAPIC ID enumeration and I/O APIC base discovery
 - [x] ACPI RSDP/root/SDT validation and MADT/DMAR/FADT decoding (discovery diagnostics; not yet wired into APIC routing or controllers)
 - [ ] `x2APIC` mode enable (MSR-based, no MMIO) when CPUID indicates support
+- [x] xAPIC/x2APIC register access selection, APIC ID reads, and fixed IPI send primitive (build-checked; QEMU boot validation pending)
 - [ ] Inter-Processor Interrupt (IPI) primitives: TLB shootdown, scheduler kick, panic broadcast
+- [x] Reserved TLB/scheduler/panic IPI vectors with per-CPU mailboxes and acknowledgement timeout API (not yet connected to VMA reclamation or run-queue wakeups)
 - [ ] BORE scheduler policy, only after SMP, per-CPU scheduling, and IPI support have stabilized; WFQ remains the Phase 3 baseline.
 
 ### IOMMU (Intel VT-d / AMD-Vi)

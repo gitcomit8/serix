@@ -32,14 +32,27 @@ pub unsafe fn init_smp() {
 		let bsp_id = apic::smp::read_apic_id();
 		serial_println!("BSP LAPIC ID: {}, Total CPUs: {}", bsp_id, total_cpus);
 
-		/* Write ap_init_callback to each AP's goto_address, set CPU index in extra */
-		for (i, cpu) in mp_response.cpus().iter().enumerate() {
-			if i == 0 {
-				/* BSP — skip, BSP is already executing */
+		/* Assign dense logical IDs with BSP at zero, independent of firmware order. */
+		let mut next_logical_id = 1usize;
+		let mut bsp_seen = false;
+		for cpu in mp_response.cpus().iter() {
+			if cpu.lapic_id == bsp_id {
+				bsp_seen = true;
+				let _ = apic::ipi::configure_cpu(0, cpu.lapic_id);
 				continue;
 			}
-			cpu.extra.store(i as u64, Ordering::Relaxed);
+			let logical_id = next_logical_id;
+			next_logical_id += 1;
+			if logical_id >= 16 {
+				serial_println!("CPU APIC ID {} exceeds configured per-CPU limit; leaving offline", cpu.lapic_id);
+				continue;
+			}
+			let _ = apic::ipi::configure_cpu(logical_id, cpu.lapic_id);
+			cpu.extra.store(logical_id as u64, Ordering::Relaxed);
 			cpu.goto_address.write(super::cpu::ap_init_callback);
+		}
+		if bsp_seen {
+			let _ = apic::ipi::set_cpu_online(0);
 		}
 
 		if total_cpus > 1 {
