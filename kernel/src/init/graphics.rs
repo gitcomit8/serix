@@ -14,10 +14,6 @@ use hal::serial_println;
 /* Limine request for framebuffer */
 static FB_REQ: FramebufferRequest = FramebufferRequest::new();
 
-fn mirror_serial_log(text: &str) {
-	graphics::kprint!("{}", text);
-}
-
 /*
  * init_graphics - Initialize framebuffer and console
  * @mmap_entries: Memory map entries from Limine (for visualization)
@@ -45,9 +41,6 @@ pub unsafe fn init_graphics(mmap_entries: &[&limine::memory_map::Entry]) {
 			);
 		}
 	}
-
-	/* Start mirroring serial logs only after the framebuffer TTY is usable. */
-	hal::set_log_mirror(mirror_serial_log);
 
 	serial_println!("");
 	graphics::kprintln!("Serix OS v0.0.6");
