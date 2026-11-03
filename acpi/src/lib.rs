@@ -109,7 +109,7 @@ impl<'a> Sdt<'a> {
 		if self.body.len() % width != 0 {
 			return Err(Error::BadLength);
 		}
-		self.body
+		let entries: Vec<u64> = self.body
 			.chunks_exact(width)
 			.map(|c| {
 				if width == 8 {
@@ -120,7 +120,11 @@ impl<'a> Sdt<'a> {
 					Ok(u32::from_le_bytes(c.try_into().map_err(|_| Error::Truncated)?) as u64)
 				}
 			})
-			.collect()
+			.collect::<Result<_, _>>()?;
+		if entries.iter().any(|entry| *entry == 0 || *entry % width as u64 != 0) {
+			return Err(Error::BadLength);
+		}
+		Ok(entries)
 	}
 }
 
@@ -308,7 +312,7 @@ pub fn parse_fadt(table: Sdt<'_>) -> Result<Fadt, Error> {
 	if b.len() < 80 {
 		return Err(Error::BadLength);
 	}
-	let reset = if b.len() >= 100 && b[80] != 0 {
+	let reset = if b.len() >= 92 && b[80] != 0 {
 		Some(GenericAddress {
 			space_id: b[80],
 			bit_width: b[81],
