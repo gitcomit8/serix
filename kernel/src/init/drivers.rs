@@ -8,11 +8,11 @@
  * - VirtIO queue setup and interrupt registration
  */
 
-use x86_64::structures::paging::Size4KiB;
-use x86_64::VirtAddr;
 use drivers::pci;
 use drivers::virtio::VirtioBlock;
 use hal::serial_println;
+use x86_64::VirtAddr;
+use x86_64::structures::paging::Size4KiB;
 
 /*
  * driver_init - Initialize hardware drivers
@@ -34,6 +34,22 @@ pub unsafe fn driver_init(
 	let devices = pci::enumerate_pci();
 	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
 	graphics::fb_println!("PCI: {} devices found", devices.len());
+	for dev in &devices {
+		let class = dev.class();
+		if matches!(class, pci::DeviceClass::Nvme | pci::DeviceClass::Xhci) {
+			let bar0 = dev.bar_info(0);
+			let msix = dev.msix_info();
+			serial_println!(
+				"PCI {:?} {:02x}:{:02x}.{} BAR0={:?} MSI-X={:?}",
+				class,
+				dev.bus,
+				dev.device,
+				dev.function,
+				bar0,
+				msix
+			);
+		}
+	}
 
 	/* MMIO mapper closure — maps physical bars to virtual addresses */
 	let mut mmio_mapper = |phys: u64, size: u64| -> *mut u8 {

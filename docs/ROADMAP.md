@@ -284,6 +284,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ### NVMe Storage Driver (Ring 3)
 
+- [x] PCI inventory exposes class/subclass/prog-if classification, safe BAR address decoding, and bounded MSI-X metadata discovery (no assignment, enablement, or Ring 3 handoff yet)
 - [ ] PCIe BAR0 MMIO mapping for NVMe controller registers (`CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, `ACQ`)
 - [ ] Admin Queue pair setup (Submission Queue + Completion Queue in DMA-safe memory)
 - [ ] `Identify Controller` and `Identify Namespace` command submission
@@ -293,6 +294,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ### XHCI USB Driver (Ring 3)
 
+- [x] PCI inventory classifies xHCI and can decode MSI-X layout metadata (controller driver/server remains unimplemented)
 - [ ] PCIe BAR0 MMIO mapping for XHCI capability/operational/runtime registers
 - [ ] Device Context Base Address Array (DCBAA) and Scratchpad Buffer allocation
 - [ ] Command Ring, Event Ring, and Transfer Ring setup
