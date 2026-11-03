@@ -1,4 +1,5 @@
 pub mod cpu;
+pub mod acpi;
 pub mod drivers;
 pub mod filesystem;
 pub mod graphics;

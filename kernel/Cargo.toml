@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 limine = "0.5.0"
+acpi = { path = "../acpi" }
 x86_64 = "0.15.2"
 apic = { path = "../apic" }
 graphics = { path = "../graphics", features = ["global-console"] }
