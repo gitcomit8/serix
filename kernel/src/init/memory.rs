@@ -100,9 +100,6 @@ pub unsafe fn init_memory(mmap_req: &MemoryMapRequest) -> MemoryInitResult {
 	apic::ioapic::set_base(ioapic_virt.as_u64());
 	apic::ioapic::init_ioapic();
 
-	/* Initialize PS/2 keyboard controller */
-	super::cpu::init_ps2_keyboard();
-
 	MemoryInitResult {
 		phys_mem_offset,
 		mapper,

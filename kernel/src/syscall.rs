@@ -457,6 +457,7 @@ extern "C" fn syscall_dispatcher(
 				Ok(ino) => ino,
 				Err(errno) => return errno,
 			};
+			let fd = arg1;
 			let ptr = arg3 as *mut u8;
 			let len = arg4 as usize;
 
@@ -467,8 +468,17 @@ extern "C" fn syscall_dispatcher(
 				return ERRNO_EFAULT;
 			}
 
+			/* fd 0: direct keyboard read (PS/2 fallback, works even without init_stdio) */
+			if fd == 0 {
+				if let Some(k) = keyboard::pop_key() {
+					unsafe { *ptr = k };
+					return 1;
+				}
+				return ERRNO_EAGAIN;
+			}
+
 			let task_id = task::scheduler::current_task_id();
-			if let Some(file) = crate::fd::get(task_id, arg1) {
+			if let Some(file) = crate::fd::get(task_id, fd) {
 				let mut off = file.offset.lock();
 				let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
 				let n = file.inode.read(*off, buf);

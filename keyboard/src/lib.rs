@@ -86,6 +86,42 @@ impl RingBuffer {
 // Global static instance
 static INPUT_BUF: Mutex<RingBuffer> = Mutex::new(RingBuffer::new());
 
+// Counter tracking how many times the ISR has fired (set by keyboard_interrupt_handler).
+// Used for diagnostics to verify the interrupt path works.
+use core::sync::atomic::{AtomicU64, Ordering};
+static ISR_FIRING_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_SCANCODE: core::sync::atomic::AtomicU8 =
+	core::sync::atomic::AtomicU8::new(0);
+
+/*
+ * isr_interrupt_handler_called - Increment the ISR fire counter.
+ *
+ * Called from keyboard_interrupt_handler every time a keyboard interrupt fires.
+ * This provides a reliable way to verify that the interrupt path (I/O APIC → IDT → handler) works.
+ */
+pub fn isr_interrupt_handler_called() {
+	ISR_FIRING_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record the most recently received raw PS/2 scancode for diagnostics.
+pub fn record_scancode(scancode: u8) {
+	LAST_SCANCODE.store(scancode, Ordering::Relaxed);
+}
+
+/// Return the most recently received raw PS/2 scancode.
+pub fn get_last_scancode() -> u8 {
+	LAST_SCANCODE.load(Ordering::Relaxed)
+}
+
+/*
+ * get_isr_fire_count - Get the number of times the ISR has fired.
+ *
+ * Return: Number of keyboard interrupt firings.
+ */
+pub fn get_isr_fire_count() -> u64 {
+	ISR_FIRING_COUNT.load(Ordering::Relaxed)
+}
+
 /*
  * handle_scancode - Process keyboard scancode
  * @scancode: Raw scancode from keyboard controller
