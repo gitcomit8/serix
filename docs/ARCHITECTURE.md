@@ -65,7 +65,7 @@ These subsystems run as isolated processes in their own address spaces. Faults i
 
 - **User → Kernel:** `SYSCALL` instruction. RCX/R11 saved by hardware. Kernel entry (`syscall_entry`) performs `swapgs`, saves full context to user stack, switches to kernel stack via `GS_BASE`-referenced per-CPU data area. SFMASK clears `IF` during entry. Context switch uses `SWITCH_HOOK` callback to update GDT stack pointer (not `TSS.RSP0`).
 - **Kernel → User:** `SYSRET` restores RCX → RIP, R11 → RFLAGS. For full context restores (e.g., `enter_user_mode` / `iretq`), `IRETQ` is used instead.
-- **IPC Fastpath:** When `send()` wakes a blocked receiver, the message is injected into the receiver's `TaskCB.direct_msg` field via `inject_direct_message()`. The receiver sees it in its next `receive_blocking()` loop iteration before checking the message queue. This is a buffered fastpath, not a direct register transfer.
+- **IPC Fastpath (register-mediated):** When `send()` injects a direct message, the message pointer is stored in the receiver's `TaskCB.direct_msg` (atomic) and `ipc_msg_ptr`/`ipc_msg_valid` fields in `CPUContext`. During `context_switch()`, after restoring normal registers, the kernel checks `ipc_msg_valid`; if set, it loads `ipc_msg_ptr` into `rbx` (SysV arg1) and `r12`/`r13` (arg2/arg3). The receiver's saved `CPUContext` sees the IPC data in callee-saved registers — a zero-copy register-mediated transfer, not a buffered copy. The receiver consumes it via `consume_direct_message()`.
 
 ## 3. LES (Least-Elevated Security) — Declarative Policy Bridge
 
@@ -116,11 +116,12 @@ The LES provides a declarative access control mechanism. At boot, the kernel loa
 
 ### 4.2 VMA Manager and `mmap`
 
-- **VMA Manager:** `memory::vma` maintains a list of Virtual Memory Areas (start address, end address, permissions, backing inode).
-- `SYS_MMAP` — Maps a file into userspace: creates a VMA, reads each page from the file via the inode's `read()` method, and maps it into the address space. Currently supports only file-backed mappings with read+write permissions.
+- **VMA Manager (per-process):** Each process maintains its own `VmaManager` (in `memory::vma`). VMAs track start/end address, permissions, `MappingType` (`Private` or `Shared`), and optional `backing_inode` for CoW/demand paging. The `#PF` handler receives the per-process `VmaManager` reference to dispatch faults.
+- `SYS_MMAP` — Maps a file into userspace: creates a per-process VMA with `MappingType` (`MAP_SHARED` or `MAP_PRIVATE`). For `MAP_PRIVATE`, pages are demand-loaded on fault as private writable copies (CoW semantics). For `MAP_SHARED`, pages are demand-loaded from the backing inode on `#PF`.
 - `SYS_MUNMAP` — Removes a VMA by matching the faulting address and verifying Arc-pointer identity against the stored capability pointer.
-- **No demand paging** — all pages are eagerly read from the file at `mmap()` time.
-- **No copy-on-write** — no fork semantics exist; each process has its own PML4 allocated at spawn time.
+- **Demand paging** — `#PF` handler (`handle_page_fault()` in `memory/src/vma.rs`) dispatches page faults: for file-backed VMAs, it reads pages from the backing inode on demand.
+- **Copy-on-write** — `cow_fault()` allocates a new private frame, reads the original page from the backing inode, and maps it writable on write faults to `MAP_PRIVATE` VMAs.
+- **Deferred page cache writeback** — dirty pages are tracked and written back lazily.
 
 ### 4.3 Frame Allocator
 
@@ -148,8 +149,8 @@ The LES provides a declarative access control mechanism. At boot, the kernel loa
 ### 5.2 IPC Wake-up Path
 
 - `send()` wakes the first blocked receiver on the target port via `wake_task()`, which enqueues the receiver on the per-CPU run queue.
-- The blocked receiver (in `receive_blocking()`) checks a direct-injected message field (`direct_msg`) before the message queue. Messages are injected via `inject_direct_message()` by the scheduler — this is a buffered fastpath, not a register-mediated transfer.
-- Direct register transfer between sender and receiver contexts is **not yet implemented**.
+- The blocked receiver (in `receive_blocking()`) may receive a direct-injected message via register-mediated fastpath: `context_switch()` loads `ipc_msg_ptr` into `rbx` (SysV arg1) when `ipc_msg_valid` is set. The receiver sees the IPC pointer in its callee-saved registers before checking the message queue. This is a register-mediated transfer, not a buffered copy. The receiver consumes the message via `consume_direct_message()`.
+- Direct register transfer between sender and receiver contexts is **now implemented** via `ipc_msg_ptr`/`ipc_msg_valid` fields in `CPUContext` and context switch assembly in `task/src/context_switch.rs`.
 
 ### 5.3 Capability-Gated Access
 
@@ -264,7 +265,7 @@ There is **no Server Manager (PID 1)** in the current implementation. The kernel
 8. **LES policy:** Default deny rules loaded (`/etc/shadow`, `/proc/serix/cap-audit`)
 9. **Scheduler:** Per-CPU run queues initialized; core type detected
 10. **SMP:** LAPIC timer started; AP bootstrap callbacks registered; `AP_READY_PTR` signaled
-11. **User tasks:** ext4d daemon spawned, then kshell (kernel-resident Ring-0 shell)
+11. **User tasks:** ext4d daemon spawned (ext4 filesystem), policyd daemon spawned (LES policy engine with TOML config), kshell (kernel-resident Ring-0 shell)
 12. **Idle loop:** `hlt()` in a loop; preempted by LAPIC timer interrupts (~625 Hz)
 
 ## 11. Subsystem Documentation Index
@@ -299,7 +300,7 @@ serix/
 ├── keyboard/      # PS/2 scancode translation, key event queue
 ├── ulib/          # Userspace syscall wrappers, capability refs, fmt, heap
 ├── ext4d/         # Ring-3 ext4 filesystem daemon (embedded in kernel binary)
-├── policyd/       # Ring-3 policy service daemon
+├── policyd/       # Ring-3 policy service daemon (embedded in kernel binary, spawned at boot, TOML config, hot-reload)
 └── util/          # Panic handler, shared utilities
 ```
 

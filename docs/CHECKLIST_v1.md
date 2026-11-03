@@ -5,7 +5,7 @@
 - [x] Stable preemptive scheduler with WFQ, no deadlocks under load
 - [x] Per-task kernel stacks with guard pages (done)
 - [ ] Context switch correctness under stress testing
-- [ ] TSS.RSP0 updated on every context switch (deferred — uses SWITCH_HOOK callback)
+- [x] TSS.RSP0 updated on every context switch (via SWITCH_HOOK callback)
 - [x] Capability enforcement on all IPC send() calls (done; extended to all resource-accessing syscalls)
 - [x] Mount table for overlaying filesystems (done; longest-prefix BTreeMap matching)
 
@@ -14,8 +14,8 @@
 - [ ] `mmap(MAP_PRIVATE)` — file-backed private mapping
 - [x] `munmap` — unmapping regions (SYS_MUNMAP(91))
 - [ ] `brk` / `sbrk` — heap growth for userspace
-- [ ] Page fault handler that allocates on demand (demand paging)
-- [ ] Copy-on-write fork semantics
+- [x] Page fault handler that allocates on demand (demand paging; `handle_page_fault()` in `memory/src/vma.rs`)
+- [x] Copy-on-write fork semantics (`cow_fault()` in `memory/src/vma.rs`; `MappingType::Private` vs `MappingType::Shared`)
 - [ ] Stack growth on page fault (guard page expansion)
 
 ### Process Model
@@ -52,6 +52,8 @@
 - [ ] `uname`
 - [x] `getdents64` (SYS_GETDENTS(18))
 - [ ] `set_tid_address`
+- [x] `file_read` (SYS_FILE_READ(92)) — read entire file into userspace buffer
+- [x] `policy_reload` (SYS_POLICY_RELOAD(93)) — atomic policy snapshot swap
 
 ### Filesystem
 - [x] FAT32 stable (done)
