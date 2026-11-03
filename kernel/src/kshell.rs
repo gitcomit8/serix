@@ -219,6 +219,7 @@ fn run_output_command(line: &str, out: &mut String) {
 		"help" => {
 			let _ = writeln!(out, "Available commands:");
 			let _ = writeln!(out, "  help                 - show this message");
+			let _ = writeln!(out, "  clear                - clear the framebuffer console");
 			let _ = writeln!(out, "  echo <text>          - print text");
 			let _ = writeln!(out, "  ls [path]            - list directory");
 			let _ = writeln!(out, "  cat <file>           - print file contents");
@@ -322,6 +323,7 @@ fn run_side_effect_command(line: &str) {
 	let arg2 = parts.next().unwrap_or("").trim();
 
 	match cmd {
+		"clear" => graphics::clear_console(),
 		"policy" => handle_policy_command(arg1, arg2),
 		"write" => {
 			/* write <file> <data...> */

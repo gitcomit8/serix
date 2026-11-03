@@ -112,6 +112,10 @@ impl SerialPort {
 use spin::Mutex;
 use spin::Once;
 
+/* Keep a formatted log record atomic across all CPUs and both output devices. */
+static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+static LOG_MIRROR: Mutex<Option<fn(&str)>> = Mutex::new(None);
+
 /* Global serial port instance */
 static SERIAL_PORT: Once<Mutex<SerialPort>> = Once::new();
 
@@ -130,11 +134,25 @@ pub fn init_serial() {
  */
 pub fn serial_print(s: &str) {
 	x86_64::instructions::interrupts::without_interrupts(|| {
-		if let Some(serial) = SERIAL_PORT.get() {
-			let port = serial.lock();
-			port.write_str(s);
-		}
+		let _output_guard = OUTPUT_LOCK.lock();
+		write_outputs(s);
 	});
+}
+
+/// Install a secondary destination for future serial log output.
+/// The kernel uses this to mirror logs to the framebuffer after it is ready.
+pub fn set_log_mirror(mirror: fn(&str)) {
+	*LOG_MIRROR.lock() = Some(mirror);
+}
+
+fn write_outputs(s: &str) {
+	if let Some(serial) = SERIAL_PORT.get() {
+		serial.lock().write_str(s);
+	}
+	let mirror = *LOG_MIRROR.lock();
+	if let Some(mirror) = mirror {
+		mirror(s);
+	}
 }
 
 /*
@@ -188,9 +206,12 @@ pub fn _serial_print(args: core::fmt::Arguments) {
 
 	impl Write for SerialWriter {
 		fn write_str(&mut self, s: &str) -> core::fmt::Result {
-			serial_print(s);
+			write_outputs(s);
 			Ok(())
 		}
 	}
-	SerialWriter.write_fmt(args).ok();
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		let _output_guard = OUTPUT_LOCK.lock();
+		SerialWriter.write_fmt(args).ok();
+	});
 }
