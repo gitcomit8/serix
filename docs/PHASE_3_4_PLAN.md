@@ -15,18 +15,19 @@
 - ✅ SLUB-allocated 1 MiB per-task kernel stacks with guard pages
 - ✅ Callee-saved GPR + CR3 context switch; `block_current_and_switch()`
 - ✅ Port-based message passing with blocking `receive_blocking()`
-- ✅ `SYS_RECV_BLOCK (22)` syscall
+- ✅ `SYS_RECV_BLOCK(32)` syscall
 - ✅ `send()` wakes first blocked receiver
 - ✅ Capability validation on `send()` (implemented in `ipc/src/lib.rs:102-110`)
+- ✅ Per-CPU run queues with `GS_BASE` MSR (`PER_CPU_RUN_QUEUES` array, 16 slots)
+- ✅ `TSS.RSP0` swap on context switch (via `SWITCH_HOOK` callback; save area in `PerCpuData`)
+- ✅ Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
+- ✅ Priority inheritance protocol (`acquire_lock_with_pi()` / `release_lock_with_pi()`)
+- ✅ SMP Bring-Up (Limine MP callback-based AP bootstrap; `AP_READY_PTR` signaled)
+- ✅ IPC fastpath: register-mediated direct transfer via `ipc_msg_ptr`/`ipc_msg_valid` in `CPUContext`
+- ✅ Asynchronous notification ports (`SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`)
 
 **Remaining:**
-- ⏳ Per-CPU run queues with `GS_BASE` MSR
-- ⏳ `TSS.RSP0` swap on context switch (per-task kernel stacks)
-- ⏳ Weighted Fair Queueing (WFQ) for `Fair` class
-- ⏳ Priority inheritance protocol
-- ⏳ SMP Bring-Up (AP bootstrap via INIT-SIPI-SIPI)
-- ⏳ IPC fastpath: direct register transfer
-- ⏳ Asynchronous notification ports
+- ⏳ Full INIT-SIPI-SIPI AP bootstrap sequence (currently relies on Limine to hand off running APs)
 
 ---
 
@@ -492,17 +493,23 @@
 **Completed:**
 - ✅ FAT32 driver (BPB, cluster chains, LFN, mkdir, unlink)
 - ✅ Ext4 daemon (superblock, extent tree, file read/write)
-- ✅ Mount table (longest-prefix matching in `vfs/src/lib.rs:102-133`)
+- ✅ Mount table (`BTreeMap<String, Arc<dyn INode>>` with longest-prefix matching in `vfs/src/lib.rs:116-123`)
 - ✅ File descriptor table (global, keyed by `(task_id, fd)`)
 - ✅ `SYS_OPEN`, `SYS_CLOSE`, `SYS_SEEK` syscalls
+- ✅ `SYS_RMDIR(22)` — validates METADATA rights on parent
+- ✅ `SYS_FORMAT(23)` — formats VirtIO-blk device with ext4
+- ✅ Unified Page Cache (radix tree indexed by `(InodeId, page_offset)` in `vfs/src/page_cache.rs`)
+- ✅ `mmap()` file-backed mapping (`SYS_MMAP(90)` with `MAP_SHARED`/`MAP_PRIVATE` flags)
+- ✅ Demand paging via `#PF` handler (`handle_page_fault()` in `memory/src/vma.rs`)
+- ✅ Copy-on-write (`cow_fault()` in `memory/src/vma.rs`; `MappingType::Private` vs `MappingType::Shared`)
+- ✅ Per-process VMA manager (`VmaManager` in `memory::vma`)
+- ✅ Deferred page cache writeback
 
 **Remaining:**
 - ⏳ Ext4: HTree directory indexing
 - ⏳ Ext4: `rmdir()` semantics + link-count checks
 - ⏳ Ext4: Superblock generation / formatting (mkfs)
 - ⏳ Ext4: Journal (JBD2)
-- ⏳ Unified Page Cache (radix tree, demand paging, writeback)
-- ⏳ `mmap()` file-backed mapping
 
 ---
 

@@ -14,7 +14,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vector 34, IRQ 11)
 - **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects and 1 MiB task stacks (`0xFFFF_D000_0000_0000` VA range)
 - **Scheduling:** Preemptive round-robin; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with SLUB-allocated stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
-- **Syscalls (19 total):** `SYSCALL`/`SYSRET` via MSR; Serix-native numbers (not Linux-compatible): Process group — `SYS_EXIT(0)`, `SYS_YIELD(1)`, `SYS_GETPID(2)`, `SYS_GETPPID(3)`, `SYS_SPAWN(4)`, `SYS_WAIT(5)`; File I/O — `SYS_OPEN(10)`, `SYS_CLOSE(11)`, `SYS_READ(12)`, `SYS_WRITE(13)`, `SYS_SEEK(14)`, `SYS_DUP(15)`, `SYS_DUP2(16)`, `SYS_PIPE(17)`, `SYS_GETDENTS(18)`; Filesystem — `SYS_MKDIR(20)`, `SYS_UNLINK(21)`, `SYS_RMDIR(22)`, `SYS_FORMAT(23)`; IPC — `SYS_SEND(30)`, `SYS_RECV(31)`, `SYS_RECV_BLOCK(32)`, `SYS_CREATE_PORT(33)`, `SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`; Memory — `SYS_MMAP(90)`, `SYS_MUNMAP(91)`. Every syscall that touches a resource validates capability authority via the `CapabilityStore` (see Phase 6 below).
+- **Syscalls (25 total):** `SYSCALL`/`SYSRET` via MSR; Serix-native numbers (not Linux-compatible): Process group — `SYS_EXIT(0)`, `SYS_YIELD(1)`, `SYS_GETPID(2)`, `SYS_GETPPID(3)`, `SYS_SPAWN(4)`, `SYS_WAIT(5)`; File I/O — `SYS_OPEN(10)`, `SYS_CLOSE(11)`, `SYS_READ(12)`, `SYS_WRITE(13)`, `SYS_SEEK(14)`, `SYS_DUP(15)`, `SYS_DUP2(16)`, `SYS_PIPE(17)`, `SYS_GETDENTS(18)`; Filesystem — `SYS_MKDIR(20)`, `SYS_UNLINK(21)`, `SYS_RMDIR(22)`, `SYS_FORMAT(23)`; IPC — `SYS_SEND(30)`, `SYS_RECV(31)`, `SYS_RECV_BLOCK(32)`, `SYS_CREATE_PORT(33)`, `SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`; Memory — `SYS_MMAP(90)`, `SYS_MUNMAP(91)`; File read — `SYS_FILE_READ(92)`; Policy — `SYS_POLICY_RELOAD(93)`. Every syscall that touches a resource validates capability authority via the `CapabilityStore` (see Phase 6 below).
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
 - **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; interrupt-driven sector read/write (IRQ via IOAPIC); `BlockDevice` VFS INode for byte-oriented access; 32 MiB disk, write→read verified
 - **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write, `mkdir`, `unlink` (with LFN cleanup), duplicate filename rejection, LAPIC-tick timestamps; 32 MiB disk formatted via `mkfs.vfat -F 32`; files created by Serix are visible when mounting `disk.img` on Linux
@@ -108,7 +108,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] `send()` wakes first blocked receiver; producer/consumer validated in QEMU
 - [x] Capability validation on every `send()` / `receive()` — `authorize_current_ipc()` resolves capability slot, validates rights against `CapabilityStore`, and extracts port ID before any observable state change
 - [x] Async notification ports (`SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`) with event bitmask and `check_notification()` integration into `receive_blocking()`
-- [ ] IPC fastpath: direct register transfer when receiver is blocked at `receive()` call site (currently uses `inject_direct_message` into `TaskCB.direct_msg` field — buffered, not register-mediated)
+- [x] IPC fastpath: register-mediated direct transfer via `ipc_msg_ptr`/`ipc_msg_valid` in `CPUContext`; context switch loads msg pointer into `rbx` (SysV arg1) after restoring normal registers
 
 ### VirtIO Block Driver
 
@@ -129,11 +129,10 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 ### VFS Core Enhancements
 
 - [x] Path resolution engine (iterative component lookup through `INode::lookup()` chain)
-- [ ] Mount table (`BTreeMap<VirtAddr, MountPoint>`) for overlaying filesystems on directory INodes
+- [x] Mount table (`BTreeMap<String, Arc<dyn INode>>` keyed by mount-point path with longest-prefix matching)
 - [x] File descriptor table (global table keyed by `(task_id, fd)`, not per-TaskCB)
 - [x] Standard fd allocation: fd 0 (stdin/PS/2 keyboard), fd 1 (stdout/console), fd 2 (stderr/serial)
 - [x] `SYS_OPEN`, `SYS_CLOSE`, `SYS_SEEK` syscall implementations
-- [x] Mount table (`BTreeMap` with longest-prefix path matching); `mount()` / `umount()` APIs; `/` and `/dev/` mounted at boot
 
 ### FAT32 Filesystem (Ring 0)
 
@@ -170,16 +169,16 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ### Unified Page Cache
 
-- [ ] Concurrent radix tree indexed by `(InodeId, page_offset)` — lockless read path via RCU-like epoch reclamation
-- [ ] Demand paging integration: `#PF` handler dispatches synchronous IPC to VFS for file-backed VMAs
-- [ ] Writeback: dirty page tracking via PTE accessed/dirty bits, periodic flush to Ext4 daemon
-- [ ] `mmap()` file-backed mapping support (`MAP_SHARED`, `MAP_PRIVATE` with CoW)
+- [x] Concurrent radix tree indexed by `(InodeId, page_offset)` with lockless read path via RCU-like epoch reclamation
+- [x] Demand paging integration: `#PF` handler dispatches synchronous IPC to VFS for file-backed VMAs
+- [x] Writeback: dirty page tracking via PTE accessed/dirty bits, deferred writeback
+- [x] `mmap()` file-backed mapping support (`MAP_SHARED` and `MAP_PRIVATE` with CoW); `cow_fault()` on write fault to private mappings
 
 ---
 
 ## Phase 5: LES (Least-Elevated Security) Policy Bridge
 
-**Status:** Phase 5.0 implemented; policy daemon integration and audit logging in progress
+**Status:** Complete. Policy daemon is spawned at boot with TOML config, hot-reload, and LES bridge fully operational.
 
 > **Clarification:** "LES" in Serix stands for **Least-Elevated Security**, not Linux Executable Subsystem. It is a declarative access control bridge, not a Linux ABI translation layer.
 
@@ -190,6 +189,8 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] Default deny rules at boot: `/etc/shadow`, `/proc/serix/cap-audit`
 - [x] Policy daemon fallback: kernel queries Ring-3 `policyd` (port 0x5000) for paths not covered by local snapshot
 - [x] `PolicyRule` type: `(path: &str, action: PolicyAction::Deny | Allow)`
+- [x] `SYS_POLICY_RELOAD(93)` syscall for atomic `PolicySnapshot` swap (transactional reload)
+- [x] TOML config parser (no_std compatible, used by `policyd`)
 
 ### Audit Ring (Implemented)
 
@@ -198,9 +199,12 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - [x] `/proc/serix/cap-audit` pseudo-file exposes audit log via `procfs::make_audit_file()`
 - [x] `init_audit()` called early in `_start()` before any capability operations
 
-### Planned Extensions
+### Completed
 
-- [ ] Policy daemon (`policyd`) — Ring-3 daemon with TOML config, hot-reload on SIGHUP equivalent
+- [x] Policy daemon (`policyd`) — Ring-3 daemon spawned at boot (alongside ext4d and kshell) with TOML config parsing and hot-reload (`SYS_POLICY_RELOAD(93)`)
+
+### Remaining
+
 - [ ] Audit log pagination and truncation
 - [ ] Declarative policy rules for IPC ports and device capabilities
 
@@ -239,10 +243,8 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ### Planned Extensions
 
-- [ ] Capability delegation: `delegate()` already exists; userspace `grant()` syscall pending
-- [ ] Capability inheritance on `spawn()`: child inherits subset of parent's cspace (currently child gets empty cspace)
 - [ ] POSIX DAC bridge: UID/GID/mode semantics translated into capability tickets
-- [ ] `/etc/serix/cap-policy.toml` with hot-reload via SIGHUP (policy daemon in progress)
+- [ ] `/etc/serix/cap-policy.toml` with hot-reload via `SYS_POLICY_RELOAD(93)`
 
 ---
 

@@ -54,7 +54,7 @@ ulib/           Userspace library (syscall wrappers)
 ## Current Status (v0.0.6)
 
 System Calls
-    19 syscalls implemented across process, file I/O, filesystem, and IPC groups
+    25 syscalls implemented across process, file I/O, filesystem, IPC, memory, and policy groups
 
 VFS
     Mount-table based path resolution via lookup_path(), / and /dev mounts, block device exposure at /dev/sda, ext4 daemon IPC stubs available
@@ -602,10 +602,20 @@ const SYS_GETDENTS:   u64 = 18;
 
 const SYS_MKDIR:      u64 = 20;
 const SYS_UNLINK:     u64 = 21;
+const SYS_RMDIR:      u64 = 22;
+const SYS_FORMAT:     u64 = 23;
 
 const SYS_SEND:       u64 = 30;
 const SYS_RECV:       u64 = 31;
 const SYS_RECV_BLOCK: u64 = 32;
+const SYS_CREATE_PORT:        u64 = 33;
+const SYS_CREATE_NOTIFICATION_PORT: u64 = 34;
+const SYS_NOTIFY:             u64 = 35;
+
+const SYS_MMAP:       u64 = 90;
+const SYS_MUNMAP:     u64 = 91;
+const SYS_FILE_READ:  u64 = 92;
+const SYS_POLICY_RELOAD: u64 = 93;
 
 ```
 
@@ -840,6 +850,87 @@ use ulib::serix_seek;
 
 serix_seek(fd, 0);  // Seek back to start
 
+```
+
+## serix_mmap()
+
+Map a file into userspace address space.
+
+```rust
+pub fn serix_mmap(addr: *mut u8, length: usize, prot: i32, flags: i32, fd: i32, offset: usize) -> *mut u8
+```
+
+Parameters:
+    addr      - Hint for mapping address (usually NULL for kernel-determined)
+    length    - Number of bytes to map
+    prot      - Protection flags (PROT_READ, PROT_WRITE)
+    flags     - MAP_SHARED (0) or MAP_PRIVATE (1)
+    fd        - File descriptor of file to map
+    offset    - Byte offset within file
+
+Returns:
+    Mapped virtual address on success, NULL on failure
+
+**Mapping Types:**
+    `MAP_SHARED` (flags=0): Pages are demand-loaded from backing inode on `#PF` with shared permissions.
+    `MAP_PRIVATE` (flags=1): Pages are demand-loaded as private writable copies (CoW). Write faults trigger `cow_fault()` to allocate a new private frame.
+
+Example (userspace):
+```rust
+use ulib::serix_mmap;
+
+let ptr = serix_mmap(std::ptr::null_mut(), file_size, 3, 0, fd, 0); // PROT_READ|PROT_WRITE, MAP_SHARED
+```
+
+## serix_file_read()
+
+Read an entire file into a userspace buffer.
+
+```rust
+pub fn serix_file_read(fd: i32, buf: *mut u8, count: usize) -> isize
+```
+
+Parameters:
+    fd      - File descriptor
+    buf     - Buffer to receive file contents
+    count   - Maximum bytes to read
+
+Returns:
+    Number of bytes read on success, negative errno on failure
+
+Requires READ capability on the file's inode.
+
+Example (userspace):
+```rust
+use ulib::serix_file_read;
+
+let mut buf = [0u8; 4096];
+let read_count = serix_file_read(fd, buf.as_mut_ptr(), buf.len());
+```
+
+## serix_policy_reload()
+
+Atomically swap the LES policy snapshot for a new validated rule set.
+
+```rust
+pub fn serix_policy_reload(rules_ptr: *const u8, rules_len: usize) -> isize
+```
+
+Parameters:
+    rules_ptr  - Pointer to validated TOML rule set bytes
+    rules_len  - Length of rule set in bytes
+
+Returns:
+    0 on success, negative errno on failure
+
+The kernel atomically swaps the `PolicySnapshot` pointer. Running syscalls holding a reference to the old snapshot are unaffected. Failed reload retains the previous generation and produces an audit event.
+
+Example (userspace):
+```rust
+use ulib::serix_policy_reload;
+
+let new_policy = include_bytes!("new_policy.toml");
+let result = serix_policy_reload(new_policy.as_ptr(), new_policy.len());
 ```
 
 ## Interrupt Management
