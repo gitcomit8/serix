@@ -9,7 +9,6 @@
  * - Spawning ext4d daemon and kshell
  */
 
-use hal::topology::CoreType;
 use task::Scheduler;
 use hal::serial_println;
 
@@ -20,8 +19,7 @@ use hal::serial_println;
  * Initializes the global scheduler, creates the boot task placeholder,
  * and spawns the ext4d daemon and kernel shell.
  */
-pub fn init_scheduler(core_type: CoreType) {
-	serial_println!("CORE TYPE: {:?}", core_type);
+pub fn init_scheduler() {
 
 	/* Initialize system calls */
 	crate::syscall::init_syscalls();
