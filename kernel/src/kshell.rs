@@ -58,6 +58,8 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 	graphics::kprintln!("Type 'help' for commands.");
 	graphics::kprintln!();
 
+	dispatch("logs");
+
 	let mut buf = [0u8; LINE_MAX];
 	let mut len: usize = 0;
 
