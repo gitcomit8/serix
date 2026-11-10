@@ -184,6 +184,8 @@ pub fn add_entry(
 			off = next_off;
 		}
 		if inserted {
+			/* Check if we should convert to HTree-indexed format */
+			super::htree::maybe_convert_to_htree(dev, sb, bgdt, dir_ino);
 			return;
 		}
 	}
@@ -202,6 +204,8 @@ pub fn add_entry(
 	dir_ino.size += bsz as u32;
 	dir_ino.blocks += sb.sectors_per_block() as u32;
 	dir_ino.write(dev, sb, bgdt);
+	/* Check if we should convert to HTree-indexed format */
+	super::htree::maybe_convert_to_htree(dev, sb, bgdt, dir_ino);
 }
 
 pub fn remove_entry(
