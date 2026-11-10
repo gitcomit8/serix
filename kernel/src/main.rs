@@ -4,6 +4,9 @@
  * This file contains the kernel initialization sequence and main loop.
  * It sets up the GDT, IDT, APIC, memory management, and task execution.
  * All subsystem initialization is delegated to init::* modules.
+ *
+ * Entry point: extern "C" fn _start(boot_info: *const BootInfo) -> !
+ * The bootloader passes a BootInfo struct pointer in RDI.
  */
 
 #![feature(abi_x86_interrupt)]
@@ -22,16 +25,14 @@ pub mod stdio;
 pub mod procfs;
 mod syscall;
 mod init;
+mod bootstub;
 
+use boot::BootInfo;
 use core::panic::PanicInfo;
 use hal::serial_println;
-use limine::request::MemoryMapRequest;
 use task::init_executor;
 use util::panic::halt_loop;
 use x86_64::instructions::hlt;
-
-/* Limine protocol requests */
-static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 
 /*
  * panic - Kernel panic handler
@@ -54,13 +55,27 @@ pub fn panic(info: &PanicInfo) -> ! {
 /*
  * _start - Kernel entry point
  *
- * This is the main kernel initialization function called by the bootloader.
- * It initializes all subsystems and enters the main execution loop.
+ * Called by the bootloader stub (limine_boot, grub2_boot, etc.) with
+ * a pointer to BootInfo in RDI. The stub has already parsed the
+ * bootloader's native format and constructed the BootInfo struct.
  */
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 	hal::init_serial();
 	serial_println!("Serix Kernel v0.0.6 Starting.....");
+
+	/* Validate the BootInfo passed by the bootstub */
+	let boot_info_ref: &'static BootInfo = unsafe {
+		boot::validate_boot_info(boot_info)
+			.expect("Invalid or missing boot info")
+	};
+
+	serial_println!("[BOOT] HHDM offset: {:#x}", boot_info_ref.hhdm_offset);
+	serial_println!(
+		"[BOOT] Memory regions: {}, CPUs: {}",
+		boot_info_ref.memory_regions.len(),
+		boot_info_ref.cpus.len()
+	);
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
@@ -101,9 +116,9 @@ pub extern "C" fn _start() -> ! {
 	/* Phase 1: Memory initialization                                       */
 	/* ------------------------------------------------------------------ */
 	serial_println!("Phase 1: init_memory...");
-	let mem = unsafe { init::memory::init_memory(&MMAP_REQ) };
+	let mem = unsafe { init::memory::init_memory(boot_info_ref) };
 	let _platform_topology = unsafe {
-		init::acpi::discover(&MMAP_REQ, mem.phys_mem_offset.as_u64())
+		init::acpi::discover(boot_info_ref, mem.phys_mem_offset.as_u64())
 	};
 	serial_println!("Phase 1 complete");
 
@@ -115,7 +130,7 @@ pub extern "C" fn _start() -> ! {
 	/* Phase 2: Graphics initialization                                     */
 	/* ------------------------------------------------------------------ */
 	unsafe {
-		init::graphics::init_graphics(MMAP_REQ.get_response().unwrap().entries());
+		init::graphics::init_graphics(boot_info_ref);
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -157,7 +172,7 @@ pub extern "C" fn _start() -> ! {
 	/* Phase 6: SMP / Timer initialization                                  */
 	/* ------------------------------------------------------------------ */
 	unsafe {
-		init::smp::init_smp();
+		init::smp::init_smp(boot_info_ref);
 	}
 
 	graphics::kprintln!("Timer: LAPIC ~625 Hz started");

@@ -1,31 +1,24 @@
 
 /*
- * ap_init_callback - Limine callback for each AP
+ * ap_init_callback - Boot entry point for each AP
  *
- * Called by Limine when an AP is booted. Each AP reads its CPU index
- * from the Cpu.extra field (set by BSP during registration), initializes
- * per-CPU data, allocates a kernel stack, sets up the scheduler, and
- * enters the idle loop.
+ * Called by the bootloader (or boot stub) for each AP. The logical CPU ID
+ * is passed in RSI by the bootloader. Each AP initializes per-CPU data,
+ * allocates a kernel stack, sets up the scheduler, and enters the idle loop.
  *
  * Uses AP_READY flag for synchronization: APs spin-wait until the BSP
  * signals that kernel initialization is complete.
  *
  * NOTE: This function must NEVER RETURN.
  */
+use core::arch::asm;
 use x86_64::structures::idt::InterruptStackFrame;
 use hal::serial_println;
 use crate::gdt::{init_per_cpu, set_kernel_stack};
 use crate::smp;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
-    use core::arch::asm;
-    use crate::gdt::{init_per_cpu, set_kernel_stack, PER_CPU_DATA};
-    use task::scheduler;
-
-    /* CPU index set by BSP in Cpu.extra */
-    let cpu_id = cpu.extra.load(core::sync::atomic::Ordering::Relaxed) as usize;
-
+pub extern "C" fn ap_init_callback(cpu_id: usize) -> ! {
 	/* Select the BSP's APIC mode on this CPU before any APIC register access. */
 	if !unsafe { apic::enable_current_cpu() } {
 		hal::serial_println!("AP startup stopped: local APIC mode mismatch");
@@ -34,55 +27,55 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
 	}
 
 	/* Mask timer interrupt — prevent premature timer IRQ before init complete */
-    unsafe { apic::timer::mask_timer() };
+	unsafe { apic::timer::mask_timer() };
 
-    /* Wait for BSP to signal kernel init is complete */
-    while !unsafe { smp::AP_READY_PTR.load(core::sync::atomic::Ordering::Acquire) } {
-        core::hint::spin_loop();
-    }
+	/* Wait for BSP to signal kernel init is complete */
+	while !unsafe { smp::AP_READY_PTR.load(core::sync::atomic::Ordering::Acquire) } {
+		core::hint::spin_loop();
+	}
 
-    /* Initialize per-CPU data */
-    unsafe {
-        init_per_cpu(cpu_id);
-    }
+	/* Initialize per-CPU data */
+	unsafe {
+		init_per_cpu(cpu_id);
+	}
 
-    /* Allocate a kernel stack for this AP */
-    let stack_top = memory::kstack::alloc_kernel_stack(4096)
-        .expect("Failed to allocate AP kernel stack");
+	/* Allocate a kernel stack for this AP */
+	let stack_top = memory::kstack::alloc_kernel_stack(4096)
+		.expect("Failed to allocate AP kernel stack");
 
-    /* Set kernel stack and TSS.RSP0 */
-    set_kernel_stack(stack_top);
+	/* Set kernel stack and TSS.RSP0 */
+	set_kernel_stack(stack_top);
 
-    /* Initialize scheduler for this CPU */
-    unsafe {
-        scheduler::init(core::ptr::addr_of!(PER_CPU_DATA) as usize, cpu_id as u8);
-    }
+	/* Initialize scheduler for this CPU */
+	unsafe {
+		use crate::gdt::PER_CPU_DATA;
+		task::scheduler::init(core::ptr::addr_of!(PER_CPU_DATA) as usize, cpu_id as u8);
+	}
 	let core_info = hal::topology::get_core_type_info();
 	serial_println!(
-		"[CPU] logical={} apic={} core_type={:?} leaf_1a={} raw={:#04x}",
+		"[CPU] logical={} core_type={:?} leaf_1a={} raw={:#04x}",
 		cpu_id,
-		cpu.lapic_id,
 		core_info.kind,
 		core_info.leaf_supported,
 		core_info.raw_type
 	);
 
-    /* Enable interrupts for this AP */
-    x86_64::instructions::interrupts::enable();
+	/* Enable interrupts for this AP */
+	x86_64::instructions::interrupts::enable();
 	let _ = apic::ipi::set_cpu_online(cpu_id);
 
-    /* Unmask timer interrupt — now safe to receive timer IRQs */
-    unsafe { apic::timer::unmask_timer() };
+	/* Unmask timer interrupt — now safe to receive timer IRQs */
+	unsafe { apic::timer::unmask_timer() };
 
-    /* Mark this AP as ready in the SMP module */
-    unsafe { smp::set_ap_ready(cpu_id as u8) };
+	/* Mark this AP as ready in the SMP module */
+	unsafe { smp::set_ap_ready(cpu_id as u8) };
 
-    serial_println!("AP {} initialized, entering idle loop", cpu_id);
+	serial_println!("AP {} initialized, entering idle loop", cpu_id);
 
-    /* Enter idle loop — timer interrupts drive preemptive scheduling */
-    loop {
-        x86_64::instructions::hlt();
-    }
+	/* Enter idle loop — timer interrupts drive preemptive scheduling */
+	loop {
+		x86_64::instructions::hlt();
+	}
 }
 
 
@@ -262,4 +255,3 @@ pub unsafe fn init_ps2_keyboard() {
         None => serial_println!("[PS/2] Enable scanning timed out (no response)"),
     }
 }
-

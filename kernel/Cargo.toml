@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-limine = "0.5.0"
+boot = { path = "../boot" }
+limine = { version = "0.5.0", optional = true }
 acpi = { path = "../acpi" }
 x86_64 = "0.15.2"
 apic = { path = "../apic" }
@@ -22,3 +23,9 @@ ipc = { path = "../ipc" }
 loader = { path = "../loader" }
 keyboard = { path = "../keyboard" }
 fs = { path = "../fs", features = ["kernel"] }
+
+[features]
+default = ["bootstub-limine"]
+bootstub-limine = ["dep:limine"]
+bootstub-grub2 = []
+bootstub-edk2 = []

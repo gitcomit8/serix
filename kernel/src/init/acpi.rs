@@ -1,26 +1,26 @@
+use boot::MemoryRegion;
+use boot::MemoryRegionType;
 use acpi::{PlatformTopology, Rsdp, Sdt};
 use hal::serial_println;
-use limine::request::{MemoryMapRequest, RsdpRequest};
-
-static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 /// Discover firmware tables after the HHDM is active. Invalid firmware disables
 /// ACPI-dependent setup, while the existing BSP path remains available.
-pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<PlatformTopology> {
-	let Some(response) = RSDP_REQUEST.get_response() else {
-		serial_println!("[ACPI] Limine did not provide an RSDP; firmware features disabled");
+pub unsafe fn discover(boot_info: &'static boot::BootInfo, hhdm_offset: u64) -> Option<PlatformTopology> {
+	let rsdp_address = boot_info.rsdp_address;
+	if rsdp_address == 0 {
+		serial_println!("[ACPI] No RSDP provided by bootloader; firmware features disabled");
 		return None;
-	};
-	let entries = mmap.get_response()?.entries();
-	let response_address = response.address() as u64;
-	let (rsdp_phys, rsdp_virt) = if hhdm_offset != 0 && response_address >= hhdm_offset {
-		(response_address - hhdm_offset, response_address)
+	}
+
+	let entries = boot_info.memory_regions;
+	let (rsdp_phys, rsdp_virt) = if hhdm_offset != 0 && rsdp_address >= hhdm_offset {
+		(rsdp_address - hhdm_offset, rsdp_address)
 	} else {
-		let Some(virt) = hhdm_offset.checked_add(response_address) else { return None; };
-		(response_address, virt)
+		let Some(virt) = hhdm_offset.checked_add(rsdp_address) else { return None; };
+		(rsdp_address, virt)
 	};
-	serial_println!("[ACPI] Limine RSDP virtual={:#x} physical={:#x}", rsdp_virt, rsdp_phys);
-	if !covered(&entries, rsdp_phys, 36) {
+	serial_println!("[ACPI] RSDP virtual={:#x} physical={:#x}", rsdp_virt, rsdp_phys);
+	if !covered(entries, rsdp_phys, 36) {
 		serial_println!("[ACPI] RSDP address outside memory map");
 		return None;
 	}
@@ -33,7 +33,7 @@ pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<Plat
 	};
 	let (root_phys, root_sig) = rsdp.xsdt_address.filter(|a| *a != 0).map(|a| (a, *b"XSDT"))
 		.unwrap_or((rsdp.rsdt_address as u64, *b"RSDT"));
-	let root = match read_sdt(root_phys, root_sig, &entries, hhdm_offset) {
+	let root = match read_sdt(root_phys, root_sig, entries, hhdm_offset) {
 		Ok(root) => root,
 		Err(err) => { serial_println!("[ACPI] invalid root table: {:?}", err); return None; }
 	};
@@ -45,12 +45,12 @@ pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<Plat
 	let mut dmar_found = false;
 	let mut fadt_found = false;
 	for address in addresses {
-		if !covered(&entries, address, 36) { continue; }
+		if !covered(entries, address, 36) { continue; }
 		let header_virt = match hhdm_offset.checked_add(address) { Some(v) => v, None => continue };
 		let header = core::slice::from_raw_parts(header_virt as *const u8, 36);
 		let sig: [u8; 4] = match header[..4].try_into() { Ok(s) => s, Err(_) => continue };
 		if !matches!(&sig, b"APIC" | b"DMAR" | b"FACP") { continue; }
-		match read_sdt(address, sig, &entries, hhdm_offset) {
+		match read_sdt(address, sig, entries, hhdm_offset) {
 			Ok(table) if sig == *b"APIC" => match PlatformTopology::parse_madt(table) {
 				Ok(parsed) => topology = Some(parsed),
 				Err(err) => serial_println!("[ACPI] MADT rejected: {:?}", err),
@@ -80,7 +80,7 @@ pub unsafe fn discover(mmap: &MemoryMapRequest, hhdm_offset: u64) -> Option<Plat
 	topology
 }
 
-unsafe fn read_sdt<'a>(phys: u64, expected: [u8; 4], entries: &[&limine::memory_map::Entry], hhdm: u64) -> Result<Sdt<'a>, acpi::Error> {
+unsafe fn read_sdt<'a>(phys: u64, expected: [u8; 4], entries: &[MemoryRegion], hhdm: u64) -> Result<Sdt<'a>, acpi::Error> {
 	if !covered(entries, phys, 36) { return Err(acpi::Error::Truncated); }
 	let address = hhdm.checked_add(phys).ok_or(acpi::Error::BadLength)?;
 	let header = core::slice::from_raw_parts(address as *const u8, 36);
@@ -90,10 +90,10 @@ unsafe fn read_sdt<'a>(phys: u64, expected: [u8; 4], entries: &[&limine::memory_
 	Sdt::parse(bytes, Some(expected))
 }
 
-fn covered(entries: &[&limine::memory_map::Entry], base: u64, length: usize) -> bool {
+fn covered(entries: &[MemoryRegion], base: u64, length: usize) -> bool {
 	let Some(end) = base.checked_add(length as u64) else { return false; };
 	entries.iter().any(|entry| {
 		let Some(region_end) = entry.base.checked_add(entry.length) else { return false; };
-		base >= entry.base && end <= region_end && entry.entry_type != limine::memory_map::EntryType::BAD_MEMORY
+		base >= entry.base && end <= region_end && entry.region_type != MemoryRegionType::Bad
 	})
 }

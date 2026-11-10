@@ -2,7 +2,7 @@
  * init/memory.rs - Kernel Memory Initialization
  *
  * Provides init_memory() which handles:
- * - HHDM offset setup from Limine
+ * - HHDM offset setup from BootInfo
  * - Page table initialization
  * - Boot frame allocator population
  * - Kernel heap initialization
@@ -13,12 +13,10 @@
  * Also provides map_mmio() and map_mmio_range() for ad-hoc MMIO mapping.
  */
 
+use boot::MemoryRegion;
+use boot::MemoryRegionType;
 use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
-use limine::request::{HhdmRequest, MemoryMapRequest};
-
-/* Limine request for HHDM offset */
-static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 
 /* ------------------------------------------------------------------ */
 /*  Full memory initialization                                          */
@@ -38,31 +36,27 @@ pub struct MemoryInitResult {
 
 /*
  * init_memory - Initialize kernel memory management
- * @mmap_req: Limine memory map request (for populating frame allocator)
+ * @boot_info: BootInfo from bootloader (validated)
  *
  * Sets up HHDM, page tables, frame allocator, kernel heap, and MMIO regions.
  * Returns the physical memory offset and owned page table resources
  * for driver_init to consume.
  */
-pub unsafe fn init_memory(mmap_req: &MemoryMapRequest) -> MemoryInitResult {
+pub unsafe fn init_memory(boot_info: &'static boot::BootInfo) -> MemoryInitResult {
 	use x86_64::structures::paging::mapper::OffsetPageTable;
 
-	/* Get Higher Half Direct Map offset from Limine */
-	let hhdm_response = HHDM_REQ.get_response().expect("No HHDM response");
-	let phys_mem_offset = VirtAddr::new(hhdm_response.offset());
+	/* Get Higher Half Direct Map offset from BootInfo */
+	let phys_mem_offset = VirtAddr::new(boot_info.hhdm_offset);
 	::memory::set_hhdm_offset(phys_mem_offset);
 
 	/* Initialize page table from HHDM offset */
 	let mut mapper: OffsetPageTable<'static> = ::memory::init_offset_page_table(phys_mem_offset);
 
 	/* Populate boot frame allocator from memory map */
-	let mmap_response = mmap_req.get_response().expect("No memory map response");
-	let entries = mmap_response.entries();
-
 	let mut frame_count = 0;
-	for region in entries
+	for region in boot_info.memory_regions
 		.iter()
-		.filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
+		.filter(|r| r.region_type == MemoryRegionType::Usable)
 	{
 		let start = region.base;
 		let end = region.base + region.length;

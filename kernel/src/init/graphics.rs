@@ -7,39 +7,30 @@
  * - Initializing the framebuffer console (TTY)
  */
 
-use limine::request::FramebufferRequest;
-use limine::framebuffer::Framebuffer;
 use hal::serial_println;
-
-/* Limine request for framebuffer */
-static FB_REQ: FramebufferRequest = FramebufferRequest::new();
 
 /*
  * init_graphics - Initialize framebuffer and console
- * @mmap_entries: Memory map entries from Limine (for visualization)
+ * @boot_info: BootInfo from bootloader (validated)
  *
  * Paints the screen blue, draws the memory map, and initializes
  * the framebuffer console for kernel logging.
  */
-pub unsafe fn init_graphics(mmap_entries: &[&limine::memory_map::Entry]) {
+pub unsafe fn init_graphics(boot_info: &'static boot::BootInfo) {
 	/* Paint screen blue and draw memory map visualization */
-	if let Some(fb_response) = FB_REQ.get_response() {
-		if let Some(fb) = fb_response.framebuffers().next() {
-			graphics::fill_screen_blue(&fb);
-			graphics::draw_memory_map(&fb, mmap_entries);
-		}
+	if let Some(fb) = boot_info.framebuffer {
+		graphics::fill_screen_blue(fb);
+		graphics::draw_memory_map(fb, boot_info.memory_regions);
 	}
 
 	/* Initialize framebuffer TTY */
-	if let Some(fb_response) = FB_REQ.get_response() {
-		if let Some(fb) = fb_response.framebuffers().next() {
-			graphics::init_console(
-				fb.addr(),
-				fb.width() as usize,
-				fb.height() as usize,
-				fb.pitch() as usize,
-			);
-		}
+	if let Some(fb) = boot_info.framebuffer {
+		graphics::init_console(
+			fb.address as *mut u8,
+			fb.width as usize,
+			fb.height as usize,
+			fb.pitch as usize,
+		);
 	}
 
 	serial_println!("");

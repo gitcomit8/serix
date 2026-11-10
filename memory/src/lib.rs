@@ -14,7 +14,7 @@ pub mod vma;
 pub const PAGE_SIZE: usize = 4096;
 
 use alloc::boxed::Box;
-use limine::memory_map::Entry;
+use boot::MemoryRegion;
 use spin::{Mutex, Once};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
@@ -106,15 +106,15 @@ pub struct BootFrameAllocator {
 impl BootFrameAllocator {
 	/*
 	 * new - Create a frame allocator from memory map
-	 * @memory_map: Array of Limine memory map entries
+	 * @memory_map: Array of boot memory regions
 	 *
 	 * Collects all usable physical frames from the memory map.
 	 */
-	pub fn new(memory_map: &[&Entry]) -> Self {
+	pub fn new(memory_map: &[&MemoryRegion]) -> Self {
 		let mut frames = alloc::vec::Vec::new();
 		for region in memory_map
 			.iter()
-			.filter(|r| r.entry_type == limine::memory_map::EntryType::USABLE)
+			.filter(|r| r.region_type == boot::MemoryRegionType::Usable)
 		{
 			let start = region.base;
 			let end = region.base + region.length;

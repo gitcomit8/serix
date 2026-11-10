@@ -1,4 +1,5 @@
 KERNEL = target/x86_64-unknown-none/release/kernel
+KERNEL_GRUB2 = target/x86_64-unknown-none/release/kernel-grub2
 ISO = serix.iso
 ISO_ROOT = iso_root
 LIMINE_DIR = limine
@@ -6,10 +7,11 @@ LIMINE_DIR = limine
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run run-host iso disk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host iso disk clean limine kernel ext4d ext4disk policyd iso-limine iso-grub2 run-limine run-grub2
 
 all: iso
 
+# Kernel build targets
 ext4d:
 	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
 	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem -p ext4d --release --target x86_64-unknown-none
@@ -20,6 +22,12 @@ policyd:
 
 kernel: ext4d policyd
 	cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
+
+kernel-grub2: ext4d policyd
+	RUSTFLAGS="-C link-arg=-Tkernel/linker-grub2.ld" \
+		cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
+		--manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none \
+		--features bootstub-grub2
 
 limine:
 	if [ ! -d $(LIMINE_DIR) ]; then \
@@ -32,6 +40,34 @@ $(ISO_ROOT)/boot:
 
 $(ISO_ROOT)/boot/kernel: kernel ext4d | $(ISO_ROOT)/boot
 	cp $(KERNEL) $@
+
+$(ISO_ROOT)/boot/kernel-grub2: kernel-grub2 ext4d | $(ISO_ROOT)/boot
+	cp $(KERNEL_GRUB2) $@
+
+# GRUB2 ISO target (BIOS-only for now)
+GRUB_ISO = serix-grub2.iso
+GRUB_ISO_ROOT = iso_root_grub2
+
+iso-limine: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/limine-bios-cd.bin $(ISO_ROOT)/boot/limine-uefi-cd.bin $(ISO_ROOT)/limine.conf
+	xorriso -as mkisofs -b boot/limine-bios-cd.bin \
+	  -no-emul-boot -boot-load-size 4 -boot-info-table \
+	  --efi-boot boot/limine-uefi-cd.bin \
+	  -efi-boot-part --efi-boot-image --protective-msdos-label \
+	  $(ISO_ROOT) -o $(ISO)
+	./limine/limine bios-install $(ISO)
+
+iso-grub2: | $(GRUB_ISO_ROOT)/boot
+	mkdir -p $(GRUB_ISO_ROOT)/boot
+	cp $(KERNEL_GRUB2) $(GRUB_ISO_ROOT)/boot/kernel
+
+# Limine run targets
+run-limine: iso-limine disk
+	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio
+
+run-grub2: iso-grub2
+	qemu-system-x86_64 -machine q35 -cpu max -m 4G \
+	  -smp cpus=$(QEMU_SMP_CPUS) -boot d -cdrom $(GRUB_ISO) \
+	  -serial stdio -d int,cpu_reset -no-reboot
 
 ext4disk:
 	@if [ ! -f ext4.img ]; then \
