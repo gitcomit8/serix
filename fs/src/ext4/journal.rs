@@ -289,28 +289,69 @@ impl Journal {
 	/*
 	 * In ordered mode:
 	 *   1. Data blocks have already been written to disk (by the caller)
-	 *   2. Write commit record to journal
-	 *   3. Update journal superblock
+	 *   2. Write journal header with block count
+	 *   3. Write all buffered metadata blocks to journal
+	 *   4. Write commit record (sequence number)
+	 *   5. Update journal superblock
 	 */
 	pub fn commit_transaction(&mut self, dev: &dyn BlockDev) {
 		if let Some(ref mut tx) = self.current_tx {
 			tx.t_state = JournalState::Committing;
 
-			/* Write commit record (simplified: just the sequence number) */
-			/* Write commit record to journal (next available block) */
-			let commit_block = self.sb.j_head;
+			let num_buffers = tx.t_buffers.len();
+			let total_blocks = 1 + num_buffers + 1; /* header + buffers + commit */
+
+			/* Write journal transaction header */
+			let header_block = self.sb.j_head;
 			let spb = self.sb.j_blocksize / 512;
-			let sector = (self.start_block as u64 + commit_block as u64) * (spb as u64);
-			let mut sector_buf = [0u8; 512];
-			sector_buf[0..4].copy_from_slice(&tx.t_id.to_le_bytes()); /* Sequence number */
-			for s in 0..spb {
-				dev.write_block(sector + s as u64, &sector_buf);
+			let header_sector =
+				(self.start_block as u64 + header_block as u64) * (spb as u64);
+			let mut header_buf = [0u8; 512];
+			header_buf[0..4].copy_from_slice(&JBD2_MAGIC.to_le_bytes()); /* magic */
+			header_buf[4..8].copy_from_slice(&total_blocks.to_le_bytes()); /* block count */
+			header_buf[8..12].copy_from_slice(&tx.t_id.to_le_bytes()); /* sequence */
+			for s in 0..spb as usize {
+				dev.write_block(header_sector + s as u64, &header_buf);
+			}
+
+			/* Write each buffered block to the journal */
+			let mut cur_block = (header_block + 1) % self.size;
+			for buf in tx.t_buffers.iter() {
+				let sector = (self.start_block as u64 + cur_block as u64) * (spb as u64);
+				let mut journal_buf = [0u8; 512];
+				/* Original block number (4 bytes) */
+				journal_buf[0..4].copy_from_slice(&buf.block.to_le_bytes());
+				/* Block data */
+				let copy_len = core::cmp::min(buf.data.len(), 512);
+				journal_buf[4..4 + copy_len].copy_from_slice(&buf.data[..copy_len]);
+				for s in 0..spb as usize {
+					let off = s * 512;
+					let end = core::cmp::min(4 + 512, 4 + buf.data.len());
+					let slice_start = off;
+					let slice_end = core::cmp::min(512, end - off);
+					if slice_start < slice_end && slice_end <= buf.data.len() {
+						journal_buf[4 + slice_start..4 + slice_end]
+							.copy_from_slice(&buf.data[slice_start..slice_end]);
+					}
+					dev.write_block(sector + s as u64, &journal_buf);
+				}
+				cur_block = (cur_block + 1) % self.size;
+			}
+
+			/* Write commit record (next block after buffers) */
+			let commit_block = cur_block;
+			let commit_sector =
+				(self.start_block as u64 + commit_block as u64) * (spb as u64);
+			let mut commit_buf = [0u8; 512];
+			commit_buf[0..4].copy_from_slice(&tx.t_id.to_le_bytes()); /* Sequence number */
+			for s in 0..spb as usize {
+				dev.write_block(commit_sector + s as u64, &commit_buf);
 			}
 
 			/* Update journal superblock */
 			self.sb.j_head = (commit_block + 1) % self.size;
-			self.sb.j_tail = self.sb.j_head;
-			self.sb.j_free = self.size - 1;
+			self.sb.j_tail = header_block;
+			self.sb.j_free = self.size - total_blocks as u32;
 			self.sb.j_sequence = tx.t_id + 1;
 			self.sb.j_last_commit = tx.t_id;
 			self.sb.j_state = JournalState::Committed as u8;
@@ -326,26 +367,146 @@ impl Journal {
 		self.sb.j_state != JournalState::Committed as u8
 	}
 
-	/* Recover from a crash (simplified: just clear the journal) */
+	/* Recover from a crash — scan journal for committed transactions and replay */
 	pub fn recover(&mut self, dev: &dyn BlockDev) {
-		if self.needs_recovery() {
-			/* In a full implementation, we would:
-			 * 1. Scan the journal for valid transactions
-			 * 2. Replay metadata blocks from the journal
-			 * 3. Update inodes to reflect recovered state
-			 *
-			 * For now, we just clear the journal state.
-			 * This is safe because we use ordered mode:
-			 * if the journal is incomplete, the data on disk
-			 * is already consistent (data was written before
-			 * the journal commit record).
-			 */
-			// serial_println!("[journal] Recovery needed, clearing journal");
-			self.sb.j_state = JournalState::Committed as u8;
-			self.sb.j_tail = 0;
-			self.sb.j_head = 0;
-			self.write_superblock(dev);
+		if !self.needs_recovery() {
+			return;
 		}
+
+		#[cfg(feature = "kernel")]
+		hal::serial_println!("[journal] Recovery needed, scanning journal...");
+
+		/* Read the journal superblock to get current head/tail */
+		let head = self.sb.j_head;
+		let tail = self.sb.j_tail;
+
+		/* If head == tail, journal is empty */
+		if head == tail {
+			self.sb.j_state = JournalState::Committed as u8;
+			self.write_superblock(dev);
+			return;
+		}
+
+		/* Scan the journal area for valid transaction headers.
+		 * We walk from head backwards, looking for JBD2_MAGIC. */
+		let spb = self.sb.j_blocksize / 512;
+		let mut seq_start: Option<u32> = None;
+		let mut seq_end: u32 = head;
+
+		/* Walk backwards through the journal to find the last valid transaction */
+		let mut pos = head;
+		let mut iterations = self.size * 2; /* safety limit */
+		while iterations > 0 {
+			iterations -= 1;
+			let sector = (self.start_block as u64 + pos as u64) * (spb as u64);
+			let mut buf = [0u8; 512];
+			if !dev.read_block(sector, &mut buf) {
+				break;
+			}
+
+			let magic = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+			if magic == JBD2_MAGIC {
+				let block_count = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+				let seq = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+				if block_count >= 2 && block_count <= self.size {
+					seq_start = Some(seq);
+					let commit_pos = (pos + 1 + block_count - 1) % self.size;
+					/* Verify commit record follows */
+					let commit_sector =
+						(self.start_block as u64 + commit_pos as u64) * (spb as u64);
+					let mut commit_buf = [0u8; 512];
+					if dev.read_block(commit_sector, &mut commit_buf) {
+						let commit_seq =
+							u32::from_le_bytes([commit_buf[0], commit_buf[1], commit_buf[2], commit_buf[3]]);
+						if commit_seq == seq {
+							seq_end = commit_pos;
+							break; /* Found last valid transaction */
+						}
+					}
+				}
+			}
+
+			pos = if pos == 0 { self.size - 1 } else { pos - 1 };
+		}
+
+		/* Replay the last valid transaction if found */
+		if let Some(seq) = seq_start {
+			#[cfg(feature = "kernel")]
+			hal::serial_println!("[journal] Replaying transaction seq={}", seq);
+			/* Walk forward from where we found the header to replay blocks */
+			/* We need to re-scan forward from the tail area */
+			let mut scan_pos = tail;
+			let mut found_header = false;
+			let mut scan_iters = self.size;
+			while scan_iters > 0 {
+				scan_iters -= 1;
+				let sector = (self.start_block as u64 + scan_pos as u64) * (spb as u64);
+				let mut buf = [0u8; 512];
+				if !dev.read_block(sector, &mut buf) {
+					break;
+				}
+				let magic = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+				if magic == JBD2_MAGIC {
+					let block_count = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+					let tx_seq = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+					if tx_seq == seq {
+						found_header = true;
+						/* Replay each buffered block in this transaction */
+						let mut cur_block = (scan_pos + 1) % self.size;
+						for _ in 0..(block_count - 2) {
+							/* Skip header(1) and commit(1), read buffer blocks */
+							let buf_sector =
+								(self.start_block as u64 + cur_block as u64) * (spb as u64);
+							let mut journal_buf = [0u8; 512];
+							if dev.read_block(buf_sector, &mut journal_buf) {
+								let orig_block =
+									u32::from_le_bytes([journal_buf[0], journal_buf[1], journal_buf[2], journal_buf[3]]);
+								/* Write the replayed data to the original block location */
+								let bsz = self.sb.j_blocksize as usize;
+								let sector = (self.start_block as u64 + orig_block as u64) * (spb as u64);
+								for s in 0..spb as usize {
+									let chunk_end = core::cmp::min(512, bsz - s * 512);
+									if s * 512 < bsz {
+										let mut write_buf = [0u8; 512];
+										let src_start = 4 + s * 512;
+										let src_end = core::cmp::min(516, src_start + chunk_end);
+										let copy_len = core::cmp::min(chunk_end, journal_buf.len().saturating_sub(src_start));
+										if copy_len > 0 {
+											write_buf[..copy_len]
+												.copy_from_slice(&journal_buf[src_start..src_start + copy_len]);
+										}
+										dev.write_block(sector + s as u64, &write_buf);
+									}
+								}
+								#[cfg(feature = "kernel")]
+								hal::serial_println!(
+									"[journal]   replayed block {} -> sector {}",
+									orig_block,
+									sector
+								);
+							}
+							cur_block = (cur_block + 1) % self.size;
+						}
+						break;
+					}
+				}
+				scan_pos = (scan_pos + 1) % self.size;
+			}
+
+			if found_header {
+				#[cfg(feature = "kernel")]
+				hal::serial_println!("[journal] Recovery complete, clearing journal");
+			} else {
+				#[cfg(feature = "kernel")]
+				hal::serial_println!("[journal] Recovery: could not find transaction in journal");
+			}
+		}
+
+		/* Clear journal state */
+		self.sb.j_state = JournalState::Committed as u8;
+		self.sb.j_tail = 0;
+		self.sb.j_head = 0;
+		self.write_superblock(dev);
 	}
 }
 
