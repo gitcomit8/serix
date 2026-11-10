@@ -784,63 +784,78 @@ graphics::fb_println!("Memory: {} MB usable", total_mb);
 
 ## Phase 10: VFS Initialization (35-40 ms)
 
-**Purpose**: Setup virtual filesystem with ramdisk
+**Purpose**: Setup virtual filesystem with ramdisk and register filesystem drivers
 
 **Operations**
 
+```rust
+init::filesystem::init_filesystem();
 ```
 
-vfs::init_ramdisk(&module_response);
-
-```
 **Steps**:
 
-1. Get module response from Limine
-2. Locate init binary module
-3. Create ramdisk filesystem
-4. Mount at root (/)
+1. Register FAT32, ext2, ext4 filesystem drivers
+2. Mount RamDir at `/` (contains embedded ELF files for ext4d, policyd)
+3. Mount RamDir at `/dev/` (exposes /dev/sda block device)
+4. Initialize page cache (256 pages = 1 MiB)
+5. Create `/proc/serix/cap-audit` pseudo-file
+6. Create `/mnt/` directory (auto-mount target)
+7. Insert ext4d and policyd ELF binaries into VFS root
+8. Create `/etc/serix/policy.toml` default config
 
-**Result**: Files can be accessed through VFS
+**Result**: VFS table ready; `/dev/sda` exposes the VirtIO block device
 
+## Phase 10.5: Scheduler & Auto-Mount (40-50 ms)
 
-## Phase 11: Userspace Initialization (40-50 ms)
+**Purpose**: Initialize scheduler, spawn daemons, auto-mount filesystem
 
-**Purpose**: Load and execute init binary
+**Operations**
 
-Load Init Binary
+```rust
+init::scheduler::init_scheduler();
 ```
 
-
-```
-
-let init_binary = vfs::read_file("/init")
-
-```
 **Steps**:
 
-1. Read init binary from ramdisk
-2. Parse ELF headers
-3. Allocate memory for segments
-4. Map segments into memory
-5. Setup userspace stack
+1. Initialize syscall dispatch table
+2. Initialize global scheduler and per-CPU run queues
+3. Create boot task with IPC ports
+4. **Spawn ext4d daemon** (Ring-3 ext4 filesystem)
+5. **Auto-mount ext4**: `fs::probe_and_mount()` detects ext4 on `/dev/sda`, mounts at `/mnt` (ext4d must be running for IPC stubs)
+6. Spawn kshell (kernel shell)
+7. Spawn policyd daemon (LES policy engine)
 
-Execute Init
+**Mount table after init**:
+```
+/       → RamDir (embedded ELF files)
+/dev/   → RamDir (/dev/sda)
+/mnt    → Ext4DirStub (ext4 daemon proxy, if filesystem detected)
 ```
 
+**Fallback**: If no ext4 detected, `/mnt` remains empty RamDir; user can manually `mount /dev/sda /mnt`
 
-```
 
-loader::exec_elf(&init_binary)
+## Phase 11: SMP & Idle Loop (50-60 ms)
 
-```
-**Result**: First userspace process running
+**Purpose**: Start SMP, LAPIC timer, enter idle loop
+
+**Steps**:
+
+1. Initialize scheduler (per-CPU run queues)
+2. Start LAPIC timer (~625 Hz)
+3. Boot APs via Limine MP callback mechanism
+4. APs allocate kernel stacks, init scheduler, enter idle loop
+5. BSP enters `hlt()` idle loop
 
 Serial output
 
 ```
 
-Init process started (PID 1)
-Userspace initialized
+BSP LAPIC ID: 0, Total CPUs: 4
+AP 1 initialized, entering idle loop
+AP 2 initialized, entering idle loop
+AP 3 initialized, entering idle loop
+Serix OS v0.0.6 ready.
 
 ```
 
@@ -849,9 +864,9 @@ Userspace initialized
 
 ## Summary Table
 
-===== ========== ======== ================ ================================
+===== ========== ======== =============================== ================================================
 Phase Subsystem  Duration Dependencies     Purpose
-===== ========== ======== ================ ================================
+===== ========== ======== =============================== ================================================
 1     HAL        0-1 ms   None             Debug output (serial)
 2     APIC       1-2 ms   HAL              Interrupt controller
 3     IDT        2-3 ms   APIC             Exception/interrupt handling
@@ -861,9 +876,10 @@ Phase Subsystem  Duration Dependencies     Purpose
 7     Page Tbl   10-15 ms Memory Map       Virtual memory
 8     Heap       15-25 ms Page Tables      Dynamic allocation
 9     Graphics   25-35 ms Framebuffer,Heap Visual output
-10    VFS        35-40 ms Heap             Filesystem
-11    Userspace  40-50 ms VFS, Loader      Init process
-===== ========== ======== ================ ================================
+10    VFS        35-40 ms Heap             Filesystem drivers, mount table
+10.5  Scheduler  40-50 ms VFS, Drivers     Scheduler, ext4d spawn, auto-mount /mnt
+11    SMP        50-60 ms Scheduler      LAPIC timer, AP bootstrap, idle loop
+===== ========== ======== =============================== ================================================
 
 
 ## Dependency Graph

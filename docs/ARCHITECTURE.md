@@ -45,7 +45,7 @@ These modules execute in supervisor mode with direct access to CR3, MSRs, and MM
 | **Interrupt Dispatcher** | `idt/`, `apic/` | IDT vectors, LAPIC/I/O APIC programming, EOI signaling |
 | **Capability Store** | `capability/` | `BTreeMap`-backed capability validation on every syscall/IPC boundary |
 | **Syscall Entry** | `kernel/` | `SYSCALL`/`SYSRET` trampoline; MSR configuration (`LSTAR`, `STAR`, `SFMASK`, `EFER.SCE`) |
-| **Filesystem Core (FAT32/ext2/ext4 stub)** | `fs/` | In-kernel VFS-facing filesystem drivers and ext4 IPC stubs |
+| **Filesystem Core (FAT32/ext2/ext4 stub)** | `fs/` | In-kernel VFS-facing filesystem drivers and ext4 IPC stubs. ext4 uses Ring-3 daemon model; FAT32/ext2 run in Ring 0. Auto-mount ext4 at boot (mounted at /mnt). |
 
 ### 2.2 Ring 3 — Userspace Server Processes
 
@@ -53,7 +53,7 @@ These subsystems run as isolated processes in their own address spaces. Faults i
 
 | Server | Transport | Description |
 |---|---|---|
-| **Ext4 Filesystem Daemon** | Synchronous IPC | Current MVP daemon for `lookup/readdir/read/write/mkdir/create/unlink` over ext4 extents |
+| **Ext4 Filesystem Daemon** | Synchronous IPC | Ring-3 daemon for `lookup/readdir/read/write/mkdir/create/unlink/rmdir` over ext4 extents. HTree O(log n) directory indexing with ext4 hash_name_2(). JBD2 ordered-mode journaling with crash recovery. |
 | **Network Stack** | Zero-copy shared buffers | TCP/IP processing on VirtIO-net ring buffers mapped into application address space |
 | **Block Driver (VirtIO-blk)** | Polled I/O | Currently Ring 0; submits I/O descriptors to VirtIO virtqueues; polled completion |
 | **USB/Input Driver (XHCI)** | Asynchronous IPC | Manages XHCI host controller rings; delivers HID events via IPC ports |
@@ -261,11 +261,11 @@ There is **no Server Manager (PID 1)** in the current implementation. The kernel
 4. **Audit ring:** `capability::init_audit()` — initializes the ~6KB audit buffer
 5. **Graphics:** Framebuffer console with blue background
 6. **Drivers:** VirtIO block device enumeration via PCI
-7. **Filesystem:** FAT32/ext2/ext4 registration, VFS mount table (`/` and `/dev/`), page cache, ext4d ELF inserted into VFS root
+7. **Filesystem:** FAT32/ext2/ext4 registration, VFS mount table (`/` and `/dev/`), page cache, /mnt directory, ext4d ELF inserted into VFS root
 8. **LES policy:** Default deny rules loaded (`/etc/shadow`, `/proc/serix/cap-audit`)
 9. **Scheduler:** Per-CPU run queues initialized; core type detected
 10. **SMP:** LAPIC timer started; AP bootstrap callbacks registered; `AP_READY_PTR` signaled
-11. **User tasks:** ext4d daemon spawned (ext4 filesystem), policyd daemon spawned (LES policy engine with TOML config), kshell (kernel-resident Ring-0 shell)
+11. **User tasks:** ext4d daemon spawned (ext4 filesystem with JBD2 journal recovery), auto-mount ext4 at `/mnt` (single-partition probe), policyd daemon spawned (LES policy engine with TOML config), kshell (kernel-resident Ring-0 shell)
 12. **Idle loop:** `hlt()` in a loop; preempted by LAPIC timer interrupts (~625 Hz)
 
 ## 11. Subsystem Documentation Index

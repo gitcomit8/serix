@@ -1,8 +1,124 @@
-# FAT32 Filesystem Driver
+# Filesystem Drivers
 
 ## Overview
 
-The `fs` crate implements a minimal FAT32 filesystem driver for the Serix operating system. It operates in Ring 0 and performs block I/O through the VirtIO block device driver. The implementation is fully `#![no_std]` with no external FAT library dependencies -- all BPB parsing, FAT table operations, directory entry handling, and file I/O are implemented from scratch.
+The `fs` crate implements filesystem drivers and abstractions for the Serix operating system. It currently includes:
+
+- **FAT32**: Full read/write driver with LFN support, FAT cluster chain management
+- **ext2**: Basic parser and stub support
+- **ext4**: Ring-3 daemon backed (`ext4d`) with HTree indexing and JBD2 journaling
+
+## Crate Structure
+
+```
+fs/
+├── lib.rs        # BlockDev trait, FsDriver registry, probe_and_mount, VirtioBlockDev
+├── fat32/        # FAT32 driver (BPB parsing, FAT table, directory entries)
+├── ext2/         # ext2 driver (superblock, inode, directory)
+├── ext4/         # ext4 support
+│   ├── mod.rs    # Driver registration, probe/mount, kernel stub
+│   ├── superblock.rs # ext4 superblock parser
+│   ├── inode.rs  # Inode read/write with extent tree support
+│   ├── extent.rs # Extent tree block resolution (inline + multi-level)
+│   ├── dir.rs    # Directory entry parser (lookup, readdir, mkdir, unlink, rmdir)
+│   ├── htree.rs  # HTree directory indexing (hash, tree traversal, index creation)
+│   ├── journal.rs # JBD2 journal (superblock, transactions, recovery replay)
+│   ├── ipc.rs    # IPC protocol constants (message IDs, port numbers)
+│   ├── format.rs # Disk formatting helpers
+│   └── kernel_stub.rs # VFS INode stubs that proxy to ext4d daemon
+├── ext4d/        # Ring-3 ext4 filesystem daemon (separate crate)
+├── policy/       # Policy engine for access control
+└── block_cache.rs # LRU-ish block device caching
+```
+
+## Filesystem Registry
+
+The kernel registers filesystem drivers at boot and uses `probe_and_mount()` to detect and mount a filesystem on a block device:
+
+```rust
+// Register drivers
+fs::fat32::init();
+fs::ext2::init();
+fs::ext4::init();
+
+// Probe and auto-mount (after ext4d is spawned)
+if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev)) {
+    vfs::mount("/mnt", root_ino);
+}
+```
+
+`probe_and_mount()` iterates registered drivers, calls each driver's `probe()` to detect the filesystem type, then calls `mount()` to return the root INode.
+
+## ext4 Architecture
+
+### Ring-3 Daemon Model
+
+Unlike FAT32 (which runs entirely in Ring 0), ext4 uses a **Ring-3 daemon** model. The kernel maintains only IPC stubs that forward VFS operations to `ext4d` via synchronous IPC:
+
+```
+kshell/other Ring-0 task
+        |
+        | VFS syscall (open, read, write, mkdir, etc.)
+        |
+   Kernel ext4 stub (kernel_stub.rs)
+        |
+        | IPC: SYS_SEND → EXT4_REQ_PORT (0x4E00)
+        |
+   ext4d daemon (Ring 3)
+        |
+        | read/write_block() on /dev/sda
+        |
+   VirtIO block device
+```
+
+The daemon parses the ext4 on-disk format (superblock, BGDT, inodes, extent trees) and serves operations via IPC. This keeps the complex ext4 implementation isolated from the kernel.
+
+### HTree Directory Indexing
+
+ext4 directories can use a **hash tree** (HTree) for O(log n) lookups instead of linear scanning:
+
+- **Hash function**: ext4 `hash_name_2()` — Jenkins one-at-a-time with character-dependent bit rotation
+- **dx_root**: Header in the first directory block containing the hash version, entry count, and pointer to leaf block
+- **dx_node**: Multi-level index nodes for large directories
+- **Leaf blocks**: Contain the actual directory entries (name, inode number)
+
+Index creation (`create_htree_index()`):
+1. Allocates a dx_root header in the first data block
+2. Allocates a separate leaf block for "." and ".." entries
+3. Updates the inode's extent tree (2 extent entries: index block + leaf block)
+
+Automatic conversion (`maybe_convert_to_htree()`):
+- Triggers when directory entry count ≥ 3
+- Called after `add_entry()` in directory operations
+
+### JBD2 Journal
+
+The ext4 driver includes a **JBD2 (Journaling Block Device 2)** implementation in ordered mode:
+
+- **Journal superblock**: Magic number, blocksize, head/tail pointers, sequence numbers
+- **Transactions**: Begin → buffer metadata → commit (write header + buffers + commit record)
+- **Crash recovery**: Scans journal for valid transaction sequences, replays committed blocks to original locations
+- **Journal integration**: Every mutating operation (write, mkdir, create, unlink, rmdir) begins a transaction and commits on completion
+
+Journal layout on disk:
+```
+Journal blocks (64 blocks, 256 KB with 4 KB block size)
+┌─────────────────┐
+│ Journal Superblock │
+├─────────────────┤
+│ Transaction N    │
+│   Header         │
+│   Block buffers  │
+│   Commit record  │
+├─────────────────┤
+│ Transaction N+1  │
+│   ...            │
+└─────────────────┘
+```
+
+## FAT32 Driver
+
+[Original FAT32 documentation continues below...]
 
 The driver supports:
 

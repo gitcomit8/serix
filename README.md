@@ -33,7 +33,10 @@ Alt text: "Terminal recording showing QEMU boot of Serix kernel with serial cons
 - ELF loader for statically linked userspace binaries
 - 19 syscalls: process (exit, yield, getpid, getppid, spawn, wait), fd I/O (open, close, read, write, seek, dup, dup2, pipe, getdents), IPC (send, recv, recv_block, create_port, create_notification_port, notify), filesystem (mkdir, unlink, rmdir, format), memory (mmap, munmap)
 - FAT32 filesystem with mkdir/unlink, LFN support
-- ext4 Ring-3 daemon (`ext4d`) with kernel IPC stubs (superblock, inode, extent tree, read/write/mkdir/unlink)
+- ext4 Ring-3 daemon (`ext4d`) with kernel IPC stubs (superblock, inode, extent tree, read/write/mkdir/unlink/rmdir)
+- ext4 HTree O(log n) directory indexing with Jenkins one-at-a-time hash
+- ext4 JBD2 ordered-mode journaling with crash recovery and commit writeback
+- Auto-mount ext4 filesystem at boot (detected on /dev/sda, mounted at /mnt)
 - VirtIO 1.0 block device driver with PCI enumeration
 - IPC port-based message passing with blocking receive and async notification ports
 - LES (Least-Elevated Security) bridge: declarative policy engine + audit log

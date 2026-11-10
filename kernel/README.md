@@ -29,43 +29,33 @@ The `_start()` function is the kernel's entry point, called by the Limine bootlo
 ### Initialization Sequence
 
 ```
-1. Serial Console Initialization
-   ↓
-2. APIC & Interrupt Controller Setup
-   ↓
-3. IDT (Interrupt Descriptor Table) Setup
-   ↓
-4. Interrupt Enable
-   ↓
-5. Timer Hardware Initialization
-   ↓
-6. Framebuffer Acquisition
-   ↓
-7. Memory Map Processing
-   ↓
-8. Page Table Initialization
-   ↓
-9. Frame Allocator Setup
-   ↓
-10. Heap Initialization
+ 1. Serial Console Initialization
     ↓
-10a. MMIO Mapping (LAPIC, IOAPIC)
+ 2. APIC & Interrupt Controller Setup
     ↓
-10b. PCI Enumeration + VirtIO Init
+ 3. IDT (Interrupt Descriptor Table) Setup
     ↓
-10c. SLUB Allocator Init
+ 4. Interrupt Enable
     ↓
-10d. VirtIO Queue Setup + Interrupt Registration
+ 5. Executor Init
     ↓
-10e. FAT32 Mount + VFS Root
+ 6. Memory Init (page tables, frame allocator)
     ↓
-10f. FD Table Smoke Test
+ 7. Audit Ring Init
     ↓
-11. Graphics Console Initialization
+ 8. Graphics (framebuffer, blue screen)
     ↓
-12. Scheduler Initialization
+ 9. Drivers (VirtIO block, PCI)
     ↓
-13. Main Kernel Loop
+10. Filesystem (FAT32/ext2/ext4 registration, VFS mount table, /mnt dir)
+    ↓
+11. LES Policy Init (default deny rules)
+    ↓
+12. Scheduler Init (ext4d spawn, auto-mount /mnt, kshell, policyd)
+    ↓
+13. SMP (LAPIC timer, AP bootstrap)
+    ↓
+14. Main Kernel Loop
 ```
 
 ### Detailed Phase Breakdown
@@ -268,18 +258,28 @@ init_console(fb.addr(), fb.width() as usize, fb.height() as usize, fb.pitch() as
 - Scrolling support
 - Global `fb_println!` macro support
 
-#### Phase 13: Scheduler Initialization, FAT32 Mount, and Validation
+#### Phase 12: Scheduler Initialization, Task Spawning, and Auto-Mount
 
 ```rust
-Scheduler::init_global();
+init::scheduler::init_scheduler();
 ```
 
-**Purpose**: Initializes the global task scheduler and validates subsystems:
+**Purpose**: Initialize the global task scheduler, spawn user tasks, and auto-mount ext4:
 
-- Creates global scheduler instance with preemptive round-robin scheduling
-- Mounts FAT32 filesystem from VirtIO-blk disk image
-- Initializes file descriptor table and validates open/close/seek operations
-- Spawns IPC producer/consumer test tasks to validate blocking message passing
+- Creates global scheduler instance with per-CPU run queues
+- Spawns ext4d daemon (Ring-3 ext4 filesystem with JBD2 journal recovery)
+- **Auto-mount**: `fs::probe_and_mount()` detects ext4 on `/dev/sda`, mounts at `/mnt`
+- Spawns kshell (kernel shell)
+- Spawns policyd daemon (LES policy engine)
+
+**Mount table after init**:
+```
+/       → RamDir (embedded ELF files)
+/dev/   → RamDir (/dev/sda)
+/mnt    → Ext4DirStub (ext4 daemon proxy, if filesystem detected)
+```
+
+**Fallback**: If no ext4 detected, `/mnt` remains empty; user can manually `mount /dev/sda /mnt`
 
 #### Phase 14: Main Loop
 
@@ -356,7 +356,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 - **ipc**: Inter-process communication ports
 - **loader**: ELF binary loader
 - **keyboard**: PS/2 keyboard driver
-- **fs**: FAT32 filesystem driver
+- **fs**: Filesystem drivers (FAT32, ext2, ext4 stubs), ext4 HTree indexing, JBD2 journaling, block device registry
 - **capability**: Capability-based security
 
 ### External Crates
@@ -437,23 +437,23 @@ IDT Setup
     ↓
 Enable Interrupts
     ↓
-Timer Init
+Executor Init
     ↓
-Acquire Framebuffer
+Memory Init
     ↓
-Acquire Memory Map
+Audit Ring Init
     ↓
-Initialize Paging
+Graphics (blue screen)
     ↓
-Setup Frame Allocator
+Drivers (VirtIO)
     ↓
-Map & Initialize Heap
+Filesystem Init (VFS, mount table, /mnt)
     ↓
-Blue Screen + Memory Viz
+LES Policy Init
     ↓
-Console Init
+Scheduler Init (ext4d, auto-mount /mnt, kshell, policyd)
     ↓
-Scheduler Init
+SMP (AP bootstrap)
     ↓
 Main Loop (HLT)
 ```
