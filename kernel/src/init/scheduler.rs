@@ -9,6 +9,7 @@
  * - Spawning ext4d daemon and kshell
  */
 
+use alloc::sync::Arc;
 use task::Scheduler;
 use hal::serial_println;
 
@@ -50,6 +51,22 @@ pub fn init_scheduler() {
 			serial_println!("ext4d: spawn failed: {}", e);
 			graphics::fb_println!("ext4d: spawn failed");
 		}
+	}
+
+	/* Auto-mount: probe /dev/sda for a known filesystem.
+	 * Single-partition assumption: the entire disk.img is one filesystem.
+	 * ext4d must be running first since mount() returns Ext4DirStub
+	 * which requires IPC to handle lookups.
+	 * We mount at /mnt so that embedded ELF files on RamDir (/) remain
+	 * accessible for spawning kshell and policyd.
+	 * If detection fails, fall back to RamDir at / (no breakage). */
+	if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev)) {
+		serial_println!("VFS: auto-mounted filesystem at /mnt (single-partition)");
+		graphics::fb_println!("VFS: /mnt mounted (auto-detected)");
+		vfs::mount("/mnt", root_ino);
+	} else {
+		serial_println!("VFS: no filesystem detected on /dev/sda, using RamDir fallback");
+		graphics::fb_println!("VFS: RamDir fallback (run 'mount /dev/sda /mnt' manually)");
 	}
 
 	/* Spawn the built-in kernel shell */

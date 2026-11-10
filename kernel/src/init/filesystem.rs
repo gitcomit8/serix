@@ -63,7 +63,7 @@ pub fn init_filesystem() {
 	if let Some(dev_dir) = vfs::lookup_path("/dev/") {
 		dev_dir.insert("sda", sda).ok();
 		serial_println!("VFS: /dev/sda available");
-		graphics::fb_println!("VFS: /dev/sda ready — run 'mount /dev/sda /' to attach ext2");
+		graphics::fb_println!("VFS: /dev/sda ready");
 	}
 
 	/* Insert ext4d daemon ELF into VFS root */
@@ -124,6 +124,15 @@ required_rights = \"READ,WRITE,LOOKUP\"\
 					}
 					serial_println!("policy.toml: default config inserted at /etc/serix/policy.toml");
 				}
+			}
+		}
+	}
+
+	/* Create /mnt/ directory for auto-mounted ext4 filesystem */
+	{
+		if let Some(root) = vfs::lookup_path("/") {
+			if root.mkdir("mnt").is_ok() {
+				serial_println!("VFS: /mnt/ directory created");
 			}
 		}
 	}
