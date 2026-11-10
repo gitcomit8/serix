@@ -328,6 +328,9 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 		}
 
 		proto::MSG_MKDIR => {
+			/* Begin journal transaction */
+			state.journal.begin_transaction(state.dev);
+
 			let parent_ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
 			let nlen = d[4] as usize;
 			let nlen_clamped = nlen.min(112);
@@ -390,6 +393,18 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 				blk,
 			);
 			child.write(state.dev, &state.sb, &state.bgdt);
+
+			/* Create HTree index for the new directory */
+			let mut child_for_htree =
+				Inode::read(state.dev, &state.sb, &state.bgdt, child_ino).unwrap();
+			let _ = fs::ext4::htree::create_htree_index(
+				state.dev,
+				&mut state.sb,
+				&mut state.bgdt,
+				&mut child_for_htree,
+			);
+			child_for_htree.write(state.dev, &state.sb, &state.bgdt);
+
 			let mut parent = match Inode::read(state.dev, &state.sb, &state.bgdt, parent_ino) {
 				Some(i) => i,
 				None => {
@@ -409,10 +424,27 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 			let g = state.sb.inode_block_group(parent_ino) as usize;
 			state.bgdt.get_mut(g).used_dirs += 1;
 			state.bgdt.write_entry(state.dev, &state.sb, g);
+
+			/* Buffer modified inodes for journaling */
+			let mut child_buf = alloc::vec![0u8; bsz];
+			child_for_htree.serialize(&mut child_buf);
+			state.journal.journal_write(child_ino, child_buf);
+			let mut parent_buf = alloc::vec![0u8; bsz];
+			parent.serialize(&mut parent_buf);
+			state.journal.journal_write(parent_ino, parent_buf);
+			state.bgdt.write_entry(state.dev, &state.sb, g);
+			child.write(state.dev, &state.sb, &state.bgdt);
+			parent.write(state.dev, &state.sb, &state.bgdt);
+
+			/* Commit journal transaction */
+			state.journal.commit_transaction(state.dev);
 			reply.data[0..4].copy_from_slice(&child_ino.to_le_bytes());
 		}
 
 		proto::MSG_CREATE => {
+			/* Begin journal transaction */
+			state.journal.begin_transaction(state.dev);
+
 			let parent_ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
 			let nlen = d[4] as usize;
 			let nlen_clamped = nlen.min(112);
@@ -452,10 +484,25 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 				child_ino,
 				dir::EXT4_FT_REG_FILE,
 			);
+
+			/* Buffer modified inodes for journaling */
+			let bsz = state.sb.block_size();
+			let mut child_buf = alloc::vec![0u8; bsz];
+			child.serialize(&mut child_buf);
+			state.journal.journal_write(child_ino, child_buf);
+			let mut parent_buf = alloc::vec![0u8; bsz];
+			parent.serialize(&mut parent_buf);
+			state.journal.journal_write(parent_ino, parent_buf);
+
+			/* Commit journal transaction */
+			state.journal.commit_transaction(state.dev);
 			reply.data[0..4].copy_from_slice(&child_ino.to_le_bytes());
 		}
 
 		proto::MSG_UNLINK => {
+			/* Begin journal transaction */
+			state.journal.begin_transaction(state.dev);
+
 			let parent_ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
 			let nlen = d[4] as usize;
 			let nlen_clamped = nlen.min(112);
@@ -502,12 +549,27 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 			child.write(state.dev, &state.sb, &state.bgdt);
 
 			bitmap_alloc::free_inode(state.dev, &mut state.sb, &mut state.bgdt, child_ino);
-			let parent2 = Inode::read(state.dev, &state.sb, &state.bgdt, parent_ino).unwrap();
+			let mut parent2 =
+				Inode::read(state.dev, &state.sb, &state.bgdt, parent_ino).unwrap();
 			dir::remove_entry(state.dev, &state.sb, &state.bgdt, &parent2, name);
+
+			/* Buffer modified inodes for journaling */
+			let mut child_buf = alloc::vec![0u8; bsz];
+			child.serialize(&mut child_buf);
+			state.journal.journal_write(child_ino, child_buf);
+			let mut parent2_buf = alloc::vec![0u8; bsz];
+			parent2.serialize(&mut parent2_buf);
+			state.journal.journal_write(parent_ino, parent2_buf);
+
+			/* Commit journal transaction */
+			state.journal.commit_transaction(state.dev);
 			reply.data[0] = 0;
 		}
 
 		proto::MSG_RMDIR => {
+			/* Begin journal transaction */
+			state.journal.begin_transaction(state.dev);
+
 			let parent_ino = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
 			let nlen = d[4] as usize;
 			let nlen_clamped = nlen.min(112);
@@ -524,8 +586,20 @@ fn handle(state: &mut State, req: &IpcMsg, reply: &mut IpcMsg) {
 
 			match dir::rmdir(state.dev, &mut state.sb, &mut state.bgdt, &mut parent, name) {
 				Ok(()) => reply.data[0] = 0,
-				Err(_) => reply.data[0] = 1,
+				Err(_) => {
+					reply.data[0] = 1;
+					return;
+				}
 			}
+
+			/* Buffer modified parent inode for journaling */
+			let bsz = state.sb.block_size();
+			let mut parent_buf = alloc::vec![0u8; bsz];
+			parent.serialize(&mut parent_buf);
+			state.journal.journal_write(parent_ino, parent_buf);
+
+			/* Commit journal transaction */
+			state.journal.commit_transaction(state.dev);
 		}
 
 		_ => {
@@ -592,6 +666,9 @@ fn main() -> ! {
 		bgdt,
 		journal,
 	};
+
+	/* Recover from crash if journal needs it */
+	state.journal.recover(state.dev);
 
 	/* Main service loop */
 	loop {
