@@ -1,0 +1,40 @@
+name: Subsystem proposal
+description: Propose a kernel, userspace, or hardware subsystem
+title: "[Proposal]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and motivation
+      description: What concrete problem should this subsystem solve?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed scope
+      description: Describe the smallest useful implementation and what is out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Kernel/userspace boundary
+      description: Identify Ring 0 and Ring 3 responsibilities, IPC, and required capabilities.
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Runtime invariants and failure behavior
+      description: State what must remain true and how failures are contained.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Describe QEMU or hardware evidence that would demonstrate completion.
+    validations:
+      required: true

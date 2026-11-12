@@ -1,6 +1,6 @@
 # Serix Kernel Architecture
 
-> **Target ISA:** x86_64 (AMD64) · **Privilege Model:** Ring 0 / Ring 3 Hybrid · **Current Release:** v0.0.6
+> **Target ISA:** x86_64 (AMD64) · **Privilege Model:** Ring 0 kernel with selected Ring 3 services · **Current Release:** v0.0.8
 
 ## Table of Contents
 
@@ -19,10 +19,10 @@
 
 ## 1. Executive Summary
 
-Serix is a **hybrid-kernel** operating system written in `#![no_std]` Rust for the x86_64 architecture. The kernel enforces a **capability-based security model** and provides a **Least-Elevated Security (LES)** bridge — a declarative policy engine that gates resource access on cryptographic capabilities.
+Serix is an experimental x86_64 operating system written in `#![no_std]` Rust. “Hybrid” is an imprecise label for its current design: core services and the VirtIO block driver run in Ring 0, while `ext4d` and `policyd` are Ring 3 processes. The kernel has capability-gated syscall and IPC paths; the broader design is still evolving.
 
 - The architecture pins latency-critical subsystems (SMP scheduler, VFS, Memory Manager, IPC Router) in **Ring 0** for deterministic dispatch.
-- Crash-prone and high-latency subsystems (device drivers, filesystem daemons, network stack) are isolated as **Ring 3 userspace servers** communicating via synchronous/asynchronous IPC.
+- `ext4d` and `policyd` are **Ring 3** processes. A userspace driver framework and network stack are planned, not implemented.
 - The **LES bridge** evaluates a local deny/allow policy at syscall entry; for paths not covered by the local snapshot, the kernel queries a Ring-3 policy daemon (`policyd`).
 - A **capability-based access control system** with per-task cspace, delegation, revocation cascading, and audit logging ensures no resource access bypasses the `CapabilityStore`.
 
@@ -45,21 +45,17 @@ These modules execute in supervisor mode with direct access to CR3, MSRs, and MM
 | **Interrupt Dispatcher** | `idt/`, `apic/` | IDT vectors, LAPIC/I/O APIC programming, EOI signaling |
 | **Capability Store** | `capability/` | `BTreeMap`-backed capability validation on every syscall/IPC boundary |
 | **Syscall Entry** | `kernel/` | `SYSCALL`/`SYSRET` trampoline; MSR configuration (`LSTAR`, `STAR`, `SFMASK`, `EFER.SCE`) |
-| **Filesystem Core (FAT32/ext2/ext4 stub)** | `fs/` | In-kernel VFS-facing filesystem drivers and ext4 IPC stubs. ext4 uses Ring-3 daemon model; FAT32/ext2 run in Ring 0. Auto-mount ext4 at boot (mounted at /mnt). |
+| **Filesystem Core (FAT32 and ext4 proxy)** | `fs/` | FAT32 currently runs in Ring 0. ext4 VFS proxy stubs forward operations to `ext4d`; ext4 support is partial. |
 
 ### 2.2 Ring 3 — Userspace Server Processes
 
-These subsystems run as isolated processes in their own address spaces. Faults in any server trigger process-level restart without kernel panic.
+These subsystems run as isolated processes in their own address spaces. Process-level restart policy is not yet a general service-manager guarantee.
 
 | Server | Transport | Description |
 |---|---|---|
-| **Ext4 Filesystem Daemon** | Synchronous IPC | Ring-3 daemon for `lookup/readdir/read/write/mkdir/create/unlink/rmdir` over ext4 extents. HTree O(log n) directory indexing with ext4 hash_name_2(). JBD2 ordered-mode journaling with crash recovery. |
-| **Network Stack** | Zero-copy shared buffers | TCP/IP processing on VirtIO-net ring buffers mapped into application address space |
-| **Block Driver (VirtIO-blk)** | Polled I/O | Currently Ring 0; submits I/O descriptors to VirtIO virtqueues; polled completion |
-| **USB/Input Driver (XHCI)** | Asynchronous IPC | Manages XHCI host controller rings; delivers HID events via IPC ports |
-| **Display Server (GOP)** | Shared framebuffer | Composites client surfaces onto UEFI GOP linear framebuffer |
-| **POSIX-to-Capability Bridge** | Synchronous IPC | Translates `UID`/`GID`/`mode` DAC checks into `CapabilityHandle` tickets |
-| **Server Manager (PID 1)** | — | Bootstrap orchestrator; constructs dependency DAG; see [§10](#10-initialization--server-manager-pid-1) |
+| **Ext4 filesystem daemon** | Queued IPC | Ring 3 `ext4d` handles a partial set of VFS operations; it is not a complete or recovery-validated ext4 implementation. |
+| **Policy daemon** | Queued IPC | Ring 3 `policyd` handles policy queries where applicable. |
+| **Planned device services** | — | No BlockDaemon, NetDaemon, InputDaemon, or general driver manager is implemented. |
 
 ### 2.3 Ring Transition ABI
 
@@ -143,8 +139,8 @@ The LES provides a declarative access control mechanism. At boot, the kernel loa
 - **Ports:** Each IPC endpoint is a `Port` — a `Mutex<VecDeque<Message>>` with a configurable depth (default 32).
 - **Messages:** Fixed 128-byte payload (`Message { sender_id, id, len, data: [u8; 128] }`).
 - **IPC Space:** A global `BTreeMap<PortId, Port>` registry (`IPC_GLOBAL`) for port lookup.
-- **Operations:** `send(port_id, msg)` enqueues; `receive(port_id)` dequeues (currently non-blocking; blocking semantics planned via scheduler integration).
-- **Blocking Receive:** `receive_blocking()` suspends the calling task (sets `TaskState::Blocked`) until a message arrives; `send()` wakes the first blocked receiver.
+- **Operations:** `send(port_id, msg)` enqueues; `receive(port_id)` dequeues without blocking.
+- **Blocking Receive:** `receive_blocking()` suspends the calling task until a message arrives; `send()` wakes a waiting receiver. This is asynchronous queued IPC, not synchronous rendezvous: the sender does not wait for receiver acceptance. A direct-injection fast path is available when a receiver is already blocked.
 
 ### 5.2 IPC Wake-up Path
 
@@ -193,17 +189,13 @@ pub struct TaskCB {
 
 ## 7. Hardware & Driver Ecosystem
 
-Serix discards legacy vendor-specific driver support. All hardware interaction targets **standardized interfaces** exclusively.
+Serix currently has a small set of hardware paths; it does not yet provide a general driver framework.
 
 ### 7.1 Supported Hardware Interfaces
 
 | Interface | Bus | Driver Location | Use Case |
 |---|---|---|---|
-| **NVMe** | PCIe | Ring 3 server | Persistent block storage (submission/completion queue pairs) |
-| **XHCI** | PCIe | Ring 3 server | USB host controller; HID input devices |
-| **UEFI GOP** | Firmware | Ring 0 (boot) / Ring 3 (runtime) | Linear framebuffer; display output |
-| **VirtIO-blk** | PCIe (virtio) | Ring 3 server | Virtualized block device (QEMU/KVM) |
-| **VirtIO-net** | PCIe (virtio) | Ring 3 server | Virtualized network device (QEMU/KVM) |
+| **VirtIO-blk** | PCIe (virtio) | Ring 0 | Virtualized block device (QEMU/KVM) |
 | **LAPIC / I/O APIC** | MMIO | Ring 0 (`apic/`) | Interrupt routing; timer; IPI for SMP |
 | **PS/2 Controller** | I/O port | Ring 0 (`keyboard/`) | Legacy keyboard input (fallback for non-XHCI) |
 
@@ -217,7 +209,7 @@ The intended architecture is:
 - DMA buffers would be allocated by the kernel Memory Manager and registered in the IOMMU (when implemented) before being shared with the driver process.
 - Driver–kernel communication would occur exclusively through IPC ports.
 
-**Current reality:** The VirtIO-blk driver runs in Ring 0 (`drivers/` crate). The ext4 filesystem daemon runs in Ring 3 (`ext4d`), but it is a VFS proxy, not a hardware driver. No Ring 3 driver server framework or MMIO BAR mapping into userspace exists yet.
+**Current reality:** The VirtIO-blk driver runs in Ring 0 (`drivers/` crate). Its MMIO BAR access and DMA queue setup are kernel-owned, using HHDM physical addresses without IOMMU isolation. `ext4d` is a filesystem server, not a hardware driver. No userspace driver framework or MMIO/DMA delegation exists yet.
 
 ## 8. Zero-Copy Networking Stack
 
@@ -261,11 +253,11 @@ There is **no Server Manager (PID 1)** in the current implementation. The kernel
 4. **Audit ring:** `capability::init_audit()` — initializes the ~6KB audit buffer
 5. **Graphics:** Framebuffer console with blue background
 6. **Drivers:** VirtIO block device enumeration via PCI
-7. **Filesystem:** FAT32/ext2/ext4 registration, VFS mount table (`/` and `/dev/`), page cache, /mnt directory, ext4d ELF inserted into VFS root
+7. **Filesystem:** VFS and filesystem registration, mount setup, `/mnt`, and the ext4d executable image
 8. **LES policy:** Default deny rules loaded (`/etc/shadow`, `/proc/serix/cap-audit`)
 9. **Scheduler:** Per-CPU run queues initialized; core type detected
 10. **SMP:** LAPIC timer started; AP bootstrap callbacks registered; `AP_READY_PTR` signaled
-11. **User tasks:** ext4d daemon spawned (ext4 filesystem with JBD2 journal recovery), auto-mount ext4 at `/mnt` (single-partition probe), policyd daemon spawned (LES policy engine with TOML config), kshell (kernel-resident Ring-0 shell)
+11. **User tasks:** `ext4d` and `policyd` are spawned where configured; ext4 support remains partial and does not claim complete JBD2 recovery. kshell is kernel-resident.
 12. **Idle loop:** `hlt()` in a loop; preempted by LAPIC timer interrupts (~625 Hz)
 
 ## 11. Subsystem Documentation Index

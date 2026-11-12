@@ -38,8 +38,7 @@ We are committed to providing a welcoming and inclusive environment for all cont
 
 Before you begin, ensure you have the following installed:
 
-- **Rust Nightly Toolchain**: Install via `rustup default nightly`
-- **Target Support**: `rustup target add x86_64-unknown-none`
+- **Rust nightly** with `rust-src` and target `x86_64-unknown-none`: `rustup toolchain install nightly --component rust-src --target x86_64-unknown-none`. The repository pins the nightly channel in `rust-toolchain.toml`.
 - **GNU Make**: For build automation
 - **QEMU**: `qemu-system-x86_64` for testing
 - **xorriso**: For ISO image creation
@@ -72,7 +71,7 @@ Before you begin, ensure you have the following installed:
    make run
    ```
 
-   You should see a **solid blue screen** in QEMU upon successful boot.
+   Verify the serial output shows the boot and subsystem initialization checkpoints. A framebuffer console should also appear in QEMU.
 
 ## Development Setup
 
@@ -186,9 +185,7 @@ Serix follows specific coding conventions that differ from standard Rust in some
 
 - **`#![no_std]` everywhere**: This is a kernel environment, no standard library
 - **`extern crate alloc`**: Use after heap initialization for `Vec`, `Box`, `String`
-- **`unsafe` blocks**: Common for hardware access (I/O ports, MSRs, MMIO)
-  - Always document why `unsafe` is needed
-  - Keep unsafe blocks as small as possible
+- **`unsafe` blocks**: Every unsafe block must have an immediately preceding `// SAFETY:` comment explaining why its specific safety requirements are met. Keep unsafe blocks as small as possible.
 - **`static` + `Once`/`Mutex`**: Pattern for global state
 - **Error handling**: Use `Result` types where possible
 
@@ -332,9 +329,11 @@ build instructions, and commit message format.
 
 ### Before Submitting
 
-1. **Create a feature branch**:
+1. **Create a feature branch from `dev`**:
 
    ```bash
+   git checkout dev
+   git pull origin dev
    git checkout -b feature/my-new-feature
    ```
 
@@ -354,6 +353,8 @@ build instructions, and commit message format.
    # Verify boot succeeds and your changes work as expected
    ```
 
+   Check the serial output for expected initialization checkpoints and include the relevant output in the pull request when it supports a runtime claim.
+
 5. **Commit with descriptive messages** (see Commit Guidelines)
 
 6. **Update documentation** if needed:
@@ -369,7 +370,7 @@ build instructions, and commit message format.
    git push origin feature/my-new-feature
    ```
 
-2. **Create Pull Request** on GitHub
+2. **Create Pull Request** on GitHub with base branch `dev`
 
 3. **Fill out the PR template** completely:
    - Describe what the PR does
@@ -461,7 +462,7 @@ When asking for help:
 
 ### Reporting Bugs
 
-See our [bug report template](.github/ISSUE_TEMPLATE/bug_report.md) for details on what information to include.
+See our [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml) for the required QEMU command line, host OS/KVM status, and serial panic trace.
 
 ### Suggesting Features
 
@@ -469,13 +470,9 @@ See our [feature request template](.github/ISSUE_TEMPLATE/feature_request.md) to
 
 ## License
 
-By contributing to Serix, you agree that your contributions will be licensed under the [GNU General Public License v3.0](LICENSE).
+By contributing to Serix, you agree that your contributions will be licensed under the project's [MIT OR Apache-2.0 terms](LICENSE), unless a contribution explicitly states otherwise.
 
-All contributions must:
-
-- Be your original work or properly attributed
-- Not contain proprietary or copyrighted code without permission
-- Comply with the GPLv3 license terms
+Contributions must be your original work or properly attributed and must not include proprietary or copyrighted code without permission.
 
 ## Thank You!
 
