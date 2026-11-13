@@ -8,15 +8,21 @@ Serix is an experimental x86_64 operating system written in `#![no_std]` Rust. I
 
 | Subsystem | Status | What runs today |
 |---|---|---|
-| APIC | **Implemented & Tested in QEMU** | Local APIC, I/O APIC routing, legacy PIC masking, and LAPIC periodic timer. PIT/HPET are not used as the runtime timer. |
+| APIC | **Implemented & Tested in QEMU** | Local APIC, I/O APIC routing, legacy PIC masking, LAPIC periodic timer, and x2APIC mode when CPUID exposes it, including fixed-IPI send with acknowledged per-CPU mailboxes. PIT/HPET are not used as the runtime timer. |
 | PIT / HPET | **Planned / Stubbed** | No PIT or HPET timer driver; scheduling ticks use the LAPIC timer. |
-| SMP AP startup | **Implemented & Tested in QEMU** | Limine MP starts AP callbacks; APs initialize per-CPU state and enter the idle loop. Maximum configured per-CPU slots: 16. |
-| PCI enumeration | **Implemented & Tested in QEMU** | Configuration-space scan enumerates PCI devices and supplies VirtIO block discovery. This is not a general hotplug or PCI resource manager. |
+| SMP AP startup | **Implemented & Tested in QEMU** | Limine MP starts AP callbacks; APs initialize per-CPU state, per-CPU WFQ run queues, and priority inheritance, then enter the idle loop. Maximum configured per-CPU slots: 16; work stealing is not validated. |
+| PCI enumeration | **Implemented & Tested in QEMU** | Configuration-space scan enumerates PCI devices, supplies VirtIO block discovery, and provides bounded MSI-X layout metadata for NVMe/xHCI inventory. MSI-X is not enabled or assigned, and there is no hotplug or resource manager. |
+| ACPI | **Partial** | RSDP/root-table validation plus MADT, FADT, and DMAR decoding are used for boot-time topology discovery. Not yet used for APIC routing, power control, or IOMMU programming. |
+| Capability enforcement | **Partial** | Per-task capability spaces with `(slot, generation)` references, a central per-syscall authorization table, transitive revocation, validation epochs, and a bounded audit ring at `/proc/serix/cap-audit`. File, memory, and IPC send/receive paths validate authority; process-control and port-creation paths are not fully gated yet. |
+| LES policy bridge | **Implemented & Tested in QEMU** | Explicit allow/deny path rules from `/etc/serix/policy.toml` are evaluated in-kernel; unmatched paths and no-policy boots default to allow. `policyd` answers queries when no local snapshot is loaded, and `SYS_POLICY_RELOAD` swaps snapshots transactionally. Audit pagination and device/IPC rules are pending. |
+| VFS & mount table | **Implemented & Tested in QEMU** | `BTreeMap` mount table with longest-prefix resolution, `RamDir`/`RamFile` nodes, `/dev/sda` block-device inode, and auto-mount of the detected filesystem from `/dev/sda` at `/mnt` during boot (RamDir fallback). |
+| FAT32 | **Implemented & Tested in QEMU** | BPB parsing, cluster-chain traversal and allocation, 8.3 + LFN directory entries, file read/write, `mkdir`, and `unlink`; images written by Serix were validated with Linux mount interop. |
+| Page cache & mmap | **Partial** | A 256-page LRU page cache is allocated at boot, and VMA demand paging/CoW is handled on page faults. The cache is not yet used by the FAT32/ext4 read/write paths and has no unified writeback. |
 | Driver Manager | **Planned / Stubbed** | No userspace driver manager or Ring 3 driver-server framework. VirtIO-blk initialization is orchestrated in kernel code. |
 | BlockDaemon | **Planned / Stubbed** | No BlockDaemon. The VirtIO-blk driver runs in Ring 0 and exposes a VFS block-device inode. |
 | NetDaemon | **Planned / Stubbed** | No network driver, network daemon, or TCP/IP stack. |
 | InputDaemon | **Planned / Stubbed** | No InputDaemon. PS/2 keyboard input is handled in Ring 0. |
-| ext4 | **Work-in-Progress / Partial** | `ext4d` is a Ring 3 process with kernel VFS IPC proxies. Current parser and filesystem operations are incomplete; directory indexing, journaling/recovery, and full consistency validation are not acceptance-tested. Do not treat ext4 as production-ready. |
+| ext4 | **Work-in-Progress / Partial** | `ext4d` is a Ring 3 process with kernel VFS IPC proxies, extents, JBD2 journal writeback/recovery, and HTree directory indexing. Interoperability, journal replay after interrupted writes, and malformed-metadata rejection are not acceptance-tested. Do not treat ext4 as production-ready. |
 
 These statuses describe the implementation in this repository, not a compatibility or stability promise. See the [roadmap](docs/ROADMAP.md) for phase goals and completion criteria.
 
