@@ -60,7 +60,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
-	serial_println!("Serix Kernel v0.0.6 Starting.....");
+	serial_println!("Serix Kernel v0.0.8 Starting.....");
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
@@ -162,7 +162,7 @@ pub extern "C" fn _start() -> ! {
 
 	graphics::kprintln!("Timer: LAPIC ~625 Hz started");
 	graphics::kprintln!("");
-	graphics::kprintln!("Serix OS v0.0.6 ready.");
+	graphics::kprintln!("Serix OS v0.0.8 ready.");
 
 	/* Diagnostic: check if keyboard ISR has fired */
 	let isr_count = keyboard::get_isr_fire_count();
