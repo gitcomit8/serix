@@ -18,7 +18,7 @@ Today `kshell` is a Ring 0 kernel task; every command is a match arm, and the on
 
 A recorded session that does all of the following on one boot:
 
-1. The payload disk is attached as a second virtio disk; the kernel finds its FAT32 bootstrap partition by marker and starts `/sbin/init` from it.
+1. The payload disk is attached as a second virtio disk; the kernel finds its bootstrap partition by marker and starts `/sbin/init` from it.
 2. `init` starts `ext4d`, mounts the ext4 userland partition read-only at `/`, and mounts the data partition at `/mnt`.
 3. `init` starts `policyd`, loads `/etc/serix/policy.toml`, and starts `/usr/bin/rsh`.
 4. `rsh` reaches a prompt with no kernel shell involvement; `ls /bin` shows `ls`, `cat`, `echo`, and `core` as names for the same inode.
@@ -41,9 +41,9 @@ These came from the design interview and are not open for reinterpretation here.
 | Executable roots | `/bin` and `/usr/bin`, searched in that order. |
 | Utility packaging | Multiplexed core binary plus standalone ELFs allowed. |
 | Multiplexing | Real hardlinks, argv[0] dispatch. |
-| Payload delivery | Second disk; GPT; FAT32 bootstrap + ext4 userland. |
+| Payload delivery | Second disk; GPT; ext2 bootstrap + ext4 userland. |
 | Payload access | Mounted read-only; never written at runtime. |
-| Payload identification | Marker file on the FAT32 bootstrap partition. |
+| Payload identification | Marker file on the bootstrap partition. |
 | Init | `/sbin/init` from the payload; owns shell, daemons, policy, mounts. |
 | Shell | `/usr/bin/rsh`, built in a separate repo, integrated later. |
 | Shell respawn | Always restart after exit or crash. |
@@ -66,8 +66,8 @@ These came from the design interview and are not open for reinterpretation here.
 
 1. Enumerate PCI and take **all** virtio-blk functions, not just the first.
 2. Read the GPT on each disk and expose `/dev/sda`, `/dev/sda1`, ...; partition devices are block devices offset by partition start.
-3. Probe each FAT32 partition for the marker `/SERIX.MRK`. The first match is the payload bootstrap volume.
-4. Mount that FAT32 partition read-only at `/`. Verify `/sbin/init` and `/sbin/ext4d` exist and are ELF.
+3. Probe each readable partition for the marker `/SERIX.MRK`. The first match is the payload bootstrap volume.
+4. Mount that partition read-only at `/`. Verify `/sbin/init` and `/sbin/ext4d` exist and are ELF.
 5. Mount the RAM directories at `/dev`, `/proc`, `/tmp`, `/root` so they survive the later root remount.
 6. Spawn `/sbin/init` with `parent_id = 0`, passing the boot partition's disk path as `argv[1]`.
 7. If no marker is found, retry for a bounded period (late PCI/USB enumeration), then start `kshell` with a serial explanation.
@@ -82,9 +82,11 @@ The kernel does **not** mount ext4, spawn `ext4d`, spawn `policyd`, or synthesiz
 4. Locate the data disk: the first GPT disk other than the payload disk with an ext4 partition; mount it at `/mnt`. Failure only logs.
 5. Spawn `/usr/bin/rsh` and loop forever: wait for it, log its status, start it again.
 
-### 3.3 Why the FAT32 bootstrap partition exists
+### 3.3 Why the bootstrap partition exists
 
-The kernel has no ext4 reader; the ext4 mount path is an IPC stub whose daemon lives on the payload. A small FAT32 partition that the kernel *can* read breaks that cycle without a second ext4 implementation. Only `/sbin/init` and `/sbin/ext4d` live there.
+The kernel has no ext4 reader; the ext4 mount path is an IPC stub whose daemon lives on the payload. A small partition that the kernel *can* read breaks that cycle without a second ext4 implementation. Only `/sbin/init` and `/sbin/ext4d` live there.
+
+**Implemented as ext2, not FAT32** (decision 11 in section 11). The kernel already has an ext2 reader (`fs/src/ext2/`), which is the only property this partition needs, and building an ext2 image needs only `mke2fs` — already required by `make disk` — while FAT32 would add `mkfs.fat` and `mtools` to the prerequisites. `make payload` builds the image; see [../payload/README.md](../payload/README.md).
 
 ---
 
@@ -201,7 +203,7 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 | Concern | Owner after this milestone |
 |---|---|
 | Disk discovery, GPT, device nodes | kernel |
-| Finding the payload, mounting FAT32 bootstrap at `/` | kernel |
+| Finding the payload, mounting the bootstrap volume at `/` | kernel |
 | Starting `/sbin/init`, fallback to `kshell` | kernel |
 | Mounting ext4 payload and data disks | init, via a mount syscall |
 | Starting and restarting `ext4d`, `policyd`, `rsh` | init |
@@ -292,7 +294,7 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 **Work.**
 
-- [ ] Mount each FAT32 partition read-only in turn and look for `/SERIX.MRK`; unmount candidates that do not match.
+- [ ] Mount each candidate partition read-only in turn and look for `/SERIX.MRK`; unmount candidates that do not match.
 - [ ] Validate that `/sbin/init` and `/sbin/ext4d` exist and start with the ELF magic before committing.
 - [ ] Mount the chosen volume at `/` and keep the mount for init.
 - [ ] Retry the scan for a bounded period, then start `kshell` and print why.
