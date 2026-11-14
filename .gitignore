@@ -10,6 +10,7 @@
 .idea/
 Cargo.lock
 iso_root/*
+iso_root_gdb/*
 
 # Build artifacts
 serix.iso
