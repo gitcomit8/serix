@@ -547,6 +547,93 @@ pub fn serix_umount(cap: CapabilityRef, target: &str) -> i64 {
 }
 
 /*
+ * Initial stack pointer, captured by a program's entry point.
+ *
+ * The kernel lays out argc, argv, envp, and their strings on the stack
+ * (docs/USERLAND.md section 6). A program that wants them calls
+ * capture_args(rsp) as its first instruction, before the prologue moves
+ * the stack pointer.
+ */
+static ARGS_RSP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/*
+ * capture_args - Record the stack pointer a program was entered with
+ * @rsp: Value of RSP at entry to the program's _start
+ */
+pub unsafe fn capture_args(rsp: usize) {
+	ARGS_RSP.store(rsp, core::sync::atomic::Ordering::Relaxed);
+}
+
+/*
+ * argc - Number of arguments the program was started with
+ */
+pub fn argc() -> usize {
+	let rsp = ARGS_RSP.load(core::sync::atomic::Ordering::Relaxed);
+	if rsp == 0 {
+		return 0;
+	}
+	unsafe { *((rsp) as *const u64) as usize }
+}
+
+/*
+ * arg - Borrow argument @index as bytes
+ *
+ * Return: Some(bytes) if the argument exists, None otherwise. The slice
+ * points into the program's own stack and lives as long as it does.
+ */
+pub fn arg(index: usize) -> Option<&'static [u8]> {
+	let rsp = ARGS_RSP.load(core::sync::atomic::Ordering::Relaxed);
+	if rsp == 0 || index >= argc() {
+		return None;
+	}
+	unsafe {
+		let ptr = *((rsp + 8 + index * 8) as *const u64) as *const u8;
+		let mut len = 0usize;
+		while len < 4096 && *ptr.add(len) != 0 {
+			len += 1;
+		}
+		Some(core::slice::from_raw_parts(ptr, len))
+	}
+}
+
+/*
+ * serix_spawn_args - Start a program with an argument vector
+ * @path: Path to the ELF
+ * @argv: Arguments; argv[0] becomes the name the program sees
+ *
+ * Return: child pid on success, negative errno on failure
+ */
+pub fn serix_spawn_args(path: &str, argv: &[&str]) -> i64 {
+	#[repr(C)]
+	#[derive(Clone, Copy)]
+	struct Arg {
+		ptr: u64,
+		len: u64,
+	}
+
+	let mut array = [Arg { ptr: 0, len: 0 }; 16];
+	let count = if argv.len() > 16 { 16 } else { argv.len() };
+	for i in 0..count {
+		array[i] = Arg {
+			ptr: argv[i].as_ptr() as u64,
+			len: argv[i].len() as u64,
+		};
+	}
+
+	unsafe {
+		syscall6(
+			SYS_SPAWN,
+			path.as_ptr() as usize,
+			path.len(),
+			array.as_ptr() as usize,
+			count,
+			0,
+			0,
+		) as i64
+	}
+}
+
+/*
  * serix_wait - Wait for a child process to exit.
  * @pid: Child pid (-1 = any child)
  *

@@ -90,6 +90,67 @@ pub const MOUNT_FLAG_READ_ONLY: u64 = 1;
  * Passed by pointer because a mount needs two strings plus a flag, which
  * does not fit in the remaining argument registers.
  */
+/*
+ * UserArg - One argument or environment string
+ *
+ * Arrays of these are passed to SYS_SPAWN so a program receives arguments
+ * without the kernel assuming C strings.
+ */
+#[repr(C)]
+pub struct UserArg {
+	pub ptr: u64,
+	pub len: u64,
+}
+
+/* Argument-vector limits; each string and the total are capped so a caller
+ * cannot make the kernel walk unbounded user memory. */
+const MAX_ARG_COUNT: usize = 64;
+const MAX_ARG_BYTES: usize = 8192;
+
+/*
+ * copy_user_args - Validate and collect a user argument vector
+ * @ptr:    Pointer to an array of UserArg
+ * @count:  Number of entries
+ * @out:    Destination vector
+ *
+ * Returns an errno on failure. Every pointer is range-checked and every
+ * string must be UTF-8, since the VFS and diagnostics treat arguments as
+ * text.
+ */
+fn copy_user_args(ptr: u64, count: usize, out: &mut alloc::vec::Vec<&str>) -> Result<(), u64> {
+	if count > MAX_ARG_COUNT {
+		return Err(ERRNO_EINVAL);
+	}
+	if count == 0 {
+		return Ok(());
+	}
+	let array_ptr = ptr as *const UserArg;
+	if !is_user_accessible(array_ptr as *const u8, count * core::mem::size_of::<UserArg>()) {
+		return Err(ERRNO_EFAULT);
+	}
+	let raw = unsafe { core::slice::from_raw_parts(array_ptr, count) };
+	let mut total = 0usize;
+	for arg in raw {
+		let len = arg.len as usize;
+		if len == 0 || len > MAX_ARG_BYTES {
+			return Err(ERRNO_EINVAL);
+		}
+		total += len;
+		if total > MAX_ARG_BYTES {
+			return Err(ERRNO_EINVAL);
+		}
+		if !is_user_accessible(arg.ptr as *const u8, len) {
+			return Err(ERRNO_EFAULT);
+		}
+		let bytes = unsafe { core::slice::from_raw_parts(arg.ptr as *const u8, len) };
+		match core::str::from_utf8(bytes) {
+			Ok(s) => out.push(s),
+			Err(_) => return Err(ERRNO_EINVAL),
+		}
+	}
+	Ok(())
+}
+
 #[repr(C)]
 pub struct MountRequest {
 	pub dev_ptr: u64,
@@ -751,8 +812,22 @@ extern "C" fn syscall_dispatcher(
 				Err(_) => return ERRNO_EINVAL,
 			};
 
+			/* Optional argument and environment vectors: two arrays of
+			 * (pointer, length) pairs. A zero array pointer keeps the legacy
+			 * form, where argv is just the program path. */
+			let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+			let mut envs: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+			if arg3 == 0 {
+				args.push(path);
+			} else if let Err(errno) = copy_user_args(arg3, arg4 as usize, &mut args) {
+				return errno;
+			}
+			/* envp is empty for now (docs/USERLAND.md section 6); the sixth
+			 * argument register is not part of the dispatch signature. */
+			let _ = arg5;
+
 			let parent_id = task::scheduler::current_task_id();
-			match crate::process::spawn_user_process(path, parent_id) {
+			match crate::process::spawn_user_process_args(path, parent_id, &args, &envs) {
 				Ok(child_id) => child_id,
 				Err(msg) => {
 					hal::serial_println!("[SPAWN] failed: {}", msg);

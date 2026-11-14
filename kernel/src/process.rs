@@ -171,6 +171,83 @@ pub unsafe fn allocate_user_stack(
 }
 
 /*
+ * write_stack_bytes - Copy bytes into a freshly mapped user stack
+ * @mapper:      Address space mapper
+ * @phys_offset: HHDM offset
+ * @start:       Virtual address the first byte lands at
+ * @bytes:       Data to copy
+ *
+ * The stack pages were mapped moments ago, so each one translates to a
+ * frame that is written through the HHDM.
+ */
+unsafe fn write_stack_bytes(
+	mapper: &impl Translate,
+	phys_offset: VirtAddr,
+	start: VirtAddr,
+	bytes: &[u8],
+) {
+	let mut done = 0usize;
+	while done < bytes.len() {
+		let va = start + done as u64;
+		let page = Page::<Size4KiB>::containing_address(va);
+		let in_page = (va.as_u64() - page.start_address().as_u64()) as usize;
+		let chunk = core::cmp::min(4096 - in_page, bytes.len() - done);
+		if let Some(phys) = mapper.translate_addr(va) {
+			let dst = (phys_offset + phys.as_u64()).as_mut_ptr::<u8>();
+			core::ptr::copy_nonoverlapping(bytes[done..].as_ptr(), dst, chunk);
+		}
+		done += chunk;
+	}
+}
+
+/*
+ * build_arg_block - Lay out argc, argv, envp, and their strings
+ * @stack_top: Top of the user stack
+ * @argv:      Arguments; argv[0] is the invoked name
+ * @envp:      Environment strings
+ *
+ * Returns the stack pointer to start the program at, plus a buffer whose
+ * first byte lives at that address. The layout is the one in
+ * docs/USERLAND.md section 6: argc at [rsp], argv pointers above it, a NULL,
+ * envp pointers, a NULL, then the strings.
+ */
+fn build_arg_block(stack_top: VirtAddr, argv: &[&str], envp: &[&str]) -> (VirtAddr, Vec<u8>) {
+	let slots = 1 + argv.len() + 1 + envp.len() + 1;
+	let header = slots * 8;
+	let strings: usize = argv.iter().chain(envp.iter()).map(|s| s.len() + 1).sum();
+	let total = header + strings;
+	let rsp = VirtAddr::new((stack_top.as_u64() - total as u64) & !0xF);
+	let base = rsp.as_u64();
+	let mut buf = vec![0u8; total];
+
+	fn put(buf: &mut [u8], at: usize, value: u64) {
+		buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
+	}
+
+	put(&mut buf, 0, argv.len() as u64);
+
+	let mut string_va = base + header as u64;
+	let mut slot = 8usize;
+	for arg in argv {
+		put(&mut buf, slot, string_va);
+		let at = (string_va - base) as usize;
+		buf[at..at + arg.len()].copy_from_slice(arg.as_bytes());
+		string_va += arg.len() as u64 + 1;
+		slot += 8;
+	}
+	slot += 8; /* argv terminator */
+	for env in envp {
+		put(&mut buf, slot, string_va);
+		let at = (string_va - base) as usize;
+		buf[at..at + env.len()].copy_from_slice(env.as_bytes());
+		string_va += env.len() as u64 + 1;
+		slot += 8;
+	}
+
+	(rsp, buf)
+}
+
+/*
  * spawn_user_process - Create and enqueue a new user-mode process
  * @path:      VFS path to the ELF binary
  * @parent_id: Task ID of the spawning task (0 = kernel)
@@ -181,6 +258,22 @@ pub unsafe fn allocate_user_stack(
  * kernel stack, initialises stdio fds, and enqueues on the RunQueue.
  */
 pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static str> {
+	spawn_user_process_args(path, parent_id, &[path], &[])
+}
+
+/*
+ * spawn_user_process_args - Create a user process with arguments
+ * @path:      VFS path to the ELF binary
+ * @parent_id: Task ID of the spawning task (0 = kernel)
+ * @argv:      Arguments laid out for the child; argv[0] is the invoked name
+ * @envp:      Environment strings, empty for now
+ */
+pub fn spawn_user_process_args(
+	path: &str,
+	parent_id: u64,
+	argv: &[&str],
+	envp: &[&str],
+) -> Result<u64, &'static str> {
 	/* 1. Read ELF from VFS */
 	let inode = vfs::lookup_path(path).ok_or("spawn: path not found")?;
 	let size = inode.size();
@@ -231,13 +324,20 @@ pub fn spawn_user_process(path: &str, parent_id: u64) -> Result<u64, &'static st
 			allocate_user_stack(&mut user_mapper, &mut alloc_guard.frame_alloc, phys_offset)
 		};
 
+		/* Lay out argc/argv/envp before the address space leaves our hands:
+		 * writing them needs the stack frames, which only the mapper knows. */
+		let (user_rsp, arg_block) = build_arg_block(ust, argv, envp);
+		unsafe {
+			write_stack_bytes(&user_mapper, phys_offset, user_rsp, &arg_block);
+		}
+
 		drop(alloc_guard); /* release before kernel stack alloc */
 
 		/* Allocate kernel stack from dedicated fixed range (always mapped) */
 		let ks =
 			memory::kstack::alloc_kernel_stack(1024 * 1024).ok_or("spawn: OOM kernel stack")?;
 
-		(pml4, ust, ks)
+		(pml4, user_rsp, ks)
 	};
 
 	/* 7. Build CPUContext — trampoline runs in Ring 0, then iretq to Ring 3 */
