@@ -42,7 +42,7 @@ These are the gaps that currently prevent the kernel from delivering a usable us
 
 ## Next Milestone: v0.1.0 — Live Userspace CLI
 
-**Status:** In progress (design locked; B1 and B2 landed, B3 onward not started). Full specification: [USERLAND.md](USERLAND.md).
+**Status:** In progress (design and interface decisions locked; step 0 and steps 1-4 in flight). Full specification: [USERLAND.md](USERLAND.md).
 
 This milestone replaces the old assumption that Phase 8 would arrive after all hardware work. It is now the critical path: a single recorded QEMU session must boot the live ISO, discover a payload disk, start `/sbin/init`, mount the read-only ext4 userland, and reach an `rsh` prompt where external programs start with arguments, exit statuses, inherited descriptors, and real capability enforcement.
 
@@ -57,42 +57,43 @@ This milestone replaces the old assumption that Phase 8 would arrive after all h
 | **B3** | `SYS_MOUNT` + read-only ext4 | No mount syscall; `ext4d` always writable | Init mounts payload read-only at `/` and data at `/mnt`; writes to `/` return `EROFS` |
 | **B4** | Payload discovery and bootstrap mount | Kernel takes the first disk and mounts nothing at `/` | Marker found, FAT32 bootstrap mounted at `/`, init path validated; bounded retry then `kshell` with a reason |
 | **B5** | Init: orchestration, switch root, respawn | No init binary; kernel spawns daemons | Kernel spawns exactly one process; init owns mounts, policy, daemons, and shell respawn |
-| **B6** | ext4 hardlinks | No `link()`, link count, or shared-inode handling | `core` and `ls` share an inode, both execute, deleting one name keeps the other |
+| **B6** | ext4 hardlinks | No `link()`, link count, or shared-inode handling. **Not a v0.1.0 blocker** — the payload ships copies of `core`, which dispatch identically by `argv[0]` | `core` and `ls` share an inode, both execute, deleting one name keeps the other |
 | **B7** | Open handles: slot, generation, `opendir` | Bare fds; stale generations unknowable | Relative `opendir`/`open` works and stale generations are rejected |
 | **B8** | Arguments for spawn | No `argc`/`argv`/`envp` on the user stack | `argv[0]` dispatch works; a test program prints correct args |
-| **B9** | Descriptor inheritance | Fresh stdio minted per spawn | Redirection and pipes work across spawn with shared `OpenFile` offsets |
+| **B9** | Descriptor inheritance | Fresh stdio minted per spawn. **Not a v0.1.0 blocker** — required only for redirection and pipes | Redirection and pipes work across spawn with shared `OpenFile` offsets |
 | **B10** | Full authorization enforcement | `authorization_for` never called; `SYS_SPAWN` ungated | Table enforced before dispatch; `rsh` can start `/bin/ls` but not `/sbin/policyd` |
 | **B11** | `ulib` and the `rsh` contract | No formatting, args, allocator, or published ABI | A program built against the published ABI runs; `rsh` builds against the same crate |
-| **B12** | Lifecycle and reclamation | Address spaces, pages, and kernel stacks never freed | Fifty starts and one shell crash leave free frames within a documented bound |
+| **B12** | Lifecycle and address-space teardown | Address spaces, pages, and kernel stacks never freed. Split: teardown is a v0.1.0 item, frame deallocation is not | Fifty starts and one shell crash leave free frames within a documented bound |
 
 ### Order of work
 
-```text
-B1 multi-disk ─> B2 GPT ─> B4 payload discovery ─> B5 init
-                                    │
-B3 SYS_MOUNT + read-only ext4 ──────┘
+The blockers are ordered for **independently demonstrable checkpoints** rather than for the tidiest grouping. Each step ends in something bootable and provable, so a slip in a later step still leaves a working system.
 
-B6 hardlinks ─┐
-B7 opendir   ├─> usable userland
-B8 argv      │
-B9 fd inherit┘
+| Step | Work | Depends on | Checkpoint |
+|---|---|---|---|
+| 0 | Interface decisions (handles, spawn shape, `SYS_GRANT`) | — | Recorded below |
+| 1 | `make payload` fixture: FAT32 bootstrap with `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`, plus an ext4 userland partition | — | Linux mounts both partitions; `make payload` is idempotent |
+| 2 | B3 `SYS_MOUNT` + `MS_RDONLY` + read-only `ext4d` | 1 | Read-only mount works; writes return `EROFS` |
+| 3 | B8 `argv`/`envp` for spawn | — | A test program prints `argc` and `argv[1]` |
+| 4 | B4 payload discovery and bootstrap mount at `/` | 1, 2, 3 | **Checkpoint A:** kernel boots a disk-delivered `/sbin/init` |
+| 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **Checkpoint B:** kernel spawns exactly one process, init does the rest |
+| 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works; stale handles rejected |
+| 7 | B11 ABI + `ulib` runtime, then `rsh` integration | 3, 6 | **Checkpoint C:** Ring 3 shell prompt runs payload programs |
+| 8 | B10 `SYS_GRANT` delegation, then enforcement | 5, 7 | `rsh` starts `/bin/ls`, is refused on `/sbin/policyd` |
+| 9 | B12 address-space teardown (frames stay) | 5 | Fifty starts within a documented frame bound |
+| 10 | B9 descriptor inheritance, B6 hardlinks | 6 | Optional for v0.1.0 |
 
-B10 full enforcement ── required before B5 is finished
-B11 ABI + ulib ─────── required by rsh
-B12 reclamation ────── required by the 50-start session item
-```
+**Immediate next step: steps 1 through 4.** B1 and B2 are complete; the payload fixture, the mount syscall, `argv`, and discovery are the remaining path to Checkpoint A.
 
-**Immediate next step: B3 and B4.** B1 (multi-device block layer) and B2 (GPT and partition devices) are complete and exercised on every `make run` by the `make gptdisk` fixture. The remaining storage work is the mount syscall and payload discovery, which can proceed in parallel.
+Deliberately deferred: backup-GPT fallback, MBR fallback, overlap detection, non-512-byte sectors, frame deallocation, and the `/boot` reservation. None appear in the acceptance session.
 
-### Interface decisions to settle before B3/B7/B8/B10
+### Settled interface decisions (2026-11-14)
 
-These are interface choices, not consequences of the design, and implementation should not start on the affected items until they are fixed:
-
-1. **Handle return encoding** — pack `(slot, generation)` into one `u64`, or write through an out-pointer. Affects every syscall signature and `ulib`.
-2. **Delegation mechanism** — a `SYS_GRANT`/`SYS_DELEGATE` syscall, or a kernel spawn policy table keyed by path. Full enforcement with scoped spawn rights needs one of them.
-3. **Spawn call shape** — directory handle plus name, or absolute path plus a `SPAWN`-authorized directory capability.
-4. **`ext4d` readiness handshake** — port probe, notification, or blocking first request.
-5. **`ulib` ownership** — a published crate in this repo, or vendored into the separate `rsh` repo.
+1. **Handle return encoding** — a single opaque `u64` token, not `(slot, generation)`. The kernel validates a per-task generation table internally, so `ulib` never hardcodes a generation and stale or reused handles fail in one place.
+2. **Spawn call shape** — directory handle plus name, plus `argv`/`envp`: `SYS_SPAWN(parent_dir_handle, name, argv_ptr, argc, envp_ptr, envc)`. An absolute-path form is retained for the bootstrap spawn of `/sbin/init` only.
+3. **Delegation mechanism** — a `SYS_GRANT` syscall. A path-keyed spawn table cannot express scoped shell rights without becoming a second policy engine.
+4. **`ext4d` readiness handshake** — a blocking first request from init, so no new port or notification API is needed.
+5. **`ulib` ownership** — a crate in this repository, consumed by `rsh` as a path dependency, so the ABI ships with the kernel that defines it.
 
 ### Explicitly out of scope for v0.1.0
 
