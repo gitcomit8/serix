@@ -34,6 +34,9 @@ const SYS_UNLINK: usize = 21;
 const SYS_RMDIR: usize = 22;
 const SYS_FORMAT: usize = 23;
 
+const SYS_MOUNT: usize = 94;
+const SYS_UMOUNT: usize = 95;
+
 const SYS_MMAP: usize = 90;
 const SYS_MUNMAP: usize = 91;
 const SYS_FILE_READ: usize = 92;
@@ -483,6 +486,64 @@ pub fn serix_getppid() -> u64 {
  */
 pub fn serix_spawn(path: &str) -> i64 {
 	unsafe { syscall2(SYS_SPAWN, path.as_ptr() as usize, path.len()) as i64 }
+}
+
+/* Mount flags accepted by serix_mount() */
+pub const MOUNT_RDONLY: u64 = 1;
+
+/*
+ * MountRequest - Arguments passed by pointer to SYS_MOUNT
+ *
+ * Must match the kernel's MountRequest layout exactly.
+ */
+#[repr(C)]
+pub struct MountRequest {
+	pub dev_ptr: u64,
+	pub dev_len: u64,
+	pub target_ptr: u64,
+	pub target_len: u64,
+	pub flags: u64,
+}
+
+/*
+ * serix_mount - Mount the filesystem on a block device at a mount point
+ * @cap:     Capability carrying PLATFORM_ADMIN
+ * @dev:     Device path, e.g. "/dev/sda1"
+ * @target:  Absolute mount point, e.g. "/mnt"
+ * @flags:   MOUNT_RDONLY or 0
+ *
+ * Return: 0 on success, negative errno on failure
+ */
+pub fn serix_mount(cap: CapabilityRef, dev: &str, target: &str, flags: u64) -> i64 {
+	let req = MountRequest {
+		dev_ptr: dev.as_ptr() as u64,
+		dev_len: dev.len() as u64,
+		target_ptr: target.as_ptr() as u64,
+		target_len: target.len() as u64,
+		flags,
+	};
+	unsafe {
+		syscall4(
+			SYS_MOUNT,
+			cap.slot,
+			cap.generation as usize,
+			&req as *const MountRequest as usize,
+			core::mem::size_of::<MountRequest>(),
+		) as i64
+	}
+}
+
+/*
+ * serix_umount - Remove a mount point
+ * @cap:    Capability carrying PLATFORM_ADMIN
+ * @target: Mount point to remove; "/" is refused with EBUSY
+ *
+ * Return: 0 on success, negative errno on failure
+ */
+pub fn serix_umount(cap: CapabilityRef, target: &str) -> i64 {
+	unsafe {
+		syscall4(SYS_UMOUNT, cap.slot, cap.generation as usize, target.as_ptr() as usize, target.len()) as i64
+	}
 }
 
 /*

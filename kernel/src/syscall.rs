@@ -77,6 +77,28 @@ pub const SYS_FILE_READ: u64 = 92;
 /* Policy management group (93-94): */
 pub const SYS_POLICY_RELOAD: u64 = 93;
 
+/* Mount group (94-95): */
+pub const SYS_MOUNT: u64 = 94;
+pub const SYS_UMOUNT: u64 = 95;
+
+/* Mount flags */
+pub const MOUNT_FLAG_READ_ONLY: u64 = 1;
+
+/*
+ * MountRequest - User-supplied mount arguments
+ *
+ * Passed by pointer because a mount needs two strings plus a flag, which
+ * does not fit in the remaining argument registers.
+ */
+#[repr(C)]
+pub struct MountRequest {
+	pub dev_ptr: u64,
+	pub dev_len: u64,
+	pub target_ptr: u64,
+	pub target_len: u64,
+	pub flags: u64,
+}
+
 pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
 pub const SYS_RECV_BLOCK: u64 = 32;
@@ -96,6 +118,8 @@ pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
 pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
 pub const ERRNO_EPERM: u64 = u64::MAX - 1; /* Operation not permitted (errno 1) */
 pub const ERRNO_ENOTBLK: u64 = u64::MAX - 15; /* Not a block device (errno 16) */
+pub const ERRNO_EBUSY: u64 = u64::MAX - 17; /* Device or resource busy (errno 16) */
+pub const ERRNO_EROFS: u64 = u64::MAX - 31; /* Read-only filesystem (errno 30) */
 
 /* ------------------------------------------------------------------ */
 /*  Capability authorization metadata                                  */
@@ -131,6 +155,7 @@ pub const fn authorization_for(nr: u64) -> SyscallAuthorization {
 		SYS_PIPE => SyscallAuthorization::Capability { rights: Rights::CONTROL },
 		SYS_MKDIR | SYS_UNLINK | SYS_RMDIR => SyscallAuthorization::Capability { rights: Rights::METADATA },
 		SYS_FORMAT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
+		SYS_MOUNT | SYS_UMOUNT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
 		SYS_MMAP => SyscallAuthorization::Capability { rights: Rights::MMAP },
 		SYS_MUNMAP => SyscallAuthorization::Capability { rights: Rights::MUNMAP },
 		SYS_FILE_READ => SyscallAuthorization::Capability { rights: Rights::READ },
@@ -503,6 +528,11 @@ extern "C" fn syscall_dispatcher(
 
 			let task_id = task::scheduler::current_task_id();
 			if let Some(file) = crate::fd::get(task_id, arg1) {
+				/* A node from a read-only mount refuses writes; answer EROFS
+				 * rather than reporting a successful zero-byte write. */
+				if file.inode.is_read_only() {
+					return ERRNO_EROFS;
+				}
 				let mut off = file.offset.lock();
 				let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
 				let n = file.inode.write(*off, buf);
@@ -1238,6 +1268,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.mkdir(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_EINVAL,
 			}
 		}
@@ -1272,6 +1303,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.unlink(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_ENOENT,
 			}
 		}
@@ -1306,6 +1338,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.rmdir(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_ENOTDIR,
 			}
 		}
@@ -1539,6 +1572,126 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			offset as u64
+		}
+
+		SYS_MOUNT => {
+			/*
+			 * Mount a filesystem on a block device.
+			 * arg1: cap_slot, arg2: cap_gen (PLATFORM_ADMIN right required)
+			 * arg3: pointer to MountRequest
+			 * arg4: size of MountRequest
+			 * Returns: 0 on success, errno on failure
+			 */
+			match authorize_current_inode(
+				arg1 as usize,
+				arg2 as u32,
+				capability::Rights::PLATFORM_ADMIN,
+			) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			}
+
+			let req_ptr = arg3 as *const MountRequest;
+			let req_len = arg4 as usize;
+			if req_len != core::mem::size_of::<MountRequest>()
+				|| !is_user_accessible(req_ptr as *const u8, req_len)
+			{
+				return ERRNO_EFAULT;
+			}
+			let req = unsafe { core::ptr::read(req_ptr) };
+
+			if !is_user_accessible(req.dev_ptr as *const u8, req.dev_len as usize)
+				|| !is_user_accessible(req.target_ptr as *const u8, req.target_len as usize)
+			{
+				return ERRNO_EFAULT;
+			}
+
+			let dev_path = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(req.dev_ptr as *const u8, req.dev_len as usize)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+			let target = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(req.target_ptr as *const u8, req.target_len as usize)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Mount points are absolute; a relative target would be ambiguous
+			 * because the kernel has no cwd. */
+			if !target.starts_with('/') {
+				return ERRNO_EINVAL;
+			}
+
+			let block_dev = match fs::lookup_block_device(dev_path) {
+				Some(dev) => dev,
+				None => return ERRNO_ENOTBLK,
+			};
+
+			/* Probe the driver registry; a device the kernel cannot read is
+			 * reported as invalid rather than mounted as an empty tree. */
+			let root = match fs::probe_and_mount(block_dev) {
+				Some(root) => root,
+				None => {
+					hal::serial_println!("[SYS_MOUNT] {}: no filesystem detected", dev_path);
+					return ERRNO_EINVAL;
+				}
+			};
+
+			let read_only = req.flags & MOUNT_FLAG_READ_ONLY != 0;
+			vfs::mount_with_flags(target, root, read_only);
+			hal::serial_println!(
+				"[SYS_MOUNT] {} -> {}{}",
+				dev_path,
+				target,
+				if read_only { " (read-only)" } else { "" }
+			);
+			0
+		}
+
+		SYS_UMOUNT => {
+			/*
+			 * Remove a mount point.
+			 * arg1: cap_slot, arg2: cap_gen (PLATFORM_ADMIN right required)
+			 * arg3: mount point pointer, arg4: mount point length
+			 * Returns: 0 on success, errno on failure
+			 */
+			match authorize_current_inode(
+				arg1 as usize,
+				arg2 as u32,
+				capability::Rights::PLATFORM_ADMIN,
+			) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			}
+
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let target = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(ptr, len)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Unmounting the root would leave the process table without a
+			 * filesystem; replacement is the supported way to change it. */
+			if target == "/" {
+				return ERRNO_EBUSY;
+			}
+
+			match vfs::umount(target) {
+				Ok(()) => {
+					hal::serial_println!("[SYS_UMOUNT] {}", target);
+					0
+				}
+				Err(_) => ERRNO_ENOENT,
+			}
 		}
 
 		SYS_POLICY_RELOAD => {
