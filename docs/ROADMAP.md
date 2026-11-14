@@ -1,8 +1,10 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-11-13 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9
+> **Last Updated:** 2026-11-14 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9 · **Next Milestone:** v0.1.0 "Live Userspace CLI"
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
+
+**Direction (updated 2026-11-14).** The project is shifting from breadth-first subsystem work to proving one end-to-end boot path. The near-term target is the **v0.1.0 "Live Userspace CLI"** milestone specified in [USERLAND.md](USERLAND.md): boot the live ISO, attach a payload disk, and land in a Ring 3 `rsh` that starts unprivileged programs from a read-only ext4 userland, with a Ring 3 init process owning the boot sequence instead of the kernel. [VISION.md](../VISION.md) and [LINUX_REPLACEMENT_ROADMAP.md](LINUX_REPLACEMENT_ROADMAP.md) define the longer-horizon target of a credible general-purpose OS; they do not change the near-term order of work.
 
 For architectural context on the subsystems referenced below, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -21,6 +23,79 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **Ext4 (Ring 3):** ext4 daemon (`ext4d`) + kernel VFS IPC stubs are wired into boot, with superblock/BGDT/inode/extent support, IPC-backed `lookup`, `readdir`, `read`, `write`, `mkdir`, `create`, `unlink`, JBD2 journal writeback/recovery on the mutating handlers, and HTree directory indexing (creation + lookup); boot probes `/dev/sda` and auto-mounts the detected filesystem at `/mnt` with RamDir fallback
 - **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 backed by stdio INodes (fd 0 → PS/2 keyboard, fd 1 → framebuffer console, fd 2 → serial); user files start at fd 3
 - **Subsystems:** VFS (ramdisk + RamDir/RamFile/BlockDevice INodes, longest-prefix mount matching), ELF loader (PT_LOAD, PT_GNU_STACK), IPC, async executor, capability store with per-task cspace and authorization-gated syscalls, LES (Least-Elevated Security) bridge with declarative policy engine + audit ring, PCI enumeration, serial + framebuffer console, fs (FAT32), /proc/serix/cap-audit pseudo-file, VMA manager with SYS_MMAP/MUNMAP, ACPI MADT/FADT/DMAR discovery, and the Ring 3 `policyd` policy daemon
+
+### Known limits that shape the next milestone
+
+These are the gaps that currently prevent the kernel from delivering a usable userland session, in order of impact:
+
+- **Single block device:** `drivers/src/virtio.rs` holds `VIRTIO_BLK: Once<Mutex<VirtioBlock>>` and `store_global()` uses `call_once`, so a second virtio-blk function is initialized and silently discarded. `fs::VirtioBlockDev` is a zero-sized singleton.
+- **No partition layer:** there is no MBR/GPT parsing anywhere; every disk is treated as one filesystem and exposed only as `/dev/sda`.
+- **No mount syscall:** only the in-kernel `vfs::mount()` exists; userspace cannot mount anything, and the kernel auto-mounts `/dev/sda` at `/mnt` during boot.
+- **Kernel owns boot:** `init_scheduler()` spawns `/ext4d`, `/policyd`, and `kshell` itself and synthesizes `/etc/serix/policy.toml` in RAM. There is no `init` binary and no service supervision.
+- **Spawn cannot pass arguments:** `SYS_SPAWN(4)` takes only a path; `spawn_user_process(path, parent_id)` builds a stack with no `argc`/`argv`/`envp`.
+- **Handles have no usable generation:** `SYS_OPEN` returns a bare fd while `ulib` hardcodes capability generation 1; there is no `opendir` and no relative open.
+- **Enforcement is per-arm, not table-driven:** `authorization_for(nr)` is defined in `kernel/src/syscall.rs` but never called; `SYS_SPAWN` has no authorization check at all.
+- **Nothing is reclaimed:** exit closes descriptors and pushes a zombie, but address spaces, page tables, user pages, and kernel stacks are never freed and the frame allocator has no free path.
+
+---
+
+## Next Milestone: v0.1.0 — Live Userspace CLI
+
+**Status:** In progress (design locked; implementation not started). Full specification: [USERLAND.md](USERLAND.md).
+
+This milestone replaces the old assumption that Phase 8 would arrive after all hardware work. It is now the critical path: a single recorded QEMU session must boot the live ISO, discover a payload disk, start `/sbin/init`, mount the read-only ext4 userland, and reach an `rsh` prompt where external programs start with arguments, exit statuses, inherited descriptors, and real capability enforcement.
+
+**Ownership after the milestone:** the kernel discovers disks, exposes GPT partitions, finds the payload by marker, mounts the FAT32 bootstrap volume at `/`, and spawns exactly one process (`/sbin/init`) with the payload disk path as `argv[1]`. Init mounts the ext4 payload and data disks, starts and respawns `ext4d`, `policyd`, and `rsh`, and loads policy. `kshell` becomes a Ring 0 fallback only.
+
+### Blockers
+
+| ID | Work item | Current state | Done when |
+|---|---|---|---|
+| **B1** | Multi-device block layer | `Once` singleton, second disk dropped | `/dev/sda` and `/dev/sdb` report distinct capacities and data |
+| **B2** | GPT and partition devices | No partition code exists | `/dev/sda1`/`/dev/sda2` read correct offsets; corrupt GPT refused |
+| **B3** | `SYS_MOUNT` + read-only ext4 | No mount syscall; `ext4d` always writable | Init mounts payload read-only at `/` and data at `/mnt`; writes to `/` return `EROFS` |
+| **B4** | Payload discovery and bootstrap mount | Kernel takes the first disk and mounts nothing at `/` | Marker found, FAT32 bootstrap mounted at `/`, init path validated; bounded retry then `kshell` with a reason |
+| **B5** | Init: orchestration, switch root, respawn | No init binary; kernel spawns daemons | Kernel spawns exactly one process; init owns mounts, policy, daemons, and shell respawn |
+| **B6** | ext4 hardlinks | No `link()`, link count, or shared-inode handling | `core` and `ls` share an inode, both execute, deleting one name keeps the other |
+| **B7** | Open handles: slot, generation, `opendir` | Bare fds; stale generations unknowable | Relative `opendir`/`open` works and stale generations are rejected |
+| **B8** | Arguments for spawn | No `argc`/`argv`/`envp` on the user stack | `argv[0]` dispatch works; a test program prints correct args |
+| **B9** | Descriptor inheritance | Fresh stdio minted per spawn | Redirection and pipes work across spawn with shared `OpenFile` offsets |
+| **B10** | Full authorization enforcement | `authorization_for` never called; `SYS_SPAWN` ungated | Table enforced before dispatch; `rsh` can start `/bin/ls` but not `/sbin/policyd` |
+| **B11** | `ulib` and the `rsh` contract | No formatting, args, allocator, or published ABI | A program built against the published ABI runs; `rsh` builds against the same crate |
+| **B12** | Lifecycle and reclamation | Address spaces, pages, and kernel stacks never freed | Fifty starts and one shell crash leave free frames within a documented bound |
+
+### Order of work
+
+```text
+B1 multi-disk ─> B2 GPT ─> B4 payload discovery ─> B5 init
+                                    │
+B3 SYS_MOUNT + read-only ext4 ──────┘
+
+B6 hardlinks ─┐
+B7 opendir   ├─> usable userland
+B8 argv      │
+B9 fd inherit┘
+
+B10 full enforcement ── required before B5 is finished
+B11 ABI + ulib ─────── required by rsh
+B12 reclamation ────── required by the 50-start session item
+```
+
+**Immediate next step: B1 and B2.** They are independent kernel-only work, need no userspace ABI decisions, and every later item depends on partitions existing. Land them behind host-built GPT/fixture images added to the QEMU configuration, then proceed to B3 and B4 in parallel.
+
+### Interface decisions to settle before B3/B7/B8/B10
+
+These are interface choices, not consequences of the design, and implementation should not start on the affected items until they are fixed:
+
+1. **Handle return encoding** — pack `(slot, generation)` into one `u64`, or write through an out-pointer. Affects every syscall signature and `ulib`.
+2. **Delegation mechanism** — a `SYS_GRANT`/`SYS_DELEGATE` syscall, or a kernel spawn policy table keyed by path. Full enforcement with scoped spawn rights needs one of them.
+3. **Spawn call shape** — directory handle plus name, or absolute path plus a `SPAWN`-authorized directory capability.
+4. **`ext4d` readiness handshake** — port probe, notification, or blocking first request.
+5. **`ulib` ownership** — a published crate in this repo, or vendored into the separate `rsh` repo.
+
+### Explicitly out of scope for v0.1.0
+
+Disk installation, bootloader installation, UEFI disk boot, networking, dynamic linking, `fork`/`execve`, multi-user permission bits, signals, and package management. The live ISO and Limine remain the delivery mechanism.
 
 ---
 
@@ -312,9 +387,9 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 ## Phase 8: Userspace & MVP Deliverables
 
-**Status:** Planned
+**Status:** Re-scoped. The first MVP is the **v0.1.0 Live Userspace CLI** milestone above; the items in this phase are the longer-horizon expansion that follows it.
 
-This phase targets a **Minimum Viable Product (MVP)** demonstrating the full kernel stack end-to-end.
+This phase targets a **Minimum Viable Product (MVP)** demonstrating the full kernel stack end-to-end. It no longer waits on all hardware enablement (Phase 7); the milestone above is the active path.
 
 ### Userspace Shell (`rsh`)
 
@@ -442,7 +517,8 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 | **5** | LES (Least-Elevated Security) Policy Bridge | ✅ Policy engine + audit ring + `policyd` integration; hot-reload implemented; audit pagination pending |
 | **6** | Security Bridge & Capability Enforcement | 🔄 Core enforcement operational (24 of 29 syscalls classified capability-gated); process-control gating and adversarial validation pending |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 🔄 SMP operational; ACPI MADT/FADT/DMAR decoding, x2APIC, IPI mailboxes, MSI-X inventory; IOMMU/power/NVMe/XHCI pending |
-| **8** | Userspace & MVP Deliverables (rsh shell, /proc, demo) | 📋 Planned (kshell Ring-0 shell exists with 14 commands) |
+| **0.1.0** | **Live Userspace CLI** (multi-disk + GPT, `SYS_MOUNT`, init, `rsh`, argv, enforcement) | 📋 **Next.** Design locked in [USERLAND.md](USERLAND.md); blockers B1–B12 |
+| **8** | Userspace & MVP Deliverables (rsh shell, /proc, demo) | 📋 Re-scoped: follows the v0.1.0 milestone (kshell Ring-0 shell exists with 14 commands) |
 | **9** | Networking (VirtIO-net, zero-copy, TCP/IP) | 📋 Planned |
 | **10** | Optimization & Tooling (perf, debug, CI/CD) | 📋 Planned |
 
@@ -450,9 +526,10 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-priority items for contributors:
 
-1. **Shell (`rsh`) no_std port** — port [rsh](https://github.com/gitcomit8/rsh) to `#![no_std]` + `ulib` (Phase 8)
-2. **Ext4 acceptance validation** — image interoperability, journal replay after interrupted writes, and malformed-metadata rejection (Phase 4)
-3. **Capability enforcement** — gate process-control and port-creation paths, then add adversarial QEMU tests (Phase 6)
-4. **SMP bring-up** — INIT-SIPI-SIPI AP bootstrap and wiring TLB shootdown/scheduler kick into the VMA and run-queue paths (Phase 7)
+1. **Multi-device block layer + GPT (B1, B2)** — replace the `VIRTIO_BLK` singleton with a device table and expose `/dev/sdXN` partitions from a validated GPT; the first step toward the v0.1.0 milestone (see [USERLAND.md](USERLAND.md))
+2. **`SYS_MOUNT` and read-only ext4 (B3)** — a userspace mount path with `MS_RDONLY`, so init rather than the kernel owns the root
+3. **Spawn arguments and handle generations (B7, B8)** — `argc`/`argv`/`envp` on the user stack and `(slot, generation)` handles with relative `opendir`/`open`
+4. **Table-driven capability enforcement (B10)** — actually call `authorization_for(nr)` before dispatch and gate `SYS_SPAWN`, then add adversarial QEMU tests
+5. **Ext4 acceptance validation** — image interoperability, journal replay after interrupted writes, and malformed-metadata rejection (Phase 4)
 
 File issues or open draft PRs on [GitHub](https://github.com/gitcomit8/serix) to claim a task.
