@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Multi-device VirtIO block layer: `drivers/src/virtio.rs` replaces the `VIRTIO_BLK` singleton with a table of up to 8 devices; each device claims a slot and gets its own IRQ vector (`VIRTIO_BLK_VECTOR + index`) and ISR status address. `store_global()` now returns the claimed index.
+- GPT support (`fs/src/gpt.rs`): validated primary-GPT parsing with signature, revision, header-size, header CRC32, entry-array CRC32, and entry-bound checks. A table failing any check is rejected whole. 11 host unit tests cover the parser and every rejection path.
+- `fs::PartitionDev`: an offset `BlockDev` that presents a partition's own sector 0 to filesystem drivers and refuses I/O past the partition end.
+- Boot enumerates every disk as `/dev/sda`, `/dev/sdb`, ... and every GPT entry as `/dev/sda1`, `/dev/sda2`, ...; disks without a GPT keep only the whole-disk node.
+- `make gptdisk` target creates a 64 MiB two-partition GPT image, attached as a second virtio-blk disk by every `make run` variant.
+
+### Changed
+
+- `fs::VirtioBlockDev` is now `VirtioBlockDev::new(index)` instead of a zero-sized singleton, and `virtio_blk()` delegates to `virtio_blk_at(0)`.
+- Boot auto-mount still probes disk 0 only; partition nodes are exposed but not probed or mounted.
+
 ## [v0.0.9] - 2026-11-10
 
 ### Added

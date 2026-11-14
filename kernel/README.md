@@ -268,14 +268,14 @@ init::scheduler::init_scheduler();
 
 - Creates global scheduler instance with per-CPU run queues
 - Spawns ext4d daemon (Ring-3 ext4 filesystem with JBD2 journal recovery)
-- **Auto-mount**: `fs::probe_and_mount()` detects ext4 on `/dev/sda`, mounts at `/mnt`
+- **Auto-mount**: `fs::probe_and_mount()` detects ext4 on disk 0 (`/dev/sda`), mounts at `/mnt`
 - Spawns kshell (kernel shell)
 - Spawns policyd daemon (LES policy engine)
 
 **Mount table after init**:
 ```
 /       → RamDir (embedded ELF files)
-/dev/   → RamDir (/dev/sda)
+/dev/   → RamDir (/dev/sda, /dev/sdb, ..., /dev/sdXN)
 /mnt    → Ext4DirStub (ext4 daemon proxy, if filesystem detected)
 ```
 

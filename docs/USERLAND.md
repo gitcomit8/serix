@@ -160,7 +160,7 @@ After init finishes, a program sees this tree. Sources differ per path, and only
 | `/root` | `RamDir` mounted by kernel | yes | missing |
 | `/mnt` | data ext4, mounted by init | yes | auto-mount exists, ownership moves to init |
 | `/dev/null`, `/dev/console` | special inodes | n/a | missing |
-| `/dev/sda*` | block devices and partitions | device | one whole disk only |
+| `/dev/sda*` | block devices and partitions | device | whole disks plus GPT partitions |
 
 ### Layout rules
 
@@ -216,8 +216,9 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 | Capability | Where | Status against this design |
 |---|---|---|
-| Single virtio-blk function | `drivers/src/virtio.rs` | one device; later functions dropped by `Once::call_once` |
-| Whole-disk device nodes | `kernel/src/init/filesystem.rs` | `/dev/sda` only; no partitions, no GPT |
+| Multiple virtio-blk functions | `drivers/src/virtio.rs` | table of up to 8 devices, one IRQ vector and ISR address each |
+| Whole-disk and partition nodes | `kernel/src/init/filesystem.rs` | `/dev/sda`, `/dev/sdb`, ... plus validated GPT entries as `/dev/sdXN` |
+| GPT parsing | `fs/src/gpt.rs` | primary header only; CRC-validated; backup table, overlap detection, and MBR fallback absent |
 | FAT32 read/write | `fs/src/fat32/` | sufficient for the bootstrap volume |
 | ext4 read/write through `ext4d` | `fs/src/ext4/` | IPC stubs in kernel; no read-only mount mode, no hardlinks |
 | Mount table | `vfs/src/lib.rs` | longest-prefix, replaces on remount, kernel-only API |
@@ -235,32 +236,34 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 ### B1 — Multi-device block layer
 
-**State.** `VIRTIO_BLK` is a single `Once<Mutex<VirtioBlock>>`; `store_global` uses `call_once`, so a second disk is initialized and then silently discarded. `fs::VirtioBlockDev` is a zero-sized singleton.
+**State.** ✅ Done. `drivers/src/virtio.rs` keeps `BLK_DEVICES: [Once<Mutex<VirtioBlock>>; 8]` and `ISR_CFG_ADDRS`, so each PCI function claims its own slot, IRQ vector (`VIRTIO_BLK_VECTOR + index`), and ISR status address. `store_global()` returns the claimed index, and `fs::VirtioBlockDev::new(index)` carries it into the `BlockDev` layer. `virtio_blk()` is now `virtio_blk_at(0)`.
 
 **Why it blocks.** The payload disk is a second disk by definition.
 
 **Work.**
 
-- [ ] Replace the global with a table of devices keyed by a stable id, one per PCI function.
-- [ ] Make `fs::VirtioBlockDev` carry that id; keep `BlockDev` object-safe.
-- [ ] Enumerate `/dev/sda`, `/dev/sdb`, ... from the table.
-- [ ] Add a two-disk QEMU configuration and a test that reads sector 0 of each.
+- [x] Replace the global with a table of devices keyed by a stable id, one per PCI function.
+- [x] Make `fs::VirtioBlockDev` carry that id; keep `BlockDev` object-safe.
+- [x] Enumerate `/dev/sda`, `/dev/sdb`, ... from the table.
+- [x] Add a two-disk QEMU configuration and a test that reads sector 0 of each.
 
 **Done when.** Both disks appear, report distinct capacities, and return distinct data.
 
+**Known limit.** Slots are contiguous, so a failed init in the middle of PCI enumeration hides later devices from `device_count()`. The completion flag is also global to the driver, so concurrent I/O on two disks is not safe; callers currently serialize it.
+
 ### B2 — GPT and partition devices
 
-**State.** No MBR, GPT, or partition code exists anywhere; every device is treated as one filesystem.
+**State.** ✅ Done for the primary GPT. `fs/src/gpt.rs` is a dependency-free parser (host-testable, 11 unit tests) that validates signature, revision, header size, header CRC32, entry-array CRC32, and entry count/size bounds, and rejects a table whole on the first failure. `fs::PartitionDev` presents a partition as a `BlockDev` offset by its start LBA that refuses I/O past its end. Boot publishes `/dev/sdXN` nodes and keeps the whole-disk node.
 
 **Why it blocks.** The payload disk is GPT with two partitions, and the data disk is GPT with one.
 
 **Work.**
 
-- [ ] Parse and validate the GPT header: signature, CRC32 of header and entry array, entry count/size bounds.
-- [ ] Enumerate partitions as `/dev/sdXN`, each a `BlockDev` offset by its start LBA.
-- [ ] Reject overlapping, out-of-range, zero-length, and non-`512`-sector-table cases.
-- [ ] Report partition type, start, and length to serial for diagnostics.
-- [ ] Keep whole-disk devices addressable so an unpartitioned disk still works.
+- [x] Parse and validate the GPT header: signature, CRC32 of header and entry array, entry count/size bounds.
+- [x] Enumerate partitions as `/dev/sdXN`, each a `BlockDev` offset by its start LBA.
+- [ ] Reject overlapping, out-of-range, zero-length, and non-`512`-sector-table cases. Out-of-range entries are clipped and zero-length entries skipped, but overlap detection is not implemented and non-512-sector devices are out of scope.
+- [ ] Report partition type, start, and length to serial for diagnostics. Start and length are logged; the type GUID is parsed but not printed.
+- [x] Keep whole-disk devices addressable so an unpartitioned disk still works.
 
 **Done when.** `/dev/sda1` and `/dev/sda2` exist for a host-created GPT image, read correct offsets, and a deliberately corrupted header is refused.
 
