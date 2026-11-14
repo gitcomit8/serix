@@ -13,12 +13,13 @@ For architectural context on the subsystems referenced below, see [ARCHITECTURE.
 The kernel has completed Phases 1–2 and the four core features of Phase 3. Current operational capabilities:
 
 - **Boot:** Limine v10.x (BIOS + UEFI), higher-half kernel with HHDM at `0xFFFF_8000_0000_0000`
-- **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vector 34, IRQ 11); x2APIC when CPUID exposes it, with fixed-IPI send and acknowledged per-CPU mailboxes for TLB shootdown, scheduler kick, and panic stop
+- **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vectors 34-41, one per enumerated device); x2APIC when CPUID exposes it, with fixed-IPI send and acknowledged per-CPU mailboxes for TLB shootdown, scheduler kick, and panic stop
 - **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects, and per-task kernel stacks from the pre-mapped `KSTACK_VA_START` region (`0xFFFF_B000_0000_0000`; 1 MiB for spawned processes, 64 KiB for kshell, 4 KiB for APs)
 - **Scheduling:** Preemptive per-CPU Weighted Fair Queueing (WFQ) with virtual-runtime tracking and priority inheritance; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with pre-mapped kernel stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
 - **Syscalls (29 total):** `SYSCALL`/`SYSRET` via MSR; Serix-native numbers (not Linux-compatible): Process group — `SYS_EXIT(0)`, `SYS_YIELD(1)`, `SYS_GETPID(2)`, `SYS_GETPPID(3)`, `SYS_SPAWN(4)`, `SYS_WAIT(5)`; File I/O — `SYS_OPEN(10)`, `SYS_CLOSE(11)`, `SYS_READ(12)`, `SYS_WRITE(13)`, `SYS_SEEK(14)`, `SYS_DUP(15)`, `SYS_DUP2(16)`, `SYS_PIPE(17)`, `SYS_GETDENTS(18)`; Filesystem — `SYS_MKDIR(20)`, `SYS_UNLINK(21)`, `SYS_RMDIR(22)`, `SYS_FORMAT(23)`; IPC — `SYS_SEND(30)`, `SYS_RECV(31)`, `SYS_RECV_BLOCK(32)`, `SYS_CREATE_PORT(33)`, `SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`; Memory — `SYS_MMAP(90)`, `SYS_MUNMAP(91)`; File read — `SYS_FILE_READ(92)`; Policy — `SYS_POLICY_RELOAD(93)`. The central `authorization_for()` table classifies 24 calls as capability-gated and 5 as unprotected; file, memory, and IPC send/receive paths validate through `authorize_current_inode()`/`authorize_current_ipc()`, while process-control arms still rely on task/parent identity (see Phase 6 below).
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
-- **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init); virtqueue with DMA-safe HHDM frame allocation; IOAPIC-routed completion interrupt registered when the device exposes one, with polled used-ring completion; `BlockDevice` VFS INode for byte-oriented access; 64 MiB ext2 image used by `make disk`, write→read verified
+- **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init) with a table of up to 8 devices, one IRQ vector (`VIRTIO_BLK_VECTOR + index`) and ISR status address per device; virtqueue with DMA-safe HHDM frame allocation; IOAPIC-routed completion interrupt registered when the device exposes one, with polled used-ring completion; `BlockDevice` VFS INode for byte-oriented access; 64 MiB ext2 image used by `make disk`, write→read verified
+- **Partitions:** validated primary-GPT parsing (`fs/src/gpt.rs`) with header and entry-array CRC32, revision/header-size/entry-bounds checks, and whole-table rejection on any failure; `PartitionDev` exposes each partition as an offset `BlockDev` that refuses I/O past its end; boot publishes `/dev/sda`, `/dev/sdb`, ... plus `/dev/sdXN` nodes; `make gptdisk` provides a two-partition GPT image attached as the second QEMU disk
 - **Filesystem:** FAT32 driver (`fs/` crate) with BPB parsing, cluster chain traversal/allocation, directory entry creation (8.3 + LFN), file read/write, `mkdir`, `unlink` (with LFN cleanup), duplicate filename rejection, LAPIC-tick timestamps; FAT32 images tested with `mkfs.vfat -F 32`; files created by Serix were visible when mounting the image on Linux. The current `make disk` target builds a 64 MiB ext2 image by default
 - **Ext4 (Ring 3):** ext4 daemon (`ext4d`) + kernel VFS IPC stubs are wired into boot, with superblock/BGDT/inode/extent support, IPC-backed `lookup`, `readdir`, `read`, `write`, `mkdir`, `create`, `unlink`, JBD2 journal writeback/recovery on the mutating handlers, and HTree directory indexing (creation + lookup); boot probes `/dev/sda` and auto-mounts the detected filesystem at `/mnt` with RamDir fallback
 - **File Descriptors:** Global FD table (`kernel/src/fd.rs`) keyed by `(task_id, fd)`; `open()`/`close()`/`seek()` operations; FDs 0-2 backed by stdio INodes (fd 0 → PS/2 keyboard, fd 1 → framebuffer console, fd 2 → serial); user files start at fd 3
@@ -28,9 +29,9 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 
 These are the gaps that currently prevent the kernel from delivering a usable userland session, in order of impact:
 
-- **Single block device:** `drivers/src/virtio.rs` holds `VIRTIO_BLK: Once<Mutex<VirtioBlock>>` and `store_global()` uses `call_once`, so a second virtio-blk function is initialized and silently discarded. `fs::VirtioBlockDev` is a zero-sized singleton.
-- **No partition layer:** there is no MBR/GPT parsing anywhere; every disk is treated as one filesystem and exposed only as `/dev/sda`.
-- **No mount syscall:** only the in-kernel `vfs::mount()` exists; userspace cannot mount anything, and the kernel auto-mounts `/dev/sda` at `/mnt` during boot.
+- **No mount syscall:** only the in-kernel `vfs::mount()` exists; userspace cannot mount anything, and the kernel auto-mounts disk 0 (`/dev/sda`) at `/mnt` during boot. Partition nodes exist but nothing mounts them.
+- **Primary GPT only:** `fs/src/gpt.rs` reads the primary header, ignores the backup table, and does not detect overlapping entries; MBR-only disks are treated as whole-disk devices.
+- **Shared completion flag:** `VIRTIO_BLK_COMPLETE` is a single global flag, so two devices completing concurrently can consume each other's completion. I/O is effectively serialized by the callers today.
 - **Kernel owns boot:** `init_scheduler()` spawns `/ext4d`, `/policyd`, and `kshell` itself and synthesizes `/etc/serix/policy.toml` in RAM. There is no `init` binary and no service supervision.
 - **Spawn cannot pass arguments:** `SYS_SPAWN(4)` takes only a path; `spawn_user_process(path, parent_id)` builds a stack with no `argc`/`argv`/`envp`.
 - **Handles have no usable generation:** `SYS_OPEN` returns a bare fd while `ulib` hardcodes capability generation 1; there is no `opendir` and no relative open.
@@ -41,7 +42,7 @@ These are the gaps that currently prevent the kernel from delivering a usable us
 
 ## Next Milestone: v0.1.0 — Live Userspace CLI
 
-**Status:** In progress (design locked; implementation not started). Full specification: [USERLAND.md](USERLAND.md).
+**Status:** In progress (design locked; B1 and B2 landed, B3 onward not started). Full specification: [USERLAND.md](USERLAND.md).
 
 This milestone replaces the old assumption that Phase 8 would arrive after all hardware work. It is now the critical path: a single recorded QEMU session must boot the live ISO, discover a payload disk, start `/sbin/init`, mount the read-only ext4 userland, and reach an `rsh` prompt where external programs start with arguments, exit statuses, inherited descriptors, and real capability enforcement.
 
@@ -51,8 +52,8 @@ This milestone replaces the old assumption that Phase 8 would arrive after all h
 
 | ID | Work item | Current state | Done when |
 |---|---|---|---|
-| **B1** | Multi-device block layer | `Once` singleton, second disk dropped | `/dev/sda` and `/dev/sdb` report distinct capacities and data |
-| **B2** | GPT and partition devices | No partition code exists | `/dev/sda1`/`/dev/sda2` read correct offsets; corrupt GPT refused |
+| **B1** | Multi-device block layer | ✅ Done — device table of up to 8 slots, per-device vector and ISR address; `/dev/sda` and `/dev/sdb` report distinct capacities | `/dev/sda` and `/dev/sdb` report distinct capacities and data |
+| **B2** | GPT and partition devices | ✅ Done — validated GPT parser plus `PartitionDev`; `/dev/sdXN` nodes exposed, corrupt tables refused | `/dev/sda1`/`/dev/sda2` read correct offsets; corrupt GPT refused |
 | **B3** | `SYS_MOUNT` + read-only ext4 | No mount syscall; `ext4d` always writable | Init mounts payload read-only at `/` and data at `/mnt`; writes to `/` return `EROFS` |
 | **B4** | Payload discovery and bootstrap mount | Kernel takes the first disk and mounts nothing at `/` | Marker found, FAT32 bootstrap mounted at `/`, init path validated; bounded retry then `kshell` with a reason |
 | **B5** | Init: orchestration, switch root, respawn | No init binary; kernel spawns daemons | Kernel spawns exactly one process; init owns mounts, policy, daemons, and shell respawn |
@@ -81,7 +82,7 @@ B11 ABI + ulib ─────── required by rsh
 B12 reclamation ────── required by the 50-start session item
 ```
 
-**Immediate next step: B1 and B2.** They are independent kernel-only work, need no userspace ABI decisions, and every later item depends on partitions existing. Land them behind host-built GPT/fixture images added to the QEMU configuration, then proceed to B3 and B4 in parallel.
+**Immediate next step: B3 and B4.** B1 (multi-device block layer) and B2 (GPT and partition devices) are complete and exercised on every `make run` by the `make gptdisk` fixture. The remaining storage work is the mount syscall and payload discovery, which can proceed in parallel.
 
 ### Interface decisions to settle before B3/B7/B8/B10
 
@@ -513,11 +514,11 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 | **1** | Core Foundation (boot, memory, HAL) | ✅ Complete |
 | **2** | System Infrastructure (tasks, capabilities, syscalls) | ✅ Complete |
 | **3** | Preemptive Scheduling & IPC Hardening | ✅ Core complete; SMP with Limine MP, WFQ, priority inheritance |
-| **4** | Storage & Filesystem Stack (FAT32, ext4, mount table) | ✅ FAT32 complete; ext4 daemon with JBD2 journal + HTree indexing; mount table and boot auto-mount implemented |
+| **4** | Storage & Filesystem Stack (FAT32, ext4, mount table) | ✅ FAT32 complete; ext4 daemon with JBD2 journal + HTree indexing; mount table and boot auto-mount implemented; multi-device block layer + GPT partitions done |
 | **5** | LES (Least-Elevated Security) Policy Bridge | ✅ Policy engine + audit ring + `policyd` integration; hot-reload implemented; audit pagination pending |
 | **6** | Security Bridge & Capability Enforcement | 🔄 Core enforcement operational (24 of 29 syscalls classified capability-gated); process-control gating and adversarial validation pending |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 🔄 SMP operational; ACPI MADT/FADT/DMAR decoding, x2APIC, IPI mailboxes, MSI-X inventory; IOMMU/power/NVMe/XHCI pending |
-| **0.1.0** | **Live Userspace CLI** (multi-disk + GPT, `SYS_MOUNT`, init, `rsh`, argv, enforcement) | 📋 **Next.** Design locked in [USERLAND.md](USERLAND.md); blockers B1–B12 |
+| **0.1.0** | **Live Userspace CLI** (multi-disk + GPT, `SYS_MOUNT`, init, `rsh`, argv, enforcement) | 🔄 **In progress.** Design locked in [USERLAND.md](USERLAND.md); B1–B2 done, B3–B12 pending |
 | **8** | Userspace & MVP Deliverables (rsh shell, /proc, demo) | 📋 Re-scoped: follows the v0.1.0 milestone (kshell Ring-0 shell exists with 14 commands) |
 | **9** | Networking (VirtIO-net, zero-copy, TCP/IP) | 📋 Planned |
 | **10** | Optimization & Tooling (perf, debug, CI/CD) | 📋 Planned |
@@ -526,8 +527,8 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-priority items for contributors:
 
-1. **Multi-device block layer + GPT (B1, B2)** — replace the `VIRTIO_BLK` singleton with a device table and expose `/dev/sdXN` partitions from a validated GPT; the first step toward the v0.1.0 milestone (see [USERLAND.md](USERLAND.md))
-2. **`SYS_MOUNT` and read-only ext4 (B3)** — a userspace mount path with `MS_RDONLY`, so init rather than the kernel owns the root
+1. **`SYS_MOUNT` and read-only ext4 (B3)** — a userspace mount path with `MS_RDONLY`, so init rather than the kernel owns the root
+2. **Payload discovery and bootstrap mount (B4)** — find the marker volume, mount it at `/`, and start init instead of kshell
 3. **Spawn arguments and handle generations (B7, B8)** — `argc`/`argv`/`envp` on the user stack and `(slot, generation)` handles with relative `opendir`/`open`
 4. **Table-driven capability enforcement (B10)** — actually call `authorization_for(nr)` before dispatch and gate `SYS_SPAWN`, then add adversarial QEMU tests
 5. **Ext4 acceptance validation** — image interoperability, journal replay after interrupted writes, and malformed-metadata rejection (Phase 4)

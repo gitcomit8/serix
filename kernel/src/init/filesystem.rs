@@ -5,7 +5,7 @@
  * - Registering filesystem drivers (FAT32, ext2, ext4)
  * - Initializing VFS mount table (/ and /dev/)
  * - Setting up page cache
- * - Registering block devices and creating /dev/sda
+ * - Registering block devices as /dev/sdX plus GPT partitions /dev/sdXN
  * - Inserting ext4d ELF into VFS
  */
 
@@ -53,18 +53,8 @@ pub fn init_filesystem() {
 
 	/* VMA manager is per-task (stored in TaskCB) */
 
-	/* Expose VirtIO block device as /dev/sda */
-	let sda_dev = Arc::new(fs::VirtioBlockDev);
-	fs::register_block_device(
-		"/dev/sda",
-		Arc::clone(&sda_dev) as Arc<dyn fs::BlockDev>,
-	);
-	let sda: Arc<dyn INode> = Arc::new(fs::BlockDevINode(sda_dev));
-	if let Some(dev_dir) = vfs::lookup_path("/dev/") {
-		dev_dir.insert("sda", sda).ok();
-		serial_println!("VFS: /dev/sda available");
-		graphics::fb_println!("VFS: /dev/sda ready");
-	}
+	/* Expose every block device and its GPT partitions */
+	expose_block_devices();
 
 	/* Insert ext4d daemon ELF into VFS root */
 	{
@@ -133,6 +123,85 @@ required_rights = \"READ,WRITE,LOOKUP\"\
 		if let Some(root) = vfs::lookup_path("/") {
 			if root.mkdir("mnt").is_ok() {
 				serial_println!("VFS: /mnt/ directory created");
+			}
+		}
+	}
+}
+
+/*
+ * expose_block_devices - Publish disks and GPT partitions under /dev
+ *
+ * Each initialized VirtIO block device becomes /dev/sda, /dev/sdb, ... in
+ * table order. A validated GPT adds /dev/sda1, /dev/sda2, ... as offset views
+ * of the whole disk. Disks without a GPT keep only the whole-disk node, and a
+ * rejected table is reported and never exposed.
+ */
+fn expose_block_devices() {
+	let Some(dev_dir) = vfs::lookup_path("/dev/") else {
+		serial_println!("VFS: /dev/ missing, block devices not exposed");
+		return;
+	};
+
+	let disk_count = drivers::virtio::device_count();
+	serial_println!("VFS: {} block device(s) detected", disk_count);
+
+	for index in 0..disk_count {
+		let disk_name = fs::disk_name(index);
+		let disk: Arc<dyn fs::BlockDev> = Arc::new(fs::VirtioBlockDev::new(index));
+		let sectors = disk.sector_count();
+
+		fs::register_block_device(&alloc::format!("/dev/{}", disk_name), Arc::clone(&disk));
+		let disk_node: Arc<dyn INode> = Arc::new(fs::BlockDevINode(Arc::clone(&disk)));
+		dev_dir.insert(disk_name.as_str(), disk_node).ok();
+		serial_println!("VFS: /dev/{} available ({} sectors)", disk_name, sectors);
+		graphics::fb_println!("VFS: /dev/{} ready", disk_name);
+
+		match fs::gpt::read_gpt(&*disk, sectors) {
+			Ok(partitions) if !partitions.is_empty() => {
+				serial_println!(
+					"VFS: /dev/{}: GPT with {} partition(s)",
+					disk_name,
+					partitions.len()
+				);
+				for part in partitions {
+					let part_name = alloc::format!("{}{}", disk_name, part.number);
+					let dev: Arc<dyn fs::BlockDev> = Arc::new(fs::PartitionDev::new(
+						Arc::clone(&disk),
+						part.start_lba,
+						part.sector_count,
+					));
+					fs::register_block_device(
+						&alloc::format!("/dev/{}", part_name),
+						Arc::clone(&dev),
+					);
+					let node: Arc<dyn INode> = Arc::new(fs::BlockDevINode(dev));
+					dev_dir.insert(part_name.as_str(), node).ok();
+
+					/*
+					 * Provenance probe: reading the parent at start_lba is
+					 * what proves the offset translation is correct.
+					 */
+					let mut head = [0u8; 8];
+					let mut probe = [0u8; 512];
+					if disk.read_block(part.start_lba, &mut probe) {
+						head.copy_from_slice(&probe[..8]);
+					}
+					serial_println!(
+						"VFS: /dev/{} start={} sectors={} first8={:02x?}",
+						part_name,
+						part.start_lba,
+						part.sector_count,
+						head
+					);
+				}
+			}
+			Ok(_) => serial_println!("VFS: /dev/{}: GPT without partitions", disk_name),
+			Err(fs::gpt::GptError::NoGpt) => {
+				serial_println!("VFS: /dev/{}: no GPT, whole-disk device only", disk_name)
+			}
+			Err(err) => {
+				serial_println!("VFS: /dev/{}: GPT rejected ({:?})", disk_name, err);
+				graphics::fb_println!("VFS: /dev/{}: GPT rejected", disk_name);
 			}
 		}
 	}

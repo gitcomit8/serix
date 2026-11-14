@@ -31,7 +31,7 @@ cargo clippy                   # Lint
 
 Cargo workspace with 20 member crates. `.cargo/config.toml` sets `x86_64-unknown-none` as default target and enables `build-std` — no `--target` flag needed.
 
-Key crates: `kernel/` (entry, GDT, syscalls, process spawning, LES bridge), `memory/` (paging, heap, frame allocator, kernel stacks, VMAs), `hal/` (serial, CPU, I/O ports, topology), `acpi/` (RSDP/RSDT/XSDT and MADT parsing), `apic/` (LAPIC, I/O APIC, x2APIC, IPIs, timer), `idt/` (exception handlers), `graphics/` (framebuffer console), `task/` (async executor, per-CPU WFQ scheduler, context switch), `capability/` (C-space, rights, validation, audit), `drivers/` (VirtIO, PCI), `vfs/` (mount table, path resolution, page cache), `ipc/` + `ipc_types/` (port-based messaging and wire format), `loader/` (ELF loader), `ulib/` (userspace syscall wrappers), `fs/` (FAT32, ext2, ext4 with JBD2 journal and HTree indexing, policy rules), `keyboard/` (PS/2 driver), `ext4d/` (Ring 3 ext4 daemon), `policyd/` (Ring 3 policy daemon), `util/` (panic handler).
+Key crates: `kernel/` (entry, GDT, syscalls, process spawning, LES bridge), `memory/` (paging, heap, frame allocator, kernel stacks, VMAs), `hal/` (serial, CPU, I/O ports, topology), `acpi/` (RSDP/RSDT/XSDT and MADT parsing), `apic/` (LAPIC, I/O APIC, x2APIC, IPIs, timer), `idt/` (exception handlers), `graphics/` (framebuffer console), `task/` (async executor, per-CPU WFQ scheduler, context switch), `capability/` (C-space, rights, validation, audit), `drivers/` (VirtIO, PCI), `vfs/` (mount table, path resolution, page cache), `ipc/` + `ipc_types/` (port-based messaging and wire format), `loader/` (ELF loader), `ulib/` (userspace syscall wrappers), `fs/` (FAT32, ext2, ext4 with JBD2 journal and HTree indexing, GPT parsing, policy rules), `keyboard/` (PS/2 driver), `ext4d/` (Ring 3 ext4 daemon), `policyd/` (Ring 3 policy daemon), `util/` (panic handler).
 
 Internal crate dependencies use `{ path = "../crate_name" }`.
 
@@ -50,7 +50,7 @@ Serial init → disable PIC/enable APIC → register interrupt handlers → load
 
 ### Interrupt Vectors
 
-0-31: CPU exceptions, 33: PS/2 keyboard, 49: LAPIC timer (~625 Hz). All handlers must signal EOI to APIC.
+0-31: CPU exceptions, 33: PS/2 keyboard, 34-41: VirtIO block devices (one vector per device, `VIRTIO_BLK_VECTOR + index`), 49: LAPIC timer (~625 Hz). All handlers must signal EOI to APIC.
 
 ### Syscall Interface
 
@@ -111,9 +111,11 @@ Linux-style `SYSCALL`/`SYSRET` entry with Serix-native numbers (not Linux-compat
 
 **Ring 0 (Kernel):**
 - **VFS layer** (`vfs/`): Mount table (`MOUNT_TABLE`, a `BTreeMap` iterated in reverse for longest-prefix matching), `mount()`/`umount()`/`lookup_path()`, FD table, `INode` trait, `RamDir`/`RamFile`, page cache, mmap-backed VMAs
-- **Boot mounts**: `RamDir` at `/` and `/dev/`, `/dev/sda` for VirtIO-blk, `/proc/serix/cap-audit`, `/etc/serix/policy.toml`; `init::scheduler::init_scheduler()` probes `/dev/sda` and auto-mounts the detected filesystem at `/mnt` (RamDir fallback if detection fails)
+- **Block devices**: `drivers::virtio` owns a fixed table of up to 8 devices (`MAX_BLOCK_DEVICES`); `store_global()` claims a slot and returns its index. `kernel/src/init/filesystem.rs::expose_block_devices()` publishes each disk as `/dev/sda`, `/dev/sdb`, ... and each validated GPT entry as `/dev/sda1`, `/dev/sda2`, ...; disks without a GPT keep only the whole-disk node
+- **Boot mounts**: `RamDir` at `/` and `/dev/`, the disks and partitions above, `/proc/serix/cap-audit`, `/etc/serix/policy.toml`; `init::scheduler::init_scheduler()` probes disk 0 (`/dev/sda`) and auto-mounts the detected filesystem at `/mnt` (RamDir fallback if detection fails)
 - **FAT32**: Full R/W, LFN support, cluster allocation
 - **ext2**: Basic support
+- **GPT** (`fs/src/gpt.rs`): validated partition-table parsing (signature, revision, header size, header CRC32, entry-array CRC32, entry bounds); a table failing any check is rejected whole. `PartitionDev` presents a partition as an offset `BlockDev` and refuses I/O past its end
 - **ext4**: Kernel-side stub forwards operations to the Ring 3 daemon over IPC; also implements superblock/BGDT/inode/extent/directory parsing, JBD2 journal writeback and crash recovery (`fs/src/ext4/journal.rs`), HTree directory indexing (`fs/src/ext4/htree.rs`), and formatting via `SYS_FORMAT` (`fs/src/ext4/format.rs`)
 
 **Ring 3 (Userspace):**
@@ -210,7 +212,9 @@ The `make run` command launches QEMU with:
 - **4GB RAM**: `-m 4G`
 - **4 CPUs**: `-smp 4`
 - **Serial**: `-serial stdio`
-- **VirtIO block device**: `-drive file=disk.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off`
+- **Two VirtIO block devices**: `-drive file=disk.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off` plus a second GPT disk (`gpt.img`, drive id `x1`) built by the `make gptdisk` target
+
+`make run` depends on `iso disk gptdisk`, so every boot exercises the multi-device and partition paths (`/dev/sda` whole disk, `/dev/sdb1`-`/dev/sdb2`).
 
 To modify QEMU settings, edit the `QEMU_COMMON` variable in `Makefile`.
 
@@ -239,13 +243,15 @@ When referencing the Intel SDM for architectural details — register layouts, i
 
 **Current Phase:** 4 (Storage & Filesystem Stack)  
 **Version:** 0.0.6  
-**Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; SMP with 4+ CPUs working
+**Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; multi-disk VirtIO block layer with GPT partitions; SMP with 4+ CPUs working
 
 ### What Works
 - Boot kernel to blue framebuffer with memory map
 - Spawn Ring 3 processes (`ext4d`, `policyd`) and the Ring 0 kshell task
 - Multi-filesystem VFS mount table with longest-prefix resolution
-- Auto-mount of a detected filesystem from `/dev/sda` at `/mnt` during boot
+- Multi-disk block layer: up to 8 VirtIO block devices, each with its own IRQ vector and ISR status address
+- GPT discovery at boot: `/dev/sda`, `/dev/sdb`, ... whole disks plus `/dev/sdXN` partition nodes, with corrupt tables rejected whole
+- Auto-mount of a detected filesystem from disk 0 at `/mnt` during boot
 - Read/write files via syscall-mediated filesystem operations (FAT32, ext2, ext4 through `ext4d`)
 - ext4 JBD2 journal writeback/crash recovery and HTree directory indexing
 - Capability-checked syscalls plus LES path policy served by `policyd`

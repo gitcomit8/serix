@@ -61,9 +61,9 @@ pub unsafe fn driver_init(
 	/* Phase 1: PCI discovery + VirtIO feature negotiation (no DMA) */
 	for dev in devices {
 		if let Some(blk) = VirtioBlock::init(dev, &mut mmio_mapper, phys_mem_offset.as_u64()) {
-			drivers::virtio::store_global(blk);
-			serial_println!("VirtIO: Phase 1 init complete");
-			graphics::fb_println!("VirtIO: block device detected");
+			let index = drivers::virtio::store_global(blk);
+			serial_println!("VirtIO: Phase 1 init complete (device {})", index);
+			graphics::fb_println!("VirtIO: block device {} detected", index);
 		}
 	}
 
