@@ -3,10 +3,14 @@ ISO = serix.iso
 ISO_ROOT = iso_root
 LIMINE_DIR = limine
 
+# Second QEMU disk: a GPT image with two partitions, so every boot exercises
+# the multi-device and partition paths (/dev/sda whole-disk, /dev/sdb1-2).
+GPT_IMG = gpt.img
+
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run run-host iso disk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host iso disk gptdisk clean limine kernel ext4d ext4disk policyd
 
 all: iso
 
@@ -80,6 +84,16 @@ disk:
 		echo "disk.img already ext2, skipping format"; \
 	fi
 
+gptdisk:
+	@if [ ! -f $(GPT_IMG) ]; then \
+		dd if=/dev/zero of=$(GPT_IMG) bs=1M count=64 2>/dev/null; \
+		printf 'label: gpt\nstart=2048, size=16384, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="serix-boot"\nstart=18432, size=110592, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="serix-root"\n' \
+			| sfdisk --quiet $(GPT_IMG); \
+		echo "Created $(GPT_IMG) (GPT, 2 partitions)"; \
+	else \
+		echo "$(GPT_IMG) exists, skipping"; \
+	fi
+
 QEMU_ACCEL ?= tcg
 QEMU_CPU ?= max
 QEMU_SMP_CPUS ?= 4
@@ -101,9 +115,11 @@ QEMU_COMMON = -machine q35,accel=$(QEMU_ACCEL) -cpu $(QEMU_CPU) -m 4G \
 	-smp cpus=$(QEMU_SMP_CPUS),sockets=$(QEMU_SOCKETS),cores=$(QEMU_CORES),threads=$(QEMU_THREADS),maxcpus=$(QEMU_MAXCPUS) \
 	-boot d -cdrom $(ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off $(QEMU_IOMMU)
+	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off \
+	-drive file=$(GPT_IMG),if=none,format=raw,id=x1 \
+	-device virtio-blk-pci,drive=x1,disable-legacy=on,disable-modern=off $(QEMU_IOMMU)
 
-run: iso disk
+run: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio
 
 # KVM host CPU passthrough with the host's socket/core/thread counts. The
@@ -114,14 +130,14 @@ run-host: iso disk
 	  QEMU_CORES=$(HOST_QEMU_CORES) QEMU_THREADS=$(HOST_QEMU_THREADS) \
 	  QEMU_MAXCPUS=$(HOST_QEMU_MAXCPUS)
 
-run-nographic: iso disk
+run-nographic: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -nographic
 
-run-debug: iso disk
+run-debug: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
 		-d int,cpu_reset -no-reboot
 
-run-gdb: iso disk
+run-gdb: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
 		-s -S
 
