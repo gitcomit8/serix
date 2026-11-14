@@ -12,6 +12,7 @@ Serix is a hybrid-kernel x86_64 operating system written in `#![no_std]` Rust. I
 cargo build --release          # Build all workspace crates (kernel + all subsystems)
 cargo build -p <crate> --release  # Build a specific crate
 make init                      # Build userspace init binary (required before iso)
+make payload                   # Build payload.img: ext2 bootstrap + ext4 userland (docs/USERLAND.md)
 make iso                       # Build bootable ISO (kernel + ext4d + policyd + Limine)
 make run                       # Build everything and run in QEMU
 make run-debug                 # Run with -d int,cpu_reset -no-reboot (catch triple faults)

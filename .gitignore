@@ -14,6 +14,7 @@ iso_root/*
 # Build artifacts
 serix.iso
 disk.img
+payload/stage/
 
 # Tool state (Claude Code, Remember MCP, RTK)
 .rtk/

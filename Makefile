@@ -10,7 +10,22 @@ GPT_IMG = gpt.img
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run run-host iso disk gptdisk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host iso disk gptdisk payload clean limine kernel ext4d ext4disk policyd init rsh
+
+EXT4D_BIN = target/x86_64-unknown-none/release/ext4d
+INIT_BIN = target/x86_64-unknown-none/release/examples/init
+
+# Payload disk (docs/USERLAND.md §3): partition 1 is a bootstrap volume the
+# kernel can read before ext4d exists, partition 2 is the ext4 userland that
+# init mounts read-only. Both are built with mke2fs -d, so no loop device or
+# root is needed to populate them.
+PAYLOAD_IMG = payload.img
+PAYLOAD_STAGE = payload/stage
+PAYLOAD_SECTORS = 196608
+PAYLOAD_BOOT_START = 2048
+PAYLOAD_BOOT_SECTORS = 32768
+PAYLOAD_ROOT_START = 34816
+PAYLOAD_ROOT_SECTORS = 159744
 
 all: iso
 
@@ -55,14 +70,16 @@ $(ISO_ROOT)/limine.conf:
 	cp ./limine.conf $@
 
 init:
-	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
 	    -p ulib \
 	    --example init \
 	    --release \
 	    --target x86_64-unknown-none
 
 rsh:
-	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
 	    --manifest-path ../rsh/Cargo.toml \
 	    --release \
 	    --target x86_64-unknown-none
@@ -93,6 +110,30 @@ gptdisk:
 	else \
 		echo "$(GPT_IMG) exists, skipping"; \
 	fi
+
+payload: ext4d init
+	rm -rf $(PAYLOAD_STAGE)
+	mkdir -p $(PAYLOAD_STAGE)/boot/sbin \
+	         $(PAYLOAD_STAGE)/root/bin \
+	         $(PAYLOAD_STAGE)/root/usr/bin \
+	         $(PAYLOAD_STAGE)/root/etc/serix \
+	         $(PAYLOAD_STAGE)/root/tmp
+	cp payload/bootstrap/SERIX.MRK $(PAYLOAD_STAGE)/boot/
+	cp $(EXT4D_BIN) $(PAYLOAD_STAGE)/boot/sbin/ext4d
+	cp $(INIT_BIN) $(PAYLOAD_STAGE)/boot/sbin/init
+	cp payload/userland/etc/serix/policy.toml $(PAYLOAD_STAGE)/root/etc/serix/
+	dd if=/dev/zero of=$(PAYLOAD_IMG) bs=512 count=$(PAYLOAD_SECTORS) 2>/dev/null
+	printf '%s\n' \
+		'label: gpt' \
+		"start=$(PAYLOAD_BOOT_START), size=$(PAYLOAD_BOOT_SECTORS), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"serix-bootstrap\"" \
+		"start=$(PAYLOAD_ROOT_START), size=$(PAYLOAD_ROOT_SECTORS), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"serix-userland\"" \
+		| sfdisk --quiet $(PAYLOAD_IMG)
+	mke2fs -q -F -t ext2 -b 1024 -E offset=$$(( $(PAYLOAD_BOOT_START) * 512 )) \
+		-d $(PAYLOAD_STAGE)/boot $(PAYLOAD_IMG) $$(( $(PAYLOAD_BOOT_SECTORS) / 2 ))
+	mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^64bit,^metadata_csum,^dir_index \
+		-E offset=$$(( $(PAYLOAD_ROOT_START) * 512 )) \
+		-d $(PAYLOAD_STAGE)/root $(PAYLOAD_IMG) $$(( $(PAYLOAD_ROOT_SECTORS) / 2 ))
+	echo "Created $(PAYLOAD_IMG): ext2 bootstrap + ext4 userland"
 
 QEMU_ACCEL ?= tcg
 QEMU_CPU ?= max
