@@ -33,6 +33,8 @@ pub mod block_cache;
 pub mod ext2;
 pub mod ext4;
 #[cfg(feature = "kernel")]
+pub mod gpt;
+#[cfg(feature = "kernel")]
 pub mod fat32;
 #[cfg(any(feature = "kernel", feature = "policy-engine"))]
 pub mod policy;
@@ -101,27 +103,118 @@ pub fn probe_and_mount(dev: Arc<dyn BlockDev>) -> Option<Arc<dyn INode>> {
 /*  VirtioBlockDev (kernel only)                                       */
 /* ------------------------------------------------------------------ */
 
+/*
+ * struct VirtioBlockDev - BlockDev over one entry of the VirtIO device table
+ * @index: Device table index (0 = first disk enumerated)
+ */
 #[cfg(feature = "kernel")]
-pub struct VirtioBlockDev;
+pub struct VirtioBlockDev {
+	index: usize,
+}
+
+#[cfg(feature = "kernel")]
+impl VirtioBlockDev {
+	pub fn new(index: usize) -> Self {
+		Self { index }
+	}
+}
 
 #[cfg(feature = "kernel")]
 impl BlockDev for VirtioBlockDev {
 	fn read_block(&self, sector: u64, buf: &mut [u8; 512]) -> bool {
-		drivers::virtio::virtio_blk()
+		drivers::virtio::virtio_blk_at(self.index)
 			.map(|blk| blk.lock().read_sector(sector, buf).is_ok())
 			.unwrap_or(false)
 	}
 
 	fn write_block(&self, sector: u64, buf: &[u8; 512]) -> bool {
-		drivers::virtio::virtio_blk()
+		drivers::virtio::virtio_blk_at(self.index)
 			.map(|blk| blk.lock().write_sector(sector, buf).is_ok())
 			.unwrap_or(false)
 	}
 
 	fn sector_count(&self) -> u64 {
-		drivers::virtio::virtio_blk()
+		drivers::virtio::virtio_blk_at(self.index)
 			.map(|blk| blk.lock().capacity())
 			.unwrap_or(0)
+	}
+}
+
+/*
+ * disk_name - Device name for a block-device index
+ * @index: Device table index
+ *
+ * Return: "sda", "sdb", ... (allocated String, so callers can build paths)
+ */
+#[cfg(feature = "kernel")]
+pub fn disk_name(index: usize) -> alloc::string::String {
+	let mut name = alloc::string::String::from("sd");
+	name.push((b'a' + (index % 26) as u8) as char);
+	if index >= 26 {
+		name.push((b'a' + (index / 26 - 1) as u8) as char);
+	}
+	name
+}
+
+/*
+ * struct PartitionDev - BlockDev view of one GPT partition
+ * @parent:       Whole-disk device supplying the sectors
+ * @start_lba:    First sector of the partition on the parent
+ * @sector_count: Length in sectors; I/O outside this range is refused
+ *
+ * Address translation is the whole point: a filesystem driver mounting
+ * /dev/sda2 must see its superblock at sector 0.
+ */
+#[cfg(feature = "kernel")]
+pub struct PartitionDev {
+	parent: Arc<dyn BlockDev>,
+	start_lba: u64,
+	sector_count: u64,
+}
+
+#[cfg(feature = "kernel")]
+impl PartitionDev {
+	pub fn new(parent: Arc<dyn BlockDev>, start_lba: u64, sector_count: u64) -> Self {
+		Self {
+			parent,
+			start_lba,
+			sector_count,
+		}
+	}
+
+	pub fn start_lba(&self) -> u64 {
+		self.start_lba
+	}
+}
+
+#[cfg(feature = "kernel")]
+impl BlockDev for PartitionDev {
+	fn read_block(&self, sector: u64, buf: &mut [u8; 512]) -> bool {
+		if sector >= self.sector_count {
+			return false;
+		}
+		self.parent.read_block(self.start_lba + sector, buf)
+	}
+
+	fn write_block(&self, sector: u64, buf: &[u8; 512]) -> bool {
+		if sector >= self.sector_count {
+			return false;
+		}
+		self.parent.write_block(self.start_lba + sector, buf)
+	}
+
+	fn sector_count(&self) -> u64 {
+		self.sector_count
+	}
+}
+
+/*
+ * SectorReader adapter so GPT parsing works directly on a BlockDev
+ */
+#[cfg(feature = "kernel")]
+impl gpt::SectorReader for dyn BlockDev {
+	fn read_sector(&self, lba: u64, buf: &mut [u8; 512]) -> bool {
+		self.read_block(lba, buf)
 	}
 }
 

@@ -60,7 +60,7 @@ pub fn init_scheduler() {
 	 * We mount at /mnt so that embedded ELF files on RamDir (/) remain
 	 * accessible for spawning kshell and policyd.
 	 * If detection fails, fall back to RamDir at / (no breakage). */
-	if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev)) {
+	if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev::new(0))) {
 		serial_println!("VFS: auto-mounted filesystem at /mnt (single-partition)");
 		graphics::fb_println!("VFS: /mnt mounted (auto-detected)");
 		vfs::mount("/mnt", root_ino);
