@@ -320,9 +320,11 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 ### B6 — ext4 hardlinks
 
+**Not a v0.1.0 blocker** (demoted 2026-11-14). The payload ships `core` as four copies; `argv[0]` dispatch behaves identically and no ext4d path changes. Revisit when the payload image is rebuilt for another reason.
+
 **State.** No hardlink concept in the VFS or ext4 code: no `link()`, no link count, no shared-inode handling.
 
-**Why it blocks.** `/bin/core` must serve as `ls`, `cat`, `echo`, and the rest through argv[0] without duplicating bytes.
+**Why it was a blocker.** `/bin/core` must serve as `ls`, `cat`, `echo`, and the rest through argv[0] without duplicating bytes.
 
 **Work.**
 
@@ -370,9 +372,11 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 ### B9 — Descriptor inheritance
 
+**Not a v0.1.0 blocker** (demoted 2026-11-14). Only the redirect and pipe items need it; the acceptance session's core path does not.
+
 **State.** Every spawn calls `init_stdio(child_id)` and mints fresh console inodes; nothing is inherited.
 
-**Why it blocks.** The decision is all descriptors, shared `OpenFile`, so redirects, pipes, and descriptor passing work.
+**Why it was a blocker.** The decision is all descriptors, shared `OpenFile`, so redirects, pipes, and descriptor passing work.
 
 **Work.**
 
@@ -439,43 +443,42 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 ## 10. Order of work
 
-```
-B1 multi-disk ─> B2 GPT ─> B4 payload discovery ─> B5 init
-                                     │
-B3 SYS_MOUNT + read-only ext4 ───────┘
+Ordered for independently demonstrable checkpoints. Each step ends in a bootable system, so a slip later does not invalidate the earlier proof.
 
-B6 ext4 hardlinks ─┐
-B7 opendir/handles ├─> usable userland
-B8 argv            │
-B9 fd inheritance ─┘
+| Step | Work | Depends on | Checkpoint |
+|---|---|---|---|
+| 0 | Interface decisions (section 11) | — | Recorded |
+| 1 | `make payload`: FAT32 bootstrap (`/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`) plus ext4 userland | — | Both partitions mount on Linux |
+| 2 | B3 `SYS_MOUNT`, `MS_RDONLY`, read-only `ext4d` | 1 | Writes to `/` return `EROFS` |
+| 3 | B8 `argv`/`envp` | — | Test program prints `argc`/`argv[1]` |
+| 4 | B4 marker scan and bootstrap mount at `/` | 1, 2, 3 | **A:** init comes from disk |
+| 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **B:** one kernel spawn |
+| 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works |
+| 7 | B11 ABI and `ulib`, then `rsh` | 3, 6 | **C:** Ring 3 prompt |
+| 8 | B10 `SYS_GRANT`, then enforcement | 5, 7 | Scoped spawn proven by a denial |
+| 9 | B12 address-space teardown | 5 | Bounded frames over fifty starts |
+| 10 | B9 inheritance, B6 hardlinks | 6 | Optional for v0.1.0 |
 
-B10 full enforcement ── required before B5 is considered finished
-B11 ABI + ulib ─────── required by rsh
-B12 reclamation ────── required by item 10 of the session
-```
+**Why this order.** Steps 1–4 produce the first boot where the kernel's job has actually shrunk, which is the milestone's claim; the shell is step 7 and is useless before it. Two items are demoted from blockers: **B6** costs a 40 KiB payload for copies of `core` and would change ext4d's link and unlink paths — the riskiest component — for no behavioural difference once `argv[0]` dispatch exists; **B9** is needed only by the redirect and pipe items, not by the acceptance session's core path.
 
-1. **B1 and B2** are independent kernel work with host-built images as fixtures.
-2. **B3** can proceed in parallel with **B4** once B2 exists.
-3. **B5** needs B1–B4 and B10; it is the first end-to-end boot.
-4. **B6–B9** are what make the session usable; they do not block booting init.
-5. **B11** must land before `rsh` integration; **B12** before calling the milestone done.
+**Step 2 before step 3** is deliberate: `MS_RDONLY` is what keeps a wrong write from destroying the payload image during discovery testing.
 
 ---
 
-## 11. Not yet decided
+## 11. Interface decisions
 
-These are intentionally left open, because they are interface choices rather than consequences of the decisions above. Implementation should not start on the affected item until they are settled.
+Settled 2026-11-14. These constrain implementation; do not reopen them mid-step.
 
-1. **Handle return encoding.** Pack `(slot, generation)` into one `u64`, or write through an out-pointer? Affects every syscall signature and `ulib`.
-2. **Delegation mechanism.** A `SYS_GRANT`/`SYS_DELEGATE` syscall, or a kernel spawn policy table keyed by path? Full enforcement plus scoped spawn rights needs one of them.
-3. **Spawn call shape.** Directory handle plus name, or absolute path plus a SPAWN-authorized directory capability?
-4. **`ext4d` readiness handshake.** Port probe, a notification, or a blocking first request?
-5. **Bootstrap volume name and marker contents.** `/SERIX.MRK` and `serix-payload 1` are placeholders.
-6. **Payload partition number.** Assuming partition 2 on the same disk keeps init simple; a scan would remove the convention.
-7. **`rsh` integration contract.** Which syscalls it already uses, and whether its cwd is a handle or a path string.
-8. **`ulib` ownership.** Keep it in this repo as a published crate, or vendor it into the `rsh` repo?
-9. **Data disk selection.** First non-payload GPT disk, or a marker file on the data partition too?
-10. **Core binary argv[0] fallback.** What `core` does when invoked under its own name.
+1. **Handle encoding — opaque `u64` token.** Not `(slot, generation)`. The kernel keeps a per-task generation table and validates the token on every use, so `ulib` carries no generation constant and a closed-then-reused handle fails in exactly one place.
+2. **Spawn shape — handle plus name plus vectors.** `SYS_SPAWN(parent_dir_handle, name_ptr, name_len, argv, argc, envp, envc)`. The absolute-path form survives only for the kernel's bootstrap spawn of `/sbin/init`.
+3. **Delegation — `SYS_GRANT`.** Explicit transfer of rights on a capability, with the receiver's slot chosen by the kernel. A path-keyed spawn table cannot express "this shell may spawn from `/bin` and `/usr/bin`" without duplicating the policy engine.
+4. **`ext4d` readiness — blocking first request.** Init issues a trivial request and blocks on the reply; no port probe or notification API is added.
+5. **Bootstrap volume and marker — `/SERIX.MRK` containing `serix-payload 1\n`.** The marker's only job is to identify the volume; the version line lets a future boot refuse a payload it cannot read.
+6. **Payload partition — partition 2 on the marker's own disk.** Keeps init free of a second scan; section 3.2 already depends on the convention.
+7. **`ulib` ownership — this repository, consumed by `rsh` as a path dependency.** The ABI therefore ships with the kernel that implements it.
+8. **Data disk selection — first non-payload GPT disk with an ext4 partition.** No second marker; absence is not fatal.
+9. **`core` under its own name — prints usage and exits 2.**
+10. **`rsh` cwd — a directory handle held by the shell.** The kernel has no cwd, so relative resolution belongs to the shell.
 
 ---
 
