@@ -249,14 +249,21 @@ if let Some(fb) = fb_response.framebuffers().next() {
 
 ```rust
 let fb = fb_response.framebuffers().next().expect("No framebuffer");
-init_console(fb.addr(), fb.width() as usize, fb.height() as usize, fb.pitch() as usize);
+graphics::init_console(
+	fb.addr(),
+	fb.width() as usize,
+	fb.height() as usize,
+	fb.pitch() as usize,
+	fb.bpp() as usize,
+);
 ```
 
-**Purpose**: Initializes text console on framebuffer:
+**Purpose**: Initializes the `Tty` text console on framebuffer:
 
 - 8x16 pixel font rendering
 - Scrolling support
-- Global `fb_println!` macro support
+- `graphics::kprint!` / `graphics::kprintln!` macro support
+- Rejects non-32-bpp or invalid framebuffer geometry
 
 #### Phase 12: Scheduler Initialization, Task Spawning, and Auto-Mount
 

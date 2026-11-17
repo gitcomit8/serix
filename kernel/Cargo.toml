@@ -8,7 +8,7 @@ limine = "0.5.0"
 acpi = { path = "../acpi" }
 x86_64 = "0.15.2"
 apic = { path = "../apic" }
-graphics = { path = "../graphics", features = ["global-console"] }
+graphics = { path = "../graphics" }
 hal = { path = "../hal" }
 idt = { path = "../idt" }
 memory = { path = "../memory", features = ["global-allocator"] }

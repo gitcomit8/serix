@@ -51,7 +51,10 @@ impl fmt::Debug for CapabilityId {
 /// timestamp-based fallback because it would make handles predictable.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CapabilityHandle {
-	pub key: [u8; 16],
+	/// Secret 128-bit key. Never expose it through formatting or any
+	/// infallible accessor; use `as_bytes` only where the raw key is
+	/// required (store indexing and userspace transfer).
+	key: [u8; 16],
 }
 
 impl CapabilityHandle {
@@ -60,6 +63,16 @@ impl CapabilityHandle {
 	 */
 	pub const fn new(key: [u8; 16]) -> Self {
 		CapabilityHandle { key }
+	}
+
+	/*
+	 * as_bytes - Borrow the raw 128-bit key material
+	 *
+	 * Only for internal store indexing and the syscall handoff to the
+	 * owning task. Do not log the result.
+	 */
+	pub const fn as_bytes(&self) -> &[u8; 16] {
+		&self.key
 	}
 
 	/*
@@ -113,26 +126,13 @@ impl CapabilityHandle {
 	}
 }
 
+/*
+ * Capability keys are secret: refuse to render them, including through
+ * derived Debug implementations (Capability, CapabilityRecord, ...).
+ */
 impl fmt::Debug for CapabilityHandle {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		for byte in &self.key {
-			write!(f, "{:02X}", byte)?;
-		}
-		Ok(())
-	}
-}
-
-impl fmt::LowerHex for CapabilityHandle {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "0x")?;
-		for byte in &self.key[..4] {
-			write!(f, "{:02x}", byte)?;
-		}
-		write!(f, "..")?;
-		for byte in &self.key[12..] {
-			write!(f, "{:02x}", byte)?;
-		}
-		Ok(())
+		f.write_str("CapabilityHandle(<redacted>)")
 	}
 }
 

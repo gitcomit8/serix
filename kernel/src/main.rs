@@ -30,6 +30,9 @@ use task::init_executor;
 use util::panic::halt_loop;
 use x86_64::instructions::hlt;
 
+/* Single source of truth for the kernel version shown at boot. */
+pub const VERSION: &str = "0.0.8";
+
 /* Limine protocol requests */
 static MMAP_REQ: MemoryMapRequest = MemoryMapRequest::new();
 
@@ -60,7 +63,7 @@ pub fn panic(info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	hal::init_serial();
-	serial_println!("Serix Kernel v0.0.8 Starting.....");
+	serial_println!("Serix Kernel v{} Starting...", VERSION);
 
 	/* Initialize Global Descriptor Table */
 	gdt::init();
@@ -88,14 +91,10 @@ pub extern "C" fn _start() -> ! {
 	/* Initialize PS/2 keyboard controller (must happen before interrupts) */
 	serial_println!("Initializing PS/2 keyboard...");
 	unsafe { init::cpu::init_ps2_keyboard(); }
-	serial_println!("PS/2 init complete, enabling interrupts...");
-
 	/* Enable interrupts globally */
 	x86_64::instructions::interrupts::enable();
-	serial_println!("Global interrupts ENABLED");
 
 	init_executor();
-	serial_println!("Executor initialized");
 
 	/* ------------------------------------------------------------------ */
 	/* Phase 1: Memory initialization                                       */
@@ -162,16 +161,7 @@ pub extern "C" fn _start() -> ! {
 
 	graphics::kprintln!("Timer: LAPIC ~625 Hz started");
 	graphics::kprintln!("");
-	graphics::kprintln!("Serix OS v0.0.8 ready.");
-
-	/* Diagnostic: check if keyboard ISR has fired */
-	let isr_count = keyboard::get_isr_fire_count();
-	let last_scancode = keyboard::get_last_scancode();
-	serial_println!(
-		"[DIAG] Keyboard ISR fire count: {}, last scancode: {:#04x}",
-		isr_count,
-		last_scancode
-	);
+	graphics::kprintln!("Serix OS v{} ready.", VERSION);
 
 	/* Idle loop — timer interrupts drive preemptive scheduling */
 	loop {

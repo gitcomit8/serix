@@ -134,7 +134,7 @@ Built-in TTY shell running as a Ring-0 task. Input: PS/2 keyboard. Output: frame
 - **Tabs, not spaces** (`hard_tabs = true`, `tab_spaces = 8`, `max_width = 100`)
 - **C-style block comments** for function headers: `/* function_name - description */`
 - **Global state pattern**: `static INSTANCE: Once<Mutex<Type>> = Once::new()`
-- **Debug output**: `serial_println!` (kernel), `fb_println!` (framebuffer), `kprintln!` (kshell)
+- **Debug output**: `serial_println!` (serial), `graphics::kprint!` / `graphics::kprintln!` (framebuffer console, also used by kshell)
 - **Address types**: Use `x86_64::PhysAddr` and `x86_64::VirtAddr`, not raw integers
 - **Syscall naming**: prefix with `serix_` (e.g., `serix_write`)
 - **Handler naming**: suffix with `_handler` (e.g., `timer_interrupt_handler`)
@@ -243,7 +243,7 @@ When referencing the Intel SDM for architectural details — register layouts, i
 ## Project Status
 
 **Current Phase:** 4 (Storage & Filesystem Stack)  
-**Version:** 0.0.6  
+**Version:** 0.0.8
 **Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; multi-disk VirtIO block layer with GPT partitions; SMP with 4+ CPUs working
 
 ### What Works

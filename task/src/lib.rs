@@ -556,14 +556,11 @@ impl Scheduler {
 	 * Must be called without holding the lock. Does not return.
 	 */
 	pub unsafe fn start() -> ! {
-		hal::serial_println!("Scheduler::start() called");
 		let mut scheduler = Self::global().lock();
 
 		if scheduler.tasks.is_empty() {
 			panic!("No tasks available to schedule");
 		}
-
-		hal::serial_println!("Scheduler starting, current index: {}", scheduler.current);
 
 		// Do the first context switch to start task execution
 		let current_idx = scheduler.current;
@@ -572,8 +569,6 @@ impl Scheduler {
 		scheduler.tasks[current_idx].state = TaskState::Ready;
 		scheduler.tasks[next_idx].state = TaskState::Running;
 		scheduler.current = next_idx;
-
-		hal::serial_println!("Switching from task {} to task {}", current_idx, next_idx);
 
 		// Get raw pointers
 		let old_ctx = &mut scheduler.tasks[current_idx].context as *mut CPUContext;
