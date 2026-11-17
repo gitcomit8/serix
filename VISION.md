@@ -2,10 +2,10 @@
 
 > **Document type:** Architecture direction, feature inventory, and release proposal  
 > **Target:** Serix x86-64 / AMD64, `#![no_std]` Rust, Limine boot flow  
-> **Current release baseline supplied by project metadata:** `v0.0.8`  
+> **Current release baseline supplied by project metadata:** `v0.0.8` (`docs/ROADMAP.md` on `dev` now reports `v0.0.9`)  
 > **Repository snapshot reviewed:** `dev` branch, commit `2550e02567d9db99413c52951604b01e791f7de7` (13 November 2026)  
 > **Strategic objective:** Build a credible general-purpose operating system and long-term Linux alternative
-> **Status:** Proposal — not an assertion that the features below are implemented
+> **Status:** Proposal — not an assertion that the features below are implemented. Long-horizon direction only: the near-term v0.1.0 milestone is defined in [docs/USERLAND.md](docs/USERLAND.md)
 
 ## Contents
 
@@ -643,6 +643,8 @@ A credible alternative is measured by complete user outcomes, not by subsystem c
 # Part III — Recommended v0.1.0 definition
 
 ## 17. What v0.1.0 should mean
+
+> **Scope reconciliation (2026-11-18).** [docs/USERLAND.md](docs/USERLAND.md) defines the v0.1.0 milestone ("Live Userspace CLI") and takes precedence. The release name proposed below, the gates in section 18 and the definition of done in section 24 describe the broader hardening target, which maps to v0.2.x in section 21. They are not required to tag v0.1.0. Items present in both documents (argv/envp, Ring 3 init and shell, capability enforcement, address-space teardown, x87/SSE state) keep P0 status for the v0.1.0 slice; see blockers B8, B5, B10, B12 and B13 in USERLAND.md.
 
 `v0.1.0` should be the first **coherent, testable systems milestone** in Serix's path toward a general-purpose operating system. It is not a product-completion milestone and must not be described as a Linux replacement. Equally, it should not be branded as a hobby-kernel demo or a DOS-inspired developer toy.
 

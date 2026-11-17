@@ -1,6 +1,6 @@
 # Serix Userland
 
-> **Status:** design proposal, decisions locked · **Last Updated:** 2026-11-14 · **Milestone:** Live Userspace CLI
+> **Status:** design proposal, decisions locked · **Last Updated:** 2026-11-18 · **Milestone:** Live Userspace CLI
 
 This file defines the userland Serix presents on a live boot: the disk layout that carries it, the root layout programs see, the program ABI, who owns boot orchestration, and the exact work remaining before a session is usable.
 
@@ -51,7 +51,7 @@ These came from the design interview and are not open for reinterpretation here.
 | Descriptor inheritance | All open descriptors; parent and child share the same `OpenFile`. |
 | Exit status | POSIX wait-status encoding, code in bits 8–15. |
 | Capability enforcement | Full `authorization_for` table enforced before dispatch. |
-| Handle identity | Open returns both slot and generation. |
+| Handle identity | Open returns an opaque `u64` token; the kernel validates generation internally (section 11, decision 1). |
 | Scratch | RAM-backed `/tmp`. |
 | Home | RAM-backed `/root`. |
 | Devices | `/dev/null` and `/dev/console` in addition to disk nodes. |
@@ -86,7 +86,7 @@ The kernel does **not** mount ext4, spawn `ext4d`, spawn `policyd`, or synthesiz
 
 The kernel has no ext4 reader; the ext4 mount path is an IPC stub whose daemon lives on the payload. A small partition that the kernel *can* read breaks that cycle without a second ext4 implementation. Only `/sbin/init` and `/sbin/ext4d` live there.
 
-**Implemented as ext2, not FAT32** (decision 11 in section 11). The kernel already has an ext2 reader (`fs/src/ext2/`), which is the only property this partition needs, and building an ext2 image needs only `mke2fs` — already required by `make disk` — while FAT32 would add `mkfs.fat` and `mtools` to the prerequisites. `make payload` builds the image; see [../payload/README.md](../payload/README.md).
+**Implemented as ext2, not FAT32.** The kernel already has an ext2 reader (`fs/src/ext2/`), which is the only property this partition needs, and building an ext2 image needs only `mke2fs` — already required by `make disk` — while FAT32 would add `mkfs.fat` and `mtools` to the prerequisites. `make payload` builds the image; see [../payload/README.md](../payload/README.md).
 
 ---
 
@@ -96,7 +96,7 @@ The kernel has no ext4 reader; the ext4 mount path is an IPC stub whose daemon l
 
 | Partition | Type | Filesystem | Size | Contents | Access |
 |---|---|---|---|---|---|
-| 1 | EFI System / basic data | FAT32 | 32 MiB | `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d` | read-only |
+| 1 | Linux filesystem | ext2, 1 KiB blocks | 16 MiB | `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d` | read-only |
 | 2 | Linux filesystem | ext4 | remaining | `/bin`, `/usr/bin`, `/sbin`, `/etc`, `/boot` | read-only |
 
 `/SERIX.MRK` is a small text file carrying a layout version, e.g. `serix-payload 1`. It is the only marker the kernel needs, and it lives on the one filesystem the kernel can parse.
@@ -113,7 +113,7 @@ Any GPT disk that is not the payload disk and has an ext4 partition is eligible.
 
 ### 4.3 Host build
 
-Both disk images are host artifacts: GPT written with a partitioning tool, filesystems created with `mkfs.fat` and `mkfs.ext4`, userland extracted onto the ext4 partition, and the whole thing attached as a second virtio disk in QEMU. The build must be reproducible and its checksum recorded. No kernel-side formatter is required for this milestone.
+Both disk images are host artifacts: GPT written with a partitioning tool, filesystems created with `mke2fs -d` (ext2 bootstrap, ext4 userland), userland extracted onto the ext4 partition, and the whole thing attached as a second virtio disk in QEMU. The build must be reproducible and its checksum recorded. No kernel-side formatter is required for this milestone.
 
 ---
 
@@ -184,17 +184,17 @@ After init finishes, a program sees this tree. Sources differ per path, and only
 |---|---|
 | Entry | ELF `e_entry` |
 | Text base | `0x200000` |
-| Stack | 16-byte aligned at entry; `argc` at `[rsp]`, `argv` at `[rsp+8]`, `envp` at `[rsp+16]`, strings above |
+| Stack | 16-byte aligned at entry (System V layout): `argc` at `[rsp]`, `argv[0..argc]` from `[rsp+8]`, a NULL, then `envp[]` and its NULL, strings above |
 | Arguments | `argc`/`argv`/`envp` copied from the parent at spawn; `envp` is empty (`envp[0] = NULL`) |
 | Exit | `SYS_EXIT(0..255)`; parent receives wait-status, code in bits 8–15 |
 | Capability slots | 0 stdin, 1 stdout, 2 stderr, 3 root directory; new grants append only |
-| Open handles | Returned as `(slot, generation)`; both must be presented on every later call |
+| Open handles | Returned as one opaque `u64` token, presented on every later call (section 11, decision 1) |
 | Descriptor inheritance | All open descriptors; parent and child share the same `OpenFile`, including offset |
 | Stdio | fd 0 keyboard, fd 1 framebuffer console, fd 2 serial; inheritable |
 | cwd | None in the kernel. `rsh` holds an opendir handle and resolves relative paths itself |
 | Runtime | `ulib`-compatible ABI. `rsh` is built in its own repo and must target this ABI |
 
-Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and generation 1. That conflicts with the decision to return generations, so the constants and the return path must change together.
+Capability slot numbering is load-bearing: `ulib` currently hardcodes slots 0–5 and generation 1. Opaque handle tokens (section 11, decision 1) retire the generation constant, so the constants and the return path must change together.
 
 ---
 
@@ -221,7 +221,8 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 | Multiple virtio-blk functions | `drivers/src/virtio.rs` | table of up to 8 devices, one IRQ vector and ISR address each |
 | Whole-disk and partition nodes | `kernel/src/init/filesystem.rs` | `/dev/sda`, `/dev/sdb`, ... plus validated GPT entries as `/dev/sdXN` |
 | GPT parsing | `fs/src/gpt.rs` | primary header only; CRC-validated; backup table, overlap detection, and MBR fallback absent |
-| FAT32 read/write | `fs/src/fat32/` | sufficient for the bootstrap volume |
+| ext2 read | `fs/src/ext2/` | sufficient for the bootstrap volume (marker scan, `/sbin/init`, `/sbin/ext4d`) |
+| FAT32 read/write | `fs/src/fat32/` | not used by the payload; kept for interoperability |
 | ext4 read/write through `ext4d` | `fs/src/ext4/` | IPC stubs in kernel; no read-only mount mode, no hardlinks |
 | Mount table | `vfs/src/lib.rs` | longest-prefix, replaces on remount, kernel-only API |
 | ELF loading | `kernel/src/process.rs` | works from a VFS path; no arguments; path-based grants |
@@ -346,7 +347,7 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 **Work.**
 
-- [ ] Return `(slot, generation)` from open and opendir. Encoding is undecided (see section 11).
+- [ ] Return an opaque `u64` handle token from open and opendir (section 11, decision 1); the kernel validates a per-task generation table on every use.
 - [ ] `SYS_OPENDIR(parent_handle, name)` returning a directory handle; `SYS_GETDENTS` takes one.
 - [ ] `SYS_OPEN(dir_handle, name)` for relative opens; absolute form retained for the bootstrap.
 - [ ] Path normalization: `.`, `..`, duplicate slashes, trailing slash.
@@ -364,7 +365,8 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 **Work.**
 
 - [ ] Extend the spawn ABI: path or directory handle plus name, `argv[]`, `envp[]`.
-- [ ] Copy user strings into kernel memory with per-string and total caps; validate every pointer.
+- [ ] Copy user strings into kernel-owned buffers with per-string and total caps; validate every pointer and validate UTF-8 on the kernel copy, never on user memory.
+- [ ] The copy must be fault-safe: an unmapped user pointer returns `EFAULT` instead of faulting in Ring 0.
 - [ ] Build the stack: `argc`, `argv[]`, `envp[]`, strings, 16-byte alignment at entry.
 - [ ] `envp` empty: one NULL pointer.
 - [ ] `ulib`: `args()` and a spawn wrapper taking `&[&str]`.
@@ -434,7 +436,7 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 **Work.**
 
-- [ ] Frame deallocation or a bounded reclamation path.
+- [ ] A minimal `free_frame` path: teardown cannot reclaim anything without one. A full reclaiming allocator (coalescing, accounting) is not required for v0.1.0.
 - [ ] Tear down the PML4 hierarchy, user mappings, and kernel stack at reap or exit; the orphan path must reach it too.
 - [ ] Measure frames across fifty starts; publish the number.
 - [ ] Handle a crashed shell without leaking its address space before restart.
@@ -443,6 +445,21 @@ Capability slot numbering is load-bearing: `ulib` hardcodes slots 0–5 and gene
 
 ---
 
+### B13 — Extended CPU state (x87/SSE)
+
+**State.** The context switch saves callee-saved GPRs and CR3 (see Current Status in [ROADMAP.md](ROADMAP.md)), and no `fxsave`/`xsave` appears anywhere in the tree. `ext4d` and `policyd` already run preempted in Ring 3, `init` and `rsh` are next, and Rust codegen uses XMM registers freely.
+
+**Why it blocks.** A timer preemption between two Ring 3 tasks can silently corrupt one task's x87/XMM state. The failure surfaces as wrong data far from its cause, which makes it the most expensive kind of bug to find after `rsh` exists.
+
+**Work.**
+
+- [ ] Enable `CR4.OSFXSR` and `CR4.OSXMMEXCPT` on every CPU (plus `OSXSAVE` and `XCR0` if XSAVE is used).
+- [ ] Give each task a save area (FXSAVE: 512 bytes, 16-byte aligned; XSAVE: sized from CPUID leaf 0xD) and save/restore it across context switches, eagerly or lazily.
+- [ ] Decide and document whether kernel code may use SSE; if it may not, enforce it in the target spec.
+- [ ] Stress test: two Ring 3 programs each hold a distinct XMM/x87 pattern and verify it across preemptions.
+
+**Done when.** The two-process stress test completes a documented number of context switches with no mismatch, on 1 and multiple CPUs.
+
 ## 10. Order of work
 
 Ordered for independently demonstrable checkpoints. Each step ends in a bootable system, so a slip later does not invalidate the earlier proof.
@@ -450,9 +467,10 @@ Ordered for independently demonstrable checkpoints. Each step ends in a bootable
 | Step | Work | Depends on | Checkpoint |
 |---|---|---|---|
 | 0 | Interface decisions (section 11) | — | Recorded |
-| 1 | `make payload`: FAT32 bootstrap (`/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`) plus ext4 userland | — | Both partitions mount on Linux |
+| 1 | `make payload`: ext2 bootstrap (`/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`) plus ext4 userland | — | Both partitions mount on Linux |
 | 2 | B3 `SYS_MOUNT`, `MS_RDONLY`, read-only `ext4d` | 1 | Writes to `/` return `EROFS` |
 | 3 | B8 `argv`/`envp` | — | Test program prints `argc`/`argv[1]` |
+| 3b | B13 x87/SSE state saved per task | — | Two-process XMM stress test passes |
 | 4 | B4 marker scan and bootstrap mount at `/` | 1, 2, 3 | **A:** init comes from disk |
 | 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **B:** one kernel spawn |
 | 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works |
@@ -472,7 +490,7 @@ Ordered for independently demonstrable checkpoints. Each step ends in a bootable
 Settled 2026-11-14. These constrain implementation; do not reopen them mid-step.
 
 1. **Handle encoding — opaque `u64` token.** Not `(slot, generation)`. The kernel keeps a per-task generation table and validates the token on every use, so `ulib` carries no generation constant and a closed-then-reused handle fails in exactly one place.
-2. **Spawn shape — handle plus name plus vectors.** `SYS_SPAWN(parent_dir_handle, name_ptr, name_len, argv, argc, envp, envc)`. The absolute-path form survives only for the kernel's bootstrap spawn of `/sbin/init`.
+2. **Spawn shape — handle plus name plus vectors.** `SYS_SPAWN(request_ptr)`, where `SpawnRequest { parent_dir_handle, name_ptr, name_len, argv_ptr, argc, envp_ptr, envc }` is read with the usual user-pointer validation. Seven fields exceed the five argument registers the dispatcher receives, so they travel in a struct, as `SYS_MOUNT` does with `MountRequest`. The absolute-path form survives only for the kernel's bootstrap spawn of `/sbin/init`.
 3. **Delegation — `SYS_GRANT`.** Explicit transfer of rights on a capability, with the receiver's slot chosen by the kernel. A path-keyed spawn table cannot express "this shell may spawn from `/bin` and `/usr/bin`" without duplicating the policy engine.
 4. **`ext4d` readiness — blocking first request.** Init issues a trivial request and blocks on the reply; no port probe or notification API is added.
 5. **Bootstrap volume and marker — `/SERIX.MRK` containing `serix-payload 1\n`.** The marker's only job is to identify the volume; the version line lets a future boot refuse a payload it cannot read.
