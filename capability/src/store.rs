@@ -79,7 +79,7 @@ impl CapabilityStore {
 		records.insert(id, record.clone());
 
 		let mut handle_idx = self.handle_index.lock();
-		handle_idx.insert(handle.key, id);
+		handle_idx.insert(*handle.as_bytes(), id);
 
 		crate::audit::global_audit().emit(crate::AuditRecord {
 			sequence: 0,
@@ -109,7 +109,7 @@ impl CapabilityStore {
 		drop(records);
 
 		let mut handle_idx = self.handle_index.lock();
-		handle_idx.insert(record.handle.key, record.id);
+		handle_idx.insert(*record.handle.as_bytes(), record.id);
 		if let Some(parent) = record.parent {
 			self.descendants
 				.lock()
@@ -167,7 +167,7 @@ impl CapabilityStore {
 		records.insert(id, record.clone());
 
 		let mut handle_idx = self.handle_index.lock();
-		handle_idx.insert(handle.key, id);
+		handle_idx.insert(*handle.as_bytes(), id);
 		self.descendants
 			.lock()
 			.entry(source.id)
@@ -233,7 +233,7 @@ impl CapabilityStore {
 		records.insert(id, record.clone());
 
 		let mut handle_idx = self.handle_index.lock();
-		handle_idx.insert(handle.key, id);
+		handle_idx.insert(*handle.as_bytes(), id);
 		self.descendants
 			.lock()
 			.entry(parent.id)
@@ -352,7 +352,7 @@ impl CapabilityStore {
 		if let Some(record) = record {
 			self.records.lock().remove(&id);
 			let mut handle_idx = self.handle_index.lock();
-			handle_idx.remove(&record.handle.key);
+			handle_idx.remove(record.handle.as_bytes());
 			if let Some(parent) = record.parent
 				&& let Some(children) = self.descendants.lock().get_mut(&parent)
 			{

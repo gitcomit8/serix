@@ -47,20 +47,32 @@ extern "x86-interrupt" fn timer_interrupt(_stack_frame: InterruptStackFrame) {
  * Preempts the current task and sends EOI to LAPIC.
  * Updates virtual runtime of the preempted task before scheduling.
  */
-pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-	let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-	if ticks % TIME_SLICE_TICKS == 0 {
-		/* Update virtual runtime of the preempted task */
+pub extern "x86-interrupt" fn timer_interrupt_handler(
+	_stack_frame: InterruptStackFrame
+) {
+	let ticks = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+	let should_schedule = ticks % TIME_SLICE_TICKS == 0;
+
+	if should_schedule {
+		/* Update virtual runtime before switching tasks. */
 		if let Some(arc) = task::scheduler::current_task_arc() {
 			task::wfq::update_virtual_runtime(&mut *arc.lock());
 		}
-		task::schedule();
 	}
-	// EOI after scheduler - not before - so the CPU doesn't accept
-	// a new timer interrupt while we're still mid-switch
+
+	/*
+     * Complete the LAPIC interrupt BEFORE context_switch().
+     *
+     * task::schedule() can suspend this interrupt handler for an
+     * arbitrary amount of time. Never defer EOI across a task switch.
+     */
 	unsafe {
 		send_eoi();
+	}
+
+	if should_schedule {
+		task::schedule();
 	}
 }
 

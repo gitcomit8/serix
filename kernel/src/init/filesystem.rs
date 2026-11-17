@@ -32,7 +32,7 @@ pub fn init_filesystem() {
 	vfs::mount("/", Arc::new(vfs::RamDir::new("/")));
 	vfs::mount("/dev/", Arc::new(vfs::RamDir::new("dev")));
 	serial_println!("VFS: mount table initialized");
-	graphics::fb_println!("VFS: / and /dev/ ready");
+	graphics::kprintln!("VFS: / and /dev/ ready");
 
 	/* Initialize page cache (256 pages = 1 MiB) */
 	vfs::page_cache::init_page_cache(256);
@@ -154,7 +154,7 @@ fn expose_block_devices() {
 		let disk_node: Arc<dyn INode> = Arc::new(fs::BlockDevINode(Arc::clone(&disk)));
 		dev_dir.insert(disk_name.as_str(), disk_node).ok();
 		serial_println!("VFS: /dev/{} available ({} sectors)", disk_name, sectors);
-		graphics::fb_println!("VFS: /dev/{} ready", disk_name);
+		graphics::kprintln!("VFS: /dev/{} ready", disk_name);
 
 		match fs::gpt::read_gpt(&*disk, sectors) {
 			Ok(partitions) if !partitions.is_empty() => {
@@ -201,7 +201,7 @@ fn expose_block_devices() {
 			}
 			Err(err) => {
 				serial_println!("VFS: /dev/{}: GPT rejected ({:?})", disk_name, err);
-				graphics::fb_println!("VFS: /dev/{}: GPT rejected", disk_name);
+				graphics::kprintln!("VFS: /dev/{}: GPT rejected", disk_name);
 			}
 		}
 	}

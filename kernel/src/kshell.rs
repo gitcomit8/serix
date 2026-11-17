@@ -58,8 +58,6 @@ pub unsafe extern "C" fn kshell_task() -> ! {
 	graphics::kprintln!("Type 'help' for commands.");
 	graphics::kprintln!();
 
-	dispatch("logs");
-
 	let mut buf = [0u8; LINE_MAX];
 	let mut len: usize = 0;
 
@@ -115,19 +113,8 @@ pub unsafe extern "C" fn kshell_task() -> ! {
  * Serial (COM1) is checked second as a fallback for -serial stdio mode.
  */
 fn read_byte() -> u8 {
-	let mut observed_isr_count = keyboard::get_isr_fire_count();
 	loop {
 		x86_64::instructions::interrupts::enable();
-
-		let isr_count = keyboard::get_isr_fire_count();
-		if isr_count != observed_isr_count {
-			observed_isr_count = isr_count;
-			hal::serial_println!(
-				"[DIAG] Keyboard IRQ count={}, last scancode={:#04x}",
-				isr_count,
-				keyboard::get_last_scancode()
-			);
-		}
 
 		if let Some(b) = keyboard::pop_key() {
 			x86_64::instructions::interrupts::disable();

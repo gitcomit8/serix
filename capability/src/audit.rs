@@ -21,7 +21,7 @@ const RATE_LIMIT_THRESHOLD: u32 = 100;
 
 /// An entry in the audit ring buffer.
 /// Never contains a full 128-bit capability handle.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct AuditRecord {
 	/// Monotonic sequence number (never wraps within a boot)
 	pub sequence: u64,
@@ -99,7 +99,8 @@ impl AuditRing {
 			parent_generation: 0,
 		};
 		// ponytail: array init at runtime — const [T; N] requires T: Copy
-		let entries: [AuditRecord; RING_SIZE] = core::array::from_fn(|_| empty.clone());
+		//let entries: [AuditRecord; RING_SIZE] = core::array::from_fn(|_| empty.clone());
+		let entries: [AuditRecord; RING_SIZE] = [empty; RING_SIZE];
 		AuditRing {
 			entries: Mutex::new(entries),
 			write_pos: AtomicUsize::new(0),
@@ -254,16 +255,36 @@ impl AuditRing {
 }
 
 /// Global audit ring — initialized during kernel bootstrap.
-static GLOBAL_AUDIT: spin::Once<AuditRing> = spin::Once::new();
+static GLOBAL_AUDIT: AuditRing = AuditRing {
+	entries: Mutex::new([
+		AuditRecord {
+			sequence: 0,
+			ticks: 0,
+			cpu: 0,
+			caller: 0,
+			operation: "",
+			object_kind: "",
+			object_id: 0,
+			requested_rights: 0,
+			result: AuditResult::Ok,
+			parent_generation: 0,
+		};
+		RING_SIZE
+	]),
+	write_pos: AtomicUsize::new(0),
+	total_written: AtomicU64::new(0),
+	last_sequence: AtomicU64::new(0),
+	rate_state: Mutex::new([(0, 0); 256]),
+	rate_count: AtomicUsize::new(0),
+};
 
 /// Get the global audit ring (must be initialized before calling).
 pub fn global_audit() -> &'static AuditRing {
-	GLOBAL_AUDIT.call_once(|| AuditRing::new())
+	&GLOBAL_AUDIT
 }
 
 /// Initialize the global audit ring. Safe to call multiple times.
 pub fn init_audit() {
-	let _ = global_audit();
 }
 
 impl Default for AuditRing {

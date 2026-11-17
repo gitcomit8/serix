@@ -56,13 +56,13 @@ pub unsafe fn init_smp() {
 		}
 
 		if total_cpus > 1 {
-			graphics::fb_println!("SMP: {} CPUs detected (Limine MP)", total_cpus);
+			graphics::kprintln!("SMP: {} CPUs detected (Limine MP)", total_cpus);
 		} else {
-			graphics::fb_println!("SMP: Single-core mode");
+			graphics::kprintln!("SMP: Single-core mode");
 		}
 	} else {
 		serial_println!("No MP response — single-core mode");
-		graphics::fb_println!("SMP: No MP response (single-core mode)");
+		graphics::kprintln!("SMP: No MP response (single-core mode)");
 	}
 
 	/* Signal APs that BSP init is complete — they will proceed with per-CPU setup */

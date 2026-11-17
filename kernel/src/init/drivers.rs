@@ -33,7 +33,7 @@ pub unsafe fn driver_init(
 	/* Enumerate PCI bus */
 	let devices = pci::enumerate_pci();
 	serial_println!("PCI BUS SCANNED: {} devices found", devices.len());
-	graphics::fb_println!("PCI: {} devices found", devices.len());
+	graphics::kprintln!("PCI: {} devices found", devices.len());
 	for dev in &devices {
 		let class = dev.class();
 		if matches!(class, pci::DeviceClass::Nvme | pci::DeviceClass::Xhci) {
@@ -63,7 +63,7 @@ pub unsafe fn driver_init(
 		if let Some(blk) = VirtioBlock::init(dev, &mut mmio_mapper, phys_mem_offset.as_u64()) {
 			let index = drivers::virtio::store_global(blk);
 			serial_println!("VirtIO: Phase 1 init complete (device {})", index);
-			graphics::fb_println!("VirtIO: block device {} detected", index);
+			graphics::kprintln!("VirtIO: block device {} detected", index);
 		}
 	}
 

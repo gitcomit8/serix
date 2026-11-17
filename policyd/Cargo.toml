@@ -9,9 +9,3 @@ fs         = { path = "../fs", default-features = false, features = ["policy-eng
 vfs        = { path = "../vfs" }
 capability = { path = "../capability" }
 spin       = "0.10.0"
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"

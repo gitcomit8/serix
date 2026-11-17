@@ -1,17 +1,17 @@
 /*
  * Framebuffer Console
  *
- * Implements a text console using a framebuffer and bitmap font.
- * Provides scrolling, character rendering, and format macro support.
+ * Implements a text console (Tty) on top of the Limine framebuffer and
+ * provides the kprint!/kprintln! format macros.
+ *
+ * There is exactly one framebuffer console: KERNEL_TTY. Every access to it
+ * disables interrupts and takes the spin lock, so the console is safe to use
+ * from interrupt context without deadlocking against a preempted printer.
  */
 
 use core::fmt;
-use core::fmt::Write;
-use core::ptr::write_volatile;
 
 use spin::Mutex;
-#[cfg(feature = "global-console")]
-use spin::MutexGuard;
 
 /*
  * 8x16 bitmap font for ASCII characters 32-127
@@ -21,11 +21,8 @@ static FONT_8X16: &[u8] = include_bytes!("font8x16.bin");
 const FONT_WIDTH: usize = 8;
 const FONT_HEIGHT: usize = 16;
 
-/*
- * Global console instance
- */
-#[cfg(feature = "global-console")]
-static GLOBAL_CONSOLE: Mutex<Option<FramebufferConsole>> = Mutex::new(None);
+/* Only 32-bit-per-pixel framebuffers are supported. */
+const BYTES_PER_PIXEL: usize = 4;
 
 /*
  * struct Tty - The terminal state
@@ -67,6 +64,53 @@ unsafe impl Sync for Tty {}
 pub static KERNEL_TTY: Mutex<Option<Tty>> = Mutex::new(None);
 
 impl Tty {
+	/*
+	 * new - Create a terminal for a framebuffer
+	 * @base: Framebuffer base pointer
+	 * @width: Width in pixels
+	 * @height: Height in pixels
+	 * @pitch: Bytes per scanline
+	 * @bpp: Bits per pixel
+	 *
+	 * Return: Some(Tty) when the framebuffer is a usable 32-bit-per-pixel
+	 * surface, None otherwise. Unsupported formats are rejected instead of
+	 * being rendered incorrectly.
+	 */
+	pub fn new(
+		base: *mut u8,
+		width: usize,
+		height: usize,
+		pitch: usize,
+		bpp: usize,
+	) -> Option<Self> {
+		let minimum_pitch = width.checked_mul(BYTES_PER_PIXEL)?;
+		/* Ensure framebuffer-size and row-offset arithmetic cannot overflow. */
+		pitch.checked_mul(height)?;
+		if base.is_null()
+			|| (base as usize) % BYTES_PER_PIXEL != 0
+			|| bpp != BYTES_PER_PIXEL * 8
+			|| width < FONT_WIDTH
+			|| height < FONT_HEIGHT
+			|| pitch < minimum_pitch
+			|| pitch % BYTES_PER_PIXEL != 0
+		{
+			return None;
+		}
+
+		Some(Self {
+			fb_base: base,
+			fb_width: width,
+			fb_height: height,
+			fb_pitch: pitch,
+			cols: width / FONT_WIDTH,
+			rows: height / FONT_HEIGHT,
+			x: 0,
+			y: 0,
+			color_fg: 0x00AAAAAA,
+			color_bg: 0x00000000,
+		})
+	}
+
 	/*
 	 * clear - Clear the entire framebuffer
 	 *
@@ -148,7 +192,9 @@ impl Tty {
 	 * @cy: Character row
 	 * @c: Character to draw
 	 *
-	 * Renders the character using the 8x16 bitmap font.
+	 * Renders the character using the 8x16 bitmap font. The cursor is
+	 * always clamped inside the framebuffer by the callers, so the pixel
+	 * offsets computed here stay within the mapped surface.
 	 */
 	fn draw_char(&mut self, cx: usize, cy: usize, c: char) {
 		let glyph_index = match c {
@@ -156,14 +202,30 @@ impl Tty {
 			_ => b'?' as usize,
 		};
 
-		let screen_x = cx * FONT_WIDTH;
-		let screen_y = cy * FONT_HEIGHT;
+		let Some(screen_x) = cx.checked_mul(FONT_WIDTH) else {
+			return;
+		};
+		let Some(screen_y) = cy.checked_mul(FONT_HEIGHT) else {
+			return;
+		};
+
+		/* Defensive bounds check: never write outside the framebuffer. */
+		let Some(screen_x_end) = screen_x.checked_add(FONT_WIDTH) else {
+			return;
+		};
+		let Some(screen_y_end) = screen_y.checked_add(FONT_HEIGHT) else {
+			return;
+		};
+		if screen_x_end > self.fb_width || screen_y_end > self.fb_height {
+			return;
+		}
+
 		let glyph = &FONT_8X16[glyph_index * 16..(glyph_index + 1) * 16];
 
 		for row in 0..FONT_HEIGHT {
 			let bits = glyph[row];
 			for col in 0..FONT_WIDTH {
-				let offset = (screen_y + row) * self.fb_pitch + (screen_x + col) * 4;
+				let offset = (screen_y + row) * self.fb_pitch + (screen_x + col) * BYTES_PER_PIXEL;
 				let color = if (bits & (1 << (7 - col))) != 0 {
 					self.color_fg
 				} else {
@@ -190,11 +252,17 @@ impl Tty {
  * @color: 0x00RRGGBB format
  *
  * Call before printing colored output; restore default (0x00AAAAAA) after.
+ * Interrupts are disabled while the console lock is held so this is safe
+ * from interrupt context.
  */
 pub fn set_kernel_fg_color(color: u32) {
-	if let Some(ref mut tty) = *KERNEL_TTY.lock() {
-		tty.set_fg_color(color);
-	}
+	use x86_64::instructions::interrupts;
+
+	interrupts::without_interrupts(|| {
+		if let Some(tty) = KERNEL_TTY.lock().as_mut() {
+			tty.set_fg_color(color);
+		}
+	})
 }
 
 impl fmt::Write for Tty {
@@ -207,10 +275,11 @@ impl fmt::Write for Tty {
 }
 
 /*
- * _print - Internal print function for macros
+ * _print - Internal print function for kprint!/kprintln!
  * @args: Format arguments
  *
- * Called by fb_print! and fb_println! macros.
+ * Called by the kprint! and kprintln! macros. Interrupts are disabled for
+ * the duration of the write so the console can be used from any context.
  */
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
@@ -224,245 +293,47 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 /*
- * struct FramebufferConsole - Text console using framebuffer
- * @framebuffer: Pointer to framebuffer memory
- * @width: Width in pixels
- * @height: Height in pixels
- * @pitch: Bytes per scanline
- * @cursor_x: Current cursor column (in characters)
- * @cursor_y: Current cursor row (in characters)
- */
-pub struct FramebufferConsole {
-	framebuffer: *mut u8,
-	width: usize,
-	height: usize,
-	pitch: usize,
-	cursor_x: usize,
-	cursor_y: usize,
-}
-
-unsafe impl Sync for FramebufferConsole {}
-unsafe impl Send for FramebufferConsole {}
-
-impl FramebufferConsole {
-	/*
-	 * new - Create a new framebuffer console
-	 * @framebuffer: Pointer to framebuffer memory
-	 * @width: Width in pixels
-	 * @height: Height in pixels
-	 * @pitch: Bytes per scanline
-	 */
-	pub unsafe fn new(framebuffer: *mut u8, width: usize, height: usize, pitch: usize) -> Self {
-		Self {
-			framebuffer,
-			width,
-			height,
-			pitch,
-			cursor_x: 0,
-			cursor_y: 0,
-		}
-	}
-
-	/*
-	 * put_char - Output a character at the current cursor position
-	 * @c: Character to output
-	 *
-	 * Handles newlines, carriage returns, and automatic line wrapping.
-	 */
-	fn put_char(&mut self, c: char) {
-		if c == '\n' {
-			self.cursor_x = 0;
-			self.cursor_y += 1;
-			self.scroll_if_needed();
-			return;
-		}
-		if c == '\r' {
-			self.cursor_x = 0;
-			return;
-		}
-		self.draw_char(c, self.cursor_x, self.cursor_y);
-
-		self.cursor_x += 1;
-		if self.cursor_x * 8 >= self.width {
-			self.cursor_x = 0;
-			self.cursor_y += 1;
-			self.scroll_if_needed();
-		}
-	}
-
-	/*
-	 * scroll_if_needed - Scroll the display if cursor is off-screen
-	 */
-	fn scroll_if_needed(&mut self) {
-		let max_lines = self.height / 16;
-		if self.cursor_y >= max_lines {
-			self.scroll_up();
-			self.cursor_y = max_lines - 1;
-		}
-	}
-
-	/*
-	 * scroll_up - Scroll framebuffer contents up by one line
-	 *
-	 * Moves all scanlines up by 16 pixels (one character height) and clears the bottom line.
-	 */
-	fn scroll_up(&mut self) {
-		unsafe {
-			let fb = self.framebuffer;
-			let pitch = self.pitch;
-			let height_bytes = self.height * pitch;
-
-			//Move framebuffer lines up by one character height (16 pixels)
-			let src = fb.add(16 * pitch);
-			core::ptr::copy(src, fb, height_bytes - 16 * pitch);
-
-			//Clear the last character line by writing zero
-			let clear_start = fb.add(height_bytes - 16 * pitch);
-			for i in 0..(16 * pitch) {
-				write_volatile(clear_start.add(i), 0);
-			}
-		}
-	}
-
-	fn draw_char(&mut self, c: char, x_char: usize, y_char: usize) {
-		let c = c as u8;
-		let glyph = if c < 32 || c > 127 {
-			&FONT_8X16[(b'?' - 32) as usize * 16..][..16]
-		} else {
-			&FONT_8X16[(c - 32) as usize * 16..][..16]
-		};
-
-		let fb = self.framebuffer;
-		let pitch = self.pitch;
-		let x_pixel = x_char * 8;
-		let y_pixel = y_char * 16;
-
-		unsafe {
-			for (row, &bits) in glyph.iter().enumerate() {
-				for bit in 0..8 {
-					let pixel_on = (bits & (1 << (7 - bit))) != 0;
-					let pixel = if pixel_on {
-						[0xFF, 0xFF, 0xFF, 0x00]
-					} else {
-						[0x00, 0x00, 0x00, 0x00]
-					};
-					let offset = (y_pixel + row) * pitch + (x_pixel + bit) * 4;
-					for p in 0..4 {
-						write_volatile(fb.add(offset + p), pixel[p]);
-					}
-				}
-			}
-		}
-	}
-
-	/*
-	 * write_string - Write a string of characters
-	 * @s: String to write
-	 */
-	fn write_string(&mut self, s: &str) {
-		for c in s.chars() {
-			self.put_char(c);
-		}
-	}
-}
-
-impl Write for FramebufferConsole {
-	fn write_str(&mut self, s: &str) -> fmt::Result {
-		self.write_string(s);
-		Ok(())
-	}
-}
-
-// #[cfg(feature = "global-console")]
-// pub fn init_console(framebuffer: *mut u8, width: usize, height: usize, pitch: usize) {
-// 	let mut con = GLOBAL_CONSOLE.lock();
-// 	*con = Some(unsafe { FramebufferConsole::new(framebuffer, width, height, pitch) });
-// }
-
-#[cfg(feature = "global-console")]
-pub fn console() -> impl Write + 'static {
-	struct ConsoleGuard<'a> {
-		guard: MutexGuard<'a, Option<FramebufferConsole>>,
-	}
-
-	impl<'a> Write for ConsoleGuard<'a> {
-		fn write_str(&mut self, s: &str) -> fmt::Result {
-			if let Some(console) = &mut *self.guard {
-				console.write_string(s);
-				Ok(())
-			} else {
-				Err(fmt::Error)
-			}
-		}
-	}
-	ConsoleGuard {
-		guard: GLOBAL_CONSOLE.lock(),
-	}
-}
-
-/*
  * init_console - Initialize the kernel TTY
  * @base: Framebuffer base pointer
  * @width: Width in pixels
  * @height: Height in pixels
  * @pitch: Bytes per scanline
+ * @bpp: Bits per pixel
  *
- * Creates and initializes the global kernel TTY.
+ * Return: true when the console was initialized, false when the framebuffer
+ * uses an unsupported format or invalid geometry.
  */
-pub unsafe fn init_console(base: *mut u8, width: usize, height: usize, pitch: usize) {
-	let cols = width / FONT_WIDTH;
-	let rows = height / FONT_HEIGHT;
+pub unsafe fn init_console(
+	base: *mut u8,
+	width: usize,
+	height: usize,
+	pitch: usize,
+	bpp: usize,
+) -> bool {
+	use x86_64::instructions::interrupts;
 
-	let mut tty = Tty {
-		fb_base: base,
-		fb_width: width,
-		fb_pitch: pitch,
-		fb_height: height,
-		cols,
-		rows,
-		x: 0,
-		y: 0,
-		color_fg: 0x00AAAAAA,
-		color_bg: 0x00000000,
+	let mut tty = match Tty::new(base, width, height, pitch, bpp) {
+		Some(tty) => tty,
+		None => return false,
 	};
 	tty.clear();
-	*KERNEL_TTY.lock() = Some(tty);
+	interrupts::without_interrupts(|| {
+		*KERNEL_TTY.lock() = Some(tty);
+	});
+	true
 }
 
-/// Clear the global kernel text console and reset its cursor.
+/*
+ * clear_kernel_console - Clear the global kernel text console
+ *
+ * Interrupts are disabled while the console lock is held.
+ */
 pub fn clear_kernel_console() {
-	if let Some(tty) = KERNEL_TTY.lock().as_mut() {
-		tty.clear();
-	}
-}
+	use x86_64::instructions::interrupts;
 
-/*
- * fb_print! - Print formatted text to framebuffer
- *
- * Usage: fb_print!("format string {}", args...)
- */
-#[macro_export]
-macro_rules! fb_print {
-	($($arg:tt)*) => {{
-		use core::fmt::Write as _;
-		let _ = $crate::console::console().write_fmt(format_args!($($arg)*));
-	}};
-}
-
-/*
- * fb_println! - Print formatted text with newline to framebuffer
- *
- * Usage: fb_println!("format string {}", args...)
- */
-#[macro_export]
-macro_rules! fb_println {
-	() => {
-		$crate::fb_print!("\n")
-	};
-	($fmt:expr) => {
-		$crate::fb_print!(concat!($fmt, "\n"))
-	};
-	($fmt:expr, $($arg:tt)*) => {
-		$crate::fb_print!(concat!($fmt, "\n"), $($arg)*)
-	};
+	interrupts::without_interrupts(|| {
+		if let Some(tty) = KERNEL_TTY.lock().as_mut() {
+			tty.clear();
+		}
+	})
 }

@@ -999,8 +999,9 @@ extern "C" fn syscall_dispatcher(
 			/* create_port already adds to global cap store and current task's cspace */
 
 			unsafe {
-				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
-				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+				*cap_ptr = u64::from_le_bytes(cap_handle.as_bytes()[..8].try_into().unwrap());
+				*cap_ptr.add(1) =
+					u64::from_le_bytes(cap_handle.as_bytes()[8..].try_into().unwrap());
 			}
 
 			port_id
@@ -1031,8 +1032,9 @@ extern "C" fn syscall_dispatcher(
 			let (_port, cap_handle) = ipc::IPC_GLOBAL.create_notification_port(port_id, bitmask);
 
 			unsafe {
-				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
-				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+				*cap_ptr = u64::from_le_bytes(cap_handle.as_bytes()[..8].try_into().unwrap());
+				*cap_ptr.add(1) =
+					u64::from_le_bytes(cap_handle.as_bytes()[8..].try_into().unwrap());
 			}
 
 			port_id

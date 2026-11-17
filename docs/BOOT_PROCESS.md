@@ -185,7 +185,7 @@ Serix configuration
 
 TIMEOUT=3
 
-:Serix OS v0.0.6
+:Serix OS v0.0.8
 
 ```
 
@@ -421,7 +421,7 @@ Serial output
 
 ```
 
-Serix Kernel v0.0.6 Starting...
+Serix Kernel v0.0.8 Starting...
 Serial console initialized
 
 ```
@@ -760,25 +760,30 @@ Initialize Text Console
 ```
 
 let fb = fb_response.framebuffers().next().expect("No framebuffer");
-init_console(
+graphics::init_console(
+	fb.addr(),
+	fb.width() as usize,
+	fb.height() as usize,
+	fb.pitch() as usize,
+	fb.bpp() as usize,
 );
 
 ```
 **Steps**:
 
-1. Create FramebufferConsole instance
-2. Set cursor to (0, 0)
-3. Store in global static
+1. Validate the framebuffer is 32 bits per pixel with sane geometry
+2. Create a `Tty` instance and clear the framebuffer
+3. Store it in the global `KERNEL_TTY` mutex
 
-**Result**: ``fb_println!`` macro now functional
+**Result**: `graphics::kprint!` / `graphics::kprintln!` now functional
 
 Test output
 
 ```
 
-graphics::fb_println!("Welcome to Serix OS v0.0.6!");
-graphics::fb_println!("Framebuffer: {}x{}", fb.width(), fb.height());
-graphics::fb_println!("Memory: {} MB usable", total_mb);
+graphics::kprintln!("Welcome to Serix OS v{}!", crate::VERSION);
+graphics::kprintln!("Framebuffer: {}x{}", fb.width(), fb.height());
+graphics::kprintln!("Memory: {} MB usable", total_mb);
 
 ```
 
@@ -856,7 +861,7 @@ BSP LAPIC ID: 0, Total CPUs: 4
 AP 1 initialized, entering idle loop
 AP 2 initialized, entering idle loop
 AP 3 initialized, entering idle loop
-Serix OS v0.0.6 ready.
+Serix OS v0.0.8 ready.
 
 ```
 
@@ -944,7 +949,7 @@ Serial console output
 
 ```
 
-Serix Kernel v0.0.6 Starting...
+Serix Kernel v0.0.8 Starting...
 Serial console initialized
 Legacy PIC disabled
 APIC enabled
@@ -955,9 +960,7 @@ Entering idle loop
 ```
 Framebuffer display:
 
-- Blue screen background
-- Memory map bars at bottom (colored)
-- Text: "Welcome to Serix OS v0.0.6!"
+- Text: "Welcome to Serix OS v0.0.8!"
 - Text: System information (memory, framebuffer resolution)
 
 Interrupt functionality:

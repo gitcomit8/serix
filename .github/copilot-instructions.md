@@ -192,7 +192,7 @@ Currently skeletal. Tasks are async-based:
 - **100-character line width**: `max_width = 100` in `rustfmt.toml`
 - **C-style comments for functions**: Use block comments `/* */` for function headers (see `kernel/src/main.rs`)
 - **`serial_println!` for debug output**: Prefer this over `println!` (which doesn't exist in `no_std`)
-- **`fb_println!` for framebuffer output**: After graphics initialization
+- **`graphics::kprintln!` for framebuffer output**: After graphics initialization (backed by `Tty` / `KERNEL_TTY`)
 
 ### Rust Patterns
 
@@ -354,7 +354,7 @@ To change process startup order, edit `kernel/src/main.rs` and rebuild with `mak
 ## Project Status & Roadmap
 
 **Current Phase:** 4 (Storage & Filesystem Stack)  
-**Version:** 0.0.6  
+**Version:** 0.0.8
 **Status:** ext4 daemon MVP integrated; FAT32 complete
 
 ### What Works

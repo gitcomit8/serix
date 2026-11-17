@@ -161,11 +161,8 @@ if scancode & 0x80 != 0 {
 // Look up ASCII value
 if let Some(&ascii) = SCANDCODE_TO_ASCII.get(scancode as usize) {
     if ascii != 0 {
-        // Output to serial console
-        hal::serial_print!("{}", ascii as char);
-        
-        // Output to framebuffer console
-        graphics::fb_print!("{}", ascii as char);
+        // Buffer the character for the kernel shell / console readers
+        INPUT_BUF.lock().push(ascii);
     }
 }
 ```
@@ -175,7 +172,9 @@ if let Some(&ascii) = SCANDCODE_TO_ASCII.get(scancode as usize) {
 1. **Check High Bit**: If bit 7 is set, scancode is a break code (key release) → ignore
 2. **Array Lookup**: Use scancode as index into translation table
 3. **Filter Zero**: Zero means no ASCII representation (modifier key) → ignore
-4. **Output**: Print character to both serial and framebuffer consoles
+4. **Buffer**: Push the character into the interrupt-safe ring buffer;
+   readers consume it with `pop_key()` and echo it via
+   `graphics::kprint!` where appropriate
 
 **Why Ignore Break Codes?**
 

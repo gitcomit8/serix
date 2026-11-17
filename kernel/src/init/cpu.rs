@@ -97,13 +97,9 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
 pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
 
-    /* Record that the ISR fired */
-    keyboard::isr_interrupt_handler_called();
-
     /* Read scancode from keyboard data port (0x60) */
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
-    keyboard::record_scancode(scancode);
 
     /* Process the scancode via keyboard module */
     keyboard::handle_scancode(scancode);
@@ -177,8 +173,6 @@ pub unsafe fn init_ps2_keyboard() {
         }
     }
 
-    serial_println!("[PS/2] Starting init sequence (raw I/O)...");
-
     /* Drain any pending output */
     for _ in 0..1000 {
         let status: u8 = unsafe { io_in(0x64) };
@@ -195,7 +189,9 @@ pub unsafe fn init_ps2_keyboard() {
     delay_ps2();
     wait_output_ready();
     let st_result: u8 = unsafe { io_in(0x60) };
-    serial_println!("[PS/2] Self-test: {:#04x}", st_result);
+    if st_result != 0x55 {
+        serial_println!("[PS/2] Self-test failed: {:#04x}", st_result);
+    }
 
     /* Disable keyboard (0xAD) */
     wait_cmd_ready();
@@ -206,7 +202,6 @@ pub unsafe fn init_ps2_keyboard() {
     wait_cmd_ready();
     unsafe { io_out(0x64, 0xAE) };
     delay_ps2();
-    serial_println!("[PS/2] Sent 0xAE");
 
     /* Read the 8042 configuration byte (0x20). Bit 0 enables IRQ1;
      * bit 4 disables the first-port clock when set. */
@@ -216,12 +211,6 @@ pub unsafe fn init_ps2_keyboard() {
     wait_output_ready();
     let config: u8 = unsafe { io_in(0x60) };
     let configured = (config | 0x01) & !0x10;
-    serial_println!(
-        "[PS/2] Config before: {:#04x} (IRQ1={}, keyboard clock={})",
-        config,
-        config & 0x01 != 0,
-        config & 0x10 == 0
-    );
 
     /* Explicitly enable IRQ1 and the keyboard clock in the controller. */
     wait_cmd_ready();
@@ -235,12 +224,12 @@ pub unsafe fn init_ps2_keyboard() {
     delay_ps2();
     wait_output_ready();
     let verified: u8 = unsafe { io_in(0x60) };
-    serial_println!(
-        "[PS/2] Config after: {:#04x} (IRQ1={}, keyboard clock={})",
-        verified,
-        verified & 0x01 != 0,
-        verified & 0x10 == 0
-    );
+    if verified & 0x01 == 0 || verified & 0x10 != 0 {
+        serial_println!(
+            "[PS/2] IRQ1/clock configuration not applied: {:#04x}",
+            verified
+        );
+    }
 
     /* Tell the keyboard device to start scanning and verify its ACK.
      * The controller's 0xAE command enables the port, but is not the
@@ -257,8 +246,8 @@ pub unsafe fn init_ps2_keyboard() {
         _mm_pause();
     }
     match ack {
-        Some(0xFA) => serial_println!("[PS/2] Enable scanning acknowledged (0xfa)"),
-        Some(byte) => serial_println!("[PS/2] Enable scanning response: {:#04x}", byte),
+        Some(0xFA) => {},
+        Some(byte) => serial_println!("[PS/2] Enable scanning failed: {:#04x}", byte),
         None => serial_println!("[PS/2] Enable scanning timed out (no response)"),
     }
 }
