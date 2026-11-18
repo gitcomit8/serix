@@ -1,6 +1,6 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-11-14 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9 · **Next Milestone:** v0.1.0 "Live Userspace CLI"
+> **Last Updated:** 2026-11-18 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9 · **Next Milestone:** v0.1.0 "Live Userspace CLI"
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
 
@@ -46,7 +46,7 @@ These are the gaps that currently prevent the kernel from delivering a usable us
 
 This milestone replaces the old assumption that Phase 8 would arrive after all hardware work. It is now the critical path: a single recorded QEMU session must boot the live ISO, discover a payload disk, start `/sbin/init`, mount the read-only ext4 userland, and reach an `rsh` prompt where external programs start with arguments, exit statuses, inherited descriptors, and real capability enforcement.
 
-**Ownership after the milestone:** the kernel discovers disks, exposes GPT partitions, finds the payload by marker, mounts the FAT32 bootstrap volume at `/`, and spawns exactly one process (`/sbin/init`) with the payload disk path as `argv[1]`. Init mounts the ext4 payload and data disks, starts and respawns `ext4d`, `policyd`, and `rsh`, and loads policy. `kshell` becomes a Ring 0 fallback only.
+**Ownership after the milestone:** the kernel discovers disks, exposes GPT partitions, finds the payload by marker, mounts the ext2 bootstrap volume at `/`, and spawns exactly one process (`/sbin/init`) with the payload disk path as `argv[1]`. Init mounts the ext4 payload and data disks, starts and respawns `ext4d`, `policyd`, and `rsh`, and loads policy. `kshell` becomes a Ring 0 fallback only.
 
 ### Blockers
 
@@ -55,15 +55,16 @@ This milestone replaces the old assumption that Phase 8 would arrive after all h
 | **B1** | Multi-device block layer | ✅ Done — device table of up to 8 slots, per-device vector and ISR address; `/dev/sda` and `/dev/sdb` report distinct capacities | `/dev/sda` and `/dev/sdb` report distinct capacities and data |
 | **B2** | GPT and partition devices | ✅ Done — validated GPT parser plus `PartitionDev`; `/dev/sdXN` nodes exposed, corrupt tables refused | `/dev/sda1`/`/dev/sda2` read correct offsets; corrupt GPT refused |
 | **B3** | `SYS_MOUNT` + read-only ext4 | No mount syscall; `ext4d` always writable | Init mounts payload read-only at `/` and data at `/mnt`; writes to `/` return `EROFS` |
-| **B4** | Payload discovery and bootstrap mount | Kernel takes the first disk and mounts nothing at `/` | Marker found, FAT32 bootstrap mounted at `/`, init path validated; bounded retry then `kshell` with a reason |
+| **B4** | Payload discovery and bootstrap mount | Kernel takes the first disk and mounts nothing at `/` | Marker found, ext2 bootstrap mounted at `/`, init path validated; bounded retry then `kshell` with a reason |
 | **B5** | Init: orchestration, switch root, respawn | No init binary; kernel spawns daemons | Kernel spawns exactly one process; init owns mounts, policy, daemons, and shell respawn |
 | **B6** | ext4 hardlinks | No `link()`, link count, or shared-inode handling. **Not a v0.1.0 blocker** — the payload ships copies of `core`, which dispatch identically by `argv[0]` | `core` and `ls` share an inode, both execute, deleting one name keeps the other |
-| **B7** | Open handles: slot, generation, `opendir` | Bare fds; stale generations unknowable | Relative `opendir`/`open` works and stale generations are rejected |
-| **B8** | Arguments for spawn | No `argc`/`argv`/`envp` on the user stack | `argv[0]` dispatch works; a test program prints correct args |
+| **B7** | Opaque open handles and `opendir` | Bare fds; stale generations unknowable | Relative `opendir`/`open` works and stale generations are rejected |
+| **B8** | Arguments for spawn | `argv` works and reaches the child stack; `envp` is always empty and `argv[0]` is the resolved path, not the invoked name | `argv[0]` dispatch works; a test program prints correct args |
 | **B9** | Descriptor inheritance | Fresh stdio minted per spawn. **Not a v0.1.0 blocker** — required only for redirection and pipes | Redirection and pipes work across spawn with shared `OpenFile` offsets |
 | **B10** | Full authorization enforcement | `authorization_for` never called; `SYS_SPAWN` ungated | Table enforced before dispatch; `rsh` can start `/bin/ls` but not `/sbin/policyd` |
 | **B11** | `ulib` and the `rsh` contract | No formatting, args, allocator, or published ABI | A program built against the published ABI runs; `rsh` builds against the same crate |
-| **B12** | Lifecycle and address-space teardown | Address spaces, pages, and kernel stacks never freed. Split: teardown is a v0.1.0 item, frame deallocation is not | Fifty starts and one shell crash leave free frames within a documented bound |
+| **B12** | Lifecycle and address-space teardown | Address spaces, pages, and kernel stacks never freed. Split: teardown, with a minimal `free_frame` path, is a v0.1.0 item; a full reclaiming allocator is not | Fifty starts and one shell crash leave free frames within a documented bound |
+| **B13** | Extended CPU state (x87/SSE) | No `fxsave`/`xsave` in the tree; context switch saves callee-saved GPRs and CR3 only | Two Ring 3 programs keep distinct XMM/x87 state across preemptions on 1 and multiple CPUs |
 
 ### Order of work
 
@@ -72,25 +73,26 @@ The blockers are ordered for **independently demonstrable checkpoints** rather t
 | Step | Work | Depends on | Checkpoint |
 |---|---|---|---|
 | 0 | Interface decisions (handles, spawn shape, `SYS_GRANT`) | — | Recorded below |
-| 1 | `make payload` fixture: FAT32 bootstrap with `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`, plus an ext4 userland partition | — | Linux mounts both partitions; `make payload` is idempotent |
+| 1 | `make payload` fixture: ext2 bootstrap with `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`, plus an ext4 userland partition | — | Linux mounts both partitions; `make payload` is idempotent |
 | 2 | B3 `SYS_MOUNT` + `MS_RDONLY` + read-only `ext4d` | 1 | Read-only mount works; writes return `EROFS` |
 | 3 | B8 `argv`/`envp` for spawn | — | A test program prints `argc` and `argv[1]` |
+| 3b | B13 x87/SSE state saved per task | — | Two-process XMM stress test passes |
 | 4 | B4 payload discovery and bootstrap mount at `/` | 1, 2, 3 | **Checkpoint A:** kernel boots a disk-delivered `/sbin/init` |
 | 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **Checkpoint B:** kernel spawns exactly one process, init does the rest |
 | 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works; stale handles rejected |
 | 7 | B11 ABI + `ulib` runtime, then `rsh` integration | 3, 6 | **Checkpoint C:** Ring 3 shell prompt runs payload programs |
 | 8 | B10 `SYS_GRANT` delegation, then enforcement | 5, 7 | `rsh` starts `/bin/ls`, is refused on `/sbin/policyd` |
-| 9 | B12 address-space teardown (frames stay) | 5 | Fifty starts within a documented frame bound |
+| 9 | B12 address-space teardown with a minimal `free_frame` | 5 | Fifty starts within a documented frame bound |
 | 10 | B9 descriptor inheritance, B6 hardlinks | 6 | Optional for v0.1.0 |
 
 **Immediate next step: steps 1 through 4.** B1 and B2 are complete; the payload fixture, the mount syscall, `argv`, and discovery are the remaining path to Checkpoint A.
 
-Deliberately deferred: backup-GPT fallback, MBR fallback, overlap detection, non-512-byte sectors, frame deallocation, and the `/boot` reservation. None appear in the acceptance session.
+Deliberately deferred: backup-GPT fallback, MBR fallback, overlap detection, non-512-byte sectors, a full reclaiming frame allocator, and the `/boot` reservation. None appear in the acceptance session.
 
 ### Settled interface decisions (2026-11-14)
 
 1. **Handle return encoding** — a single opaque `u64` token, not `(slot, generation)`. The kernel validates a per-task generation table internally, so `ulib` never hardcodes a generation and stale or reused handles fail in one place.
-2. **Spawn call shape** — directory handle plus name, plus `argv`/`envp`: `SYS_SPAWN(parent_dir_handle, name, argv_ptr, argc, envp_ptr, envc)`. An absolute-path form is retained for the bootstrap spawn of `/sbin/init` only.
+2. **Spawn call shape** — `SYS_SPAWN(path_ptr, path_len, argv_ptr, argc)`, where `argv_ptr` points at an array of `UserArg { ptr, len }` and a zero `argv_ptr` means "argv is just the path". `envp` and a parent directory handle are not accepted yet; when they are, the seven fields will travel in a `SpawnRequest` read through `request_ptr`, as `SYS_MOUNT` does with `MountRequest`, because they exceed the five argument registers the dispatcher receives. An absolute-path form is retained for the bootstrap spawn of `/sbin/init` only.
 3. **Delegation mechanism** — a `SYS_GRANT` syscall. A path-keyed spawn table cannot express scoped shell rights without becoming a second policy engine.
 4. **`ext4d` readiness handshake** — a blocking first request from init, so no new port or notification API is needed.
 5. **`ulib` ownership** — a crate in this repository, consumed by `rsh` as a path dependency, so the ABI ships with the kernel that defines it.
@@ -530,7 +532,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines. High-prior
 
 1. **`SYS_MOUNT` and read-only ext4 (B3)** — a userspace mount path with `MS_RDONLY`, so init rather than the kernel owns the root
 2. **Payload discovery and bootstrap mount (B4)** — find the marker volume, mount it at `/`, and start init instead of kshell
-3. **Spawn arguments and handle generations (B7, B8)** — `argc`/`argv`/`envp` on the user stack and `(slot, generation)` handles with relative `opendir`/`open`
+3. **Spawn arguments and handle generations (B7, B8)** — `argc`/`argv`/`envp` on the user stack and opaque handle tokens with relative `opendir`/`open`
 4. **Table-driven capability enforcement (B10)** — actually call `authorization_for(nr)` before dispatch and gate `SYS_SPAWN`, then add adversarial QEMU tests
 5. **Ext4 acceptance validation** — image interoperability, journal replay after interrupted writes, and malformed-metadata rejection (Phase 4)
 
