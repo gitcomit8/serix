@@ -59,7 +59,7 @@ This milestone replaces the old assumption that Phase 8 would arrive after all h
 | **B5** | Init: orchestration, switch root, respawn | No init binary; kernel spawns daemons | Kernel spawns exactly one process; init owns mounts, policy, daemons, and shell respawn |
 | **B6** | ext4 hardlinks | No `link()`, link count, or shared-inode handling. **Not a v0.1.0 blocker** — the payload ships copies of `core`, which dispatch identically by `argv[0]` | `core` and `ls` share an inode, both execute, deleting one name keeps the other |
 | **B7** | Opaque open handles and `opendir` | Bare fds; stale generations unknowable | Relative `opendir`/`open` works and stale generations are rejected |
-| **B8** | Arguments for spawn | No `argc`/`argv`/`envp` on the user stack | `argv[0]` dispatch works; a test program prints correct args |
+| **B8** | Arguments for spawn | `argv` works and reaches the child stack; `envp` is always empty and `argv[0]` is the resolved path, not the invoked name | `argv[0]` dispatch works; a test program prints correct args |
 | **B9** | Descriptor inheritance | Fresh stdio minted per spawn. **Not a v0.1.0 blocker** — required only for redirection and pipes | Redirection and pipes work across spawn with shared `OpenFile` offsets |
 | **B10** | Full authorization enforcement | `authorization_for` never called; `SYS_SPAWN` ungated | Table enforced before dispatch; `rsh` can start `/bin/ls` but not `/sbin/policyd` |
 | **B11** | `ulib` and the `rsh` contract | No formatting, args, allocator, or published ABI | A program built against the published ABI runs; `rsh` builds against the same crate |
@@ -92,7 +92,7 @@ Deliberately deferred: backup-GPT fallback, MBR fallback, overlap detection, non
 ### Settled interface decisions (2026-11-14)
 
 1. **Handle return encoding** — a single opaque `u64` token, not `(slot, generation)`. The kernel validates a per-task generation table internally, so `ulib` never hardcodes a generation and stale or reused handles fail in one place.
-2. **Spawn call shape** — `SYS_SPAWN(request_ptr)` with `SpawnRequest { parent_dir_handle, name_ptr, name_len, argv_ptr, argc, envp_ptr, envc }`. Seven fields exceed the five argument registers the dispatcher receives, so they travel in a struct, as `SYS_MOUNT` does with `MountRequest`. An absolute-path form is retained for the bootstrap spawn of `/sbin/init` only.
+2. **Spawn call shape** — `SYS_SPAWN(path_ptr, path_len, argv_ptr, argc)`, where `argv_ptr` points at an array of `UserArg { ptr, len }` and a zero `argv_ptr` means "argv is just the path". `envp` and a parent directory handle are not accepted yet; when they are, the seven fields will travel in a `SpawnRequest` read through `request_ptr`, as `SYS_MOUNT` does with `MountRequest`, because they exceed the five argument registers the dispatcher receives. An absolute-path form is retained for the bootstrap spawn of `/sbin/init` only.
 3. **Delegation mechanism** — a `SYS_GRANT` syscall. A path-keyed spawn table cannot express scoped shell rights without becoming a second policy engine.
 4. **`ext4d` readiness handshake** — a blocking first request from init, so no new port or notification API is needed.
 5. **`ulib` ownership** — a crate in this repository, consumed by `rsh` as a path dependency, so the ABI ships with the kernel that defines it.

@@ -358,18 +358,20 @@ Capability slot numbering is load-bearing: `ulib` currently hardcodes slots 0–
 
 ### B8 — Arguments for spawn
 
-**State.** The user stack has no `argc`/`argv`/`envp`; `SYS_SPAWN` takes only a path.
+**State.** `argv` reaches the child stack: `SYS_SPAWN` copies a `UserArg[]` array into kernel-owned buffers and lays out `argc`, `argv[]`, `envp[]` and the strings. Two gaps remain — `envp` is always empty and `argv[0]` is the resolved path rather than the invoked name — plus the directory-handle form of the call.
 
 **Why it blocks.** `rsh` cannot pass a filename to `cat` or a name to a program, and argv[0] dispatch cannot work.
 
 **Work.**
 
-- [ ] Extend the spawn ABI: path or directory handle plus name, `argv[]`, `envp[]`.
-- [ ] Copy user strings into kernel-owned buffers with per-string and total caps; validate every pointer and validate UTF-8 on the kernel copy, never on user memory.
-- [ ] The copy must be fault-safe: an unmapped user pointer returns `EFAULT` instead of faulting in Ring 0.
-- [ ] Build the stack: `argc`, `argv[]`, `envp[]`, strings, 16-byte alignment at entry.
-- [ ] `envp` empty: one NULL pointer.
-- [ ] `ulib`: `args()` and a spawn wrapper taking `&[&str]`.
+- [x] Copy user strings into kernel-owned buffers with per-string and total caps; validate every pointer and validate UTF-8 on the kernel copy, never on user memory.
+- [x] The copy must be fault-safe: an unmapped user pointer returns `EFAULT` instead of faulting in Ring 0.
+- [x] Reject interior NULs (they would truncate the NUL-terminated copy on the stack) and accept empty `""` arguments.
+- [x] Build the stack: `argc`, `argv[]`, `envp[]`, strings, 16-byte alignment at entry, and refuse a block that does not fit the 16 KiB stack.
+- [x] `envp` empty: one NULL pointer.
+- [x] `ulib`: `argc()`/`arg()` and a spawn wrapper taking `&[&str]`.
+- [x] Path plus `argv[]` in the spawn ABI.
+- [ ] Directory handle plus name, and `envp[]`, in the spawn ABI.
 - [ ] `SYS_SPAWN` must set `argv[0]` to the invoked name, not the resolved path, so hardlinks dispatch.
 
 **Done when.** `/bin/ls` and `/bin/core` invoked as `ls` behave as `ls`, and a test program prints correct `argc` and `argv`.
@@ -490,7 +492,7 @@ Ordered for independently demonstrable checkpoints. Each step ends in a bootable
 Settled 2026-11-14. These constrain implementation; do not reopen them mid-step.
 
 1. **Handle encoding — opaque `u64` token.** Not `(slot, generation)`. The kernel keeps a per-task generation table and validates the token on every use, so `ulib` carries no generation constant and a closed-then-reused handle fails in exactly one place.
-2. **Spawn shape — handle plus name plus vectors.** `SYS_SPAWN(request_ptr)`, where `SpawnRequest { parent_dir_handle, name_ptr, name_len, argv_ptr, argc, envp_ptr, envc }` is read with the usual user-pointer validation. Seven fields exceed the five argument registers the dispatcher receives, so they travel in a struct, as `SYS_MOUNT` does with `MountRequest`. The absolute-path form survives only for the kernel's bootstrap spawn of `/sbin/init`.
+2. **Spawn shape — path plus vectors today, `SpawnRequest` when the sixth field lands.** `SYS_SPAWN(path_ptr, path_len, argv_ptr, argc)`, where `argv_ptr` points at an array of `UserArg { ptr, len }`; a zero `argv_ptr` means "argv is just the path". `envp` and a parent directory handle do not fit the five argument registers the dispatcher receives, so once they arrive the call becomes `SYS_SPAWN(request_ptr)` with a `SpawnRequest` read through the usual user-pointer validation, as `SYS_MOUNT` does with `MountRequest`. The absolute-path form survives only for the kernel's bootstrap spawn of `/sbin/init`.
 3. **Delegation — `SYS_GRANT`.** Explicit transfer of rights on a capability, with the receiver's slot chosen by the kernel. A path-keyed spawn table cannot express "this shell may spawn from `/bin` and `/usr/bin`" without duplicating the policy engine.
 4. **`ext4d` readiness — blocking first request.** Init issues a trivial request and blocks on the reply; no port probe or notification API is added.
 5. **Bootstrap volume and marker — `/SERIX.MRK` containing `serix-payload 1\n`.** The marker's only job is to identify the volume; the version line lets a future boot refuse a payload it cannot read.
