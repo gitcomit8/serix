@@ -5,12 +5,15 @@
  * Handles system call entry, register marshaling, and return to userspace.
  */
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use core::arch::naked_asm;
 use hal::serial_println;
-use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
+use x86_64::structures::paging::mapper::TranslateResult;
+use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB, Translate};
+use x86_64::VirtAddr;
 /*
  * Serix System Call Numbers
  *
@@ -85,18 +88,13 @@ pub const SYS_UMOUNT: u64 = 95;
 pub const MOUNT_FLAG_READ_ONLY: u64 = 1;
 
 /*
- * MountRequest - User-supplied mount arguments
- *
- * Passed by pointer because a mount needs two strings plus a flag, which
- * does not fit in the remaining argument registers.
- */
-/*
  * UserArg - One argument or environment string
  *
  * Arrays of these are passed to SYS_SPAWN so a program receives arguments
  * without the kernel assuming C strings.
  */
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct UserArg {
 	pub ptr: u64,
 	pub len: u64,
@@ -108,49 +106,120 @@ const MAX_ARG_COUNT: usize = 64;
 const MAX_ARG_BYTES: usize = 8192;
 
 /*
- * copy_user_args - Validate and collect a user argument vector
+ * copy_from_user - Copy a user range into a kernel-owned buffer
+ * @src: User virtual address
+ * @dst: Kernel destination; also the number of bytes to copy
+ *
+ * Walks the calling task's page tables from CR3 and reads the frames
+ * through the HHDM instead of dereferencing @src in Ring 0, so an unmapped
+ * or supervisor-only page returns EFAULT rather than faulting the kernel.
+ * Returns an errno on failure.
+ */
+fn copy_from_user(src: u64, dst: &mut [u8]) -> Result<(), u64> {
+	if dst.is_empty() {
+		return Ok(());
+	}
+	if !is_user_accessible(src as *const u8, dst.len()) {
+		return Err(ERRNO_EFAULT);
+	}
+	/* CR3 still holds the caller's address space: syscalls run with the task's
+	 * page table loaded, and every user PML4 copies the kernel half. */
+	let mapper = unsafe { memory::init_offset_page_table(memory::hhdm_offset()) };
+	let mut done = 0usize;
+	while done < dst.len() {
+		let va = VirtAddr::new(src + done as u64);
+		let page = Page::<Size4KiB>::containing_address(va);
+		let in_page = (va.as_u64() - page.start_address().as_u64()) as usize;
+		let chunk = core::cmp::min(4096 - in_page, dst.len() - done);
+		match mapper.translate(va) {
+			TranslateResult::Mapped {
+				frame,
+				offset,
+				flags,
+			} => {
+				if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+					return Err(ERRNO_EFAULT);
+				}
+				let phys = frame.start_address() + offset;
+				let src_ptr = (memory::hhdm_offset() + phys.as_u64()).as_ptr::<u8>();
+				unsafe {
+					core::ptr::copy_nonoverlapping(src_ptr, dst[done..].as_mut_ptr(), chunk);
+				}
+			}
+			_ => return Err(ERRNO_EFAULT),
+		}
+		done += chunk;
+	}
+	Ok(())
+}
+
+/*
+ * copy_user_string - Copy one user string into a kernel-owned String
+ * @ptr:  User virtual address of the bytes
+ * @len:  Byte count; zero is allowed and yields an empty string
+ *
+ * The bytes are copied first and validated on the kernel copy, never on the
+ * user mapping, so the check cannot race a concurrent unmap. Interior NULs
+ * are rejected: the child receives NUL-terminated strings on its stack, so an
+ * embedded NUL would silently truncate the argument.
+ */
+fn copy_user_string(ptr: u64, len: usize) -> Result<String, u64> {
+	if len > MAX_ARG_BYTES {
+		return Err(ERRNO_EINVAL);
+	}
+	let mut bytes = alloc::vec![0u8; len];
+	copy_from_user(ptr, &mut bytes)?;
+	if bytes.contains(&0) {
+		return Err(ERRNO_EINVAL);
+	}
+	String::from_utf8(bytes).map_err(|_| ERRNO_EINVAL)
+}
+
+/*
+ * copy_user_args - Copy a user argument vector into kernel-owned strings
  * @ptr:    Pointer to an array of UserArg
  * @count:  Number of entries
- * @out:    Destination vector
+ * @out:    Destination vector of owned strings
  *
- * Returns an errno on failure. Every pointer is range-checked and every
- * string must be UTF-8, since the VFS and diagnostics treat arguments as
- * text.
+ * Returns an errno on failure. The descriptor array is copied in first, so
+ * nothing in this function dereferences user memory directly; each string is
+ * then range-checked, copied, and validated as UTF-8 on the kernel copy.
  */
-fn copy_user_args(ptr: u64, count: usize, out: &mut alloc::vec::Vec<&str>) -> Result<(), u64> {
+fn copy_user_args(ptr: u64, count: usize, out: &mut alloc::vec::Vec<String>) -> Result<(), u64> {
 	if count > MAX_ARG_COUNT {
 		return Err(ERRNO_EINVAL);
 	}
 	if count == 0 {
 		return Ok(());
 	}
-	let array_ptr = ptr as *const UserArg;
-	if !is_user_accessible(array_ptr as *const u8, count * core::mem::size_of::<UserArg>()) {
-		return Err(ERRNO_EFAULT);
+
+	/* UserArg is repr(C) over two u64 fields, so the descriptor array can be
+	 * copied through a byte view of the destination buffer. */
+	let mut raw = alloc::vec![UserArg { ptr: 0, len: 0 }; count];
+	let array_bytes = count * core::mem::size_of::<UserArg>();
+	unsafe {
+		let dst = core::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u8, array_bytes);
+		copy_from_user(ptr, dst)?;
 	}
-	let raw = unsafe { core::slice::from_raw_parts(array_ptr, count) };
+
 	let mut total = 0usize;
 	for arg in raw {
 		let len = arg.len as usize;
-		if len == 0 || len > MAX_ARG_BYTES {
-			return Err(ERRNO_EINVAL);
-		}
 		total += len;
 		if total > MAX_ARG_BYTES {
 			return Err(ERRNO_EINVAL);
 		}
-		if !is_user_accessible(arg.ptr as *const u8, len) {
-			return Err(ERRNO_EFAULT);
-		}
-		let bytes = unsafe { core::slice::from_raw_parts(arg.ptr as *const u8, len) };
-		match core::str::from_utf8(bytes) {
-			Ok(s) => out.push(s),
-			Err(_) => return Err(ERRNO_EINVAL),
-		}
+		out.push(copy_user_string(arg.ptr, len)?);
 	}
 	Ok(())
 }
 
+/*
+ * MountRequest - User-supplied mount arguments
+ *
+ * Passed by pointer because a mount needs two strings plus a flag, which
+ * does not fit in the remaining argument registers.
+ */
 #[repr(C)]
 pub struct MountRequest {
 	pub dev_ptr: u64,
@@ -800,25 +869,24 @@ extern "C" fn syscall_dispatcher(
 			 * arg1: path pointer, arg2: path length
 			 * Returns: child pid on success, errno on failure
 			 */
-			let ptr = arg1 as *const u8;
 			let len = arg2 as usize;
-
-			if !is_user_accessible(ptr, len) {
-				return ERRNO_EFAULT;
+			if len == 0 || len > MAX_ARG_BYTES {
+				return ERRNO_EINVAL;
 			}
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
-				Ok(s) => s,
-				Err(_) => return ERRNO_EINVAL,
+			/* The path is copied before it is validated, for the same reason the
+			 * argument vectors are: the kernel must not read user pages. */
+			let path = match copy_user_string(arg1, len) {
+				Ok(path) => path,
+				Err(errno) => return errno,
 			};
 
-			/* Optional argument and environment vectors: two arrays of
-			 * (pointer, length) pairs. A zero array pointer keeps the legacy
-			 * form, where argv is just the program path. */
-			let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
-			let mut envs: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+			/* Optional argument vector: an array of (pointer, length) pairs. A
+			 * zero array pointer keeps the legacy form, where argv is just the
+			 * program path. */
+			let mut args: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+			let mut envs: alloc::vec::Vec<String> = alloc::vec::Vec::new();
 			if arg3 == 0 {
-				args.push(path);
+				args.push(path.clone());
 			} else if let Err(errno) = copy_user_args(arg3, arg4 as usize, &mut args) {
 				return errno;
 			}
@@ -826,8 +894,11 @@ extern "C" fn syscall_dispatcher(
 			 * argument register is not part of the dispatch signature. */
 			let _ = arg5;
 
+			let argv: alloc::vec::Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+			let envp: alloc::vec::Vec<&str> = envs.iter().map(|e| e.as_str()).collect();
+
 			let parent_id = task::scheduler::current_task_id();
-			match crate::process::spawn_user_process_args(path, parent_id, &args, &envs) {
+			match crate::process::spawn_user_process_args(&path, parent_id, &argv, &envp) {
 				Ok(child_id) => child_id,
 				Err(msg) => {
 					hal::serial_println!("[SPAWN] failed: {}", msg);

@@ -21,6 +21,9 @@ use x86_64::structures::paging::{
 	FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, Translate,
 };
 
+/* User stack size; the argument block must fit inside it (see build_arg_block) */
+const USER_STACK_SIZE: u64 = 16384;
+
 /*
  * user_entry_trampoline - Ring 0 → Ring 3 bridge for newly spawned tasks
  *
@@ -152,7 +155,7 @@ pub unsafe fn allocate_user_stack(
 	phys_offset: VirtAddr,
 ) -> VirtAddr {
 	let stack_top = VirtAddr::new(0x0000_7FFF_FFFF_F000);
-	let stack_bottom = stack_top - 16384u64;
+	let stack_bottom = stack_top - USER_STACK_SIZE;
 
 	let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
 	let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
@@ -178,26 +181,30 @@ pub unsafe fn allocate_user_stack(
  * @bytes:       Data to copy
  *
  * The stack pages were mapped moments ago, so each one translates to a
- * frame that is written through the HHDM.
+ * frame that is written through the HHDM. A page that fails to translate is
+ * an error, not a skipped chunk: dropping bytes here would hand the child a
+ * truncated argument block.
  */
 unsafe fn write_stack_bytes(
 	mapper: &impl Translate,
 	phys_offset: VirtAddr,
 	start: VirtAddr,
 	bytes: &[u8],
-) {
+) -> Result<(), &'static str> {
 	let mut done = 0usize;
 	while done < bytes.len() {
 		let va = start + done as u64;
 		let page = Page::<Size4KiB>::containing_address(va);
 		let in_page = (va.as_u64() - page.start_address().as_u64()) as usize;
 		let chunk = core::cmp::min(4096 - in_page, bytes.len() - done);
-		if let Some(phys) = mapper.translate_addr(va) {
-			let dst = (phys_offset + phys.as_u64()).as_mut_ptr::<u8>();
-			core::ptr::copy_nonoverlapping(bytes[done..].as_ptr(), dst, chunk);
-		}
+		let phys = mapper
+			.translate_addr(va)
+			.ok_or("spawn: argument block is not mapped")?;
+		let dst = (phys_offset + phys.as_u64()).as_mut_ptr::<u8>();
+		core::ptr::copy_nonoverlapping(bytes[done..].as_ptr(), dst, chunk);
 		done += chunk;
 	}
+	Ok(())
 }
 
 /*
@@ -209,13 +216,25 @@ unsafe fn write_stack_bytes(
  * Returns the stack pointer to start the program at, plus a buffer whose
  * first byte lives at that address. The layout is the one in
  * docs/USERLAND.md section 6: argc at [rsp], argv pointers above it, a NULL,
- * envp pointers, a NULL, then the strings.
+ * envp pointers, a NULL, then the strings. A block that cannot fit the stack
+ * is an error rather than a silent write below the mapped pages.
  */
-fn build_arg_block(stack_top: VirtAddr, argv: &[&str], envp: &[&str]) -> (VirtAddr, Vec<u8>) {
+fn build_arg_block(
+	stack_top: VirtAddr,
+	argv: &[&str],
+	envp: &[&str],
+) -> Result<(VirtAddr, Vec<u8>), &'static str> {
 	let slots = 1 + argv.len() + 1 + envp.len() + 1;
 	let header = slots * 8;
 	let strings: usize = argv.iter().chain(envp.iter()).map(|s| s.len() + 1).sum();
 	let total = header + strings;
+
+	/* rsp is rounded down to 16 bytes, so the block plus that padding must fit
+	 * inside the mapped stack. */
+	if total as u64 + 16 > USER_STACK_SIZE {
+		return Err("spawn: argument block exceeds the user stack");
+	}
+
 	let rsp = VirtAddr::new((stack_top.as_u64() - total as u64) & !0xF);
 	let base = rsp.as_u64();
 	let mut buf = vec![0u8; total];
@@ -244,7 +263,7 @@ fn build_arg_block(stack_top: VirtAddr, argv: &[&str], envp: &[&str]) -> (VirtAd
 		slot += 8;
 	}
 
-	(rsp, buf)
+	Ok((rsp, buf))
 }
 
 /*
@@ -326,9 +345,9 @@ pub fn spawn_user_process_args(
 
 		/* Lay out argc/argv/envp before the address space leaves our hands:
 		 * writing them needs the stack frames, which only the mapper knows. */
-		let (user_rsp, arg_block) = build_arg_block(ust, argv, envp);
+		let (user_rsp, arg_block) = build_arg_block(ust, argv, envp)?;
 		unsafe {
-			write_stack_bytes(&user_mapper, phys_offset, user_rsp, &arg_block);
+			write_stack_bytes(&user_mapper, phys_offset, user_rsp, &arg_block)?;
 		}
 
 		drop(alloc_guard); /* release before kernel stack alloc */
