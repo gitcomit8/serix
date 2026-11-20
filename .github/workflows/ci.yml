@@ -1,0 +1,73 @@
+name: CI
+
+# Build the whole tree (kernel + userland + ISO + boot disks) and prove the
+# image still boots. The repository has no unit-test suite; a QEMU boot that
+# reaches the post-init checkpoints is the project's acceptance signal, so the
+# smoke test is the job's real assertion.
+on:
+  push:
+    branches:
+      - dev
+      - main
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build-and-boot-smoke:
+    name: Build ISO and boot smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host tools
+        # build-essential: Limine's installer is a C program
+        # xorriso: ISO assembly; e2fsprogs: ext2/ext4 images
+        # fdisk: sfdisk, used to write the GPT images
+        # file: the disk target inspects disk.img before formatting
+        # qemu-system-x86: the boot smoke test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            xorriso \
+            e2fsprogs \
+            fdisk \
+            file \
+            qemu-system-x86
+
+      - name: Install Rust nightly with rust-src
+        # build-std is required: the kernel is no_std and rebuilds core/alloc.
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup target add x86_64-unknown-none --toolchain nightly
+          rustc -Vv
+
+      - name: Build Limine installer
+        run: make limine
+
+      - name: Build kernel, daemons, ISO and boot disks
+        run: make iso disk gptdisk
+
+      - name: QEMU boot smoke
+        run: ./scripts/boot-smoke.sh serix.iso boot-smoke.log 120
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-log
+          path: |
+            boot-smoke.log
+            boot-smoke.log.qemu
+          if-no-files-found: ignore

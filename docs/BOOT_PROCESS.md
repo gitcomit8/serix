@@ -185,7 +185,7 @@ Serix configuration
 
 TIMEOUT=3
 
-:Serix OS v0.0.6
+:Serix OS v0.0.8
 
 ```
 
@@ -421,7 +421,7 @@ Serial output
 
 ```
 
-Serix Kernel v0.0.6 Starting...
+Serix Kernel v0.0.8 Starting...
 Serial console initialized
 
 ```
@@ -760,25 +760,30 @@ Initialize Text Console
 ```
 
 let fb = fb_response.framebuffers().next().expect("No framebuffer");
-init_console(
+graphics::init_console(
+	fb.addr(),
+	fb.width() as usize,
+	fb.height() as usize,
+	fb.pitch() as usize,
+	fb.bpp() as usize,
 );
 
 ```
 **Steps**:
 
-1. Create FramebufferConsole instance
-2. Set cursor to (0, 0)
-3. Store in global static
+1. Validate the framebuffer is 32 bits per pixel with sane geometry
+2. Create a `Tty` instance and clear the framebuffer
+3. Store it in the global `KERNEL_TTY` mutex
 
-**Result**: ``fb_println!`` macro now functional
+**Result**: `graphics::kprint!` / `graphics::kprintln!` now functional
 
 Test output
 
 ```
 
-graphics::fb_println!("Welcome to Serix OS v0.0.6!");
-graphics::fb_println!("Framebuffer: {}x{}", fb.width(), fb.height());
-graphics::fb_println!("Memory: {} MB usable", total_mb);
+graphics::kprintln!("Welcome to Serix OS v{}!", crate::VERSION);
+graphics::kprintln!("Framebuffer: {}x{}", fb.width(), fb.height());
+graphics::kprintln!("Memory: {} MB usable", total_mb);
 
 ```
 
@@ -796,14 +801,15 @@ init::filesystem::init_filesystem();
 
 1. Register FAT32, ext2, ext4 filesystem drivers
 2. Mount RamDir at `/` (contains embedded ELF files for ext4d, policyd)
-3. Mount RamDir at `/dev/` (exposes /dev/sda block device)
-4. Initialize page cache (256 pages = 1 MiB)
-5. Create `/proc/serix/cap-audit` pseudo-file
-6. Create `/mnt/` directory (auto-mount target)
-7. Insert ext4d and policyd ELF binaries into VFS root
-8. Create `/etc/serix/policy.toml` default config
+3. Mount RamDir at `/dev/`
+4. **Expose block devices**: `expose_block_devices()` publishes every initialized VirtIO disk as `/dev/sda`, `/dev/sdb`, ... and, for a validated GPT, each entry as `/dev/sda1`, `/dev/sda2`, ... (`PartitionDev` offset views). Disks with no GPT keep only the whole-disk node; a rejected table logs `GPT rejected (<reason>)` and exposes no partitions
+5. Initialize page cache (256 pages = 1 MiB)
+6. Create `/proc/serix/cap-audit` pseudo-file
+7. Create `/mnt/` directory (auto-mount target)
+8. Insert ext4d and policyd ELF binaries into VFS root
+9. Create `/etc/serix/policy.toml` default config
 
-**Result**: VFS table ready; `/dev/sda` exposes the VirtIO block device
+**Result**: VFS table ready; `/dev/sda`, `/dev/sdb`, ... expose whole disks and `/dev/sdXN` exposes GPT partitions
 
 ## Phase 10.5: Scheduler & Auto-Mount (40-50 ms)
 
@@ -821,14 +827,14 @@ init::scheduler::init_scheduler();
 2. Initialize global scheduler and per-CPU run queues
 3. Create boot task with IPC ports
 4. **Spawn ext4d daemon** (Ring-3 ext4 filesystem)
-5. **Auto-mount ext4**: `fs::probe_and_mount()` detects ext4 on `/dev/sda`, mounts at `/mnt` (ext4d must be running for IPC stubs)
+5. **Auto-mount ext4**: `fs::probe_and_mount()` detects ext4 on disk 0 (`/dev/sda`), mounts at `/mnt` (ext4d must be running for IPC stubs). Partitions are not probed automatically
 6. Spawn kshell (kernel shell)
 7. Spawn policyd daemon (LES policy engine)
 
 **Mount table after init**:
 ```
 /       → RamDir (embedded ELF files)
-/dev/   → RamDir (/dev/sda)
+/dev/   → RamDir (/dev/sda, /dev/sdb, ..., /dev/sdXN)
 /mnt    → Ext4DirStub (ext4 daemon proxy, if filesystem detected)
 ```
 
@@ -855,7 +861,7 @@ BSP LAPIC ID: 0, Total CPUs: 4
 AP 1 initialized, entering idle loop
 AP 2 initialized, entering idle loop
 AP 3 initialized, entering idle loop
-Serix OS v0.0.6 ready.
+Serix OS v0.0.8 ready.
 
 ```
 
@@ -943,7 +949,7 @@ Serial console output
 
 ```
 
-Serix Kernel v0.0.6 Starting...
+Serix Kernel v0.0.8 Starting...
 Serial console initialized
 Legacy PIC disabled
 APIC enabled
@@ -954,9 +960,7 @@ Entering idle loop
 ```
 Framebuffer display:
 
-- Blue screen background
-- Memory map bars at bottom (colored)
-- Text: "Welcome to Serix OS v0.0.6!"
+- Text: "Welcome to Serix OS v0.0.8!"
 - Text: System information (memory, framebuffer resolution)
 
 Interrupt functionality:

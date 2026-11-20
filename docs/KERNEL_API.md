@@ -57,7 +57,7 @@ System Calls
     25 syscalls implemented across process, file I/O, filesystem, IPC, memory, and policy groups
 
 VFS
-    Mount-table based path resolution via lookup_path(), / and /dev mounts, block device exposure at /dev/sda, ext4 daemon IPC stubs available
+    Mount-table based path resolution via lookup_path(), / and /dev mounts, block device exposure at /dev/sda, /dev/sdb, ... and GPT partitions /dev/sdXN, ext4 daemon IPC stubs available
 
 Task Scheduler
     Preemptive round-robin scheduling with LAPIC timer at ~625 Hz
@@ -1686,7 +1686,7 @@ const DOUBLE_FAULT_VECTOR: u8 = 8;
 // Hardware interrupts: 32-255
 const PIT_TIMER_VECTOR: u8 = 32;    // Legacy (disabled)
 const KEYBOARD_VECTOR: u8 = 33;     // PS/2 keyboard
-const VIRTIO_BLK_VECTOR: u8 = 34;   // VirtIO block device
+const VIRTIO_BLK_VECTOR: u8 = 34;   // VirtIO block device (device N uses 34 + N)
 const TIMER_VECTOR: u8 = 49;        // LAPIC timer
 
 ```

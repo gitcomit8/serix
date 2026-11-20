@@ -207,7 +207,7 @@ Serix follows specific coding conventions that differ from standard Rust in some
 ### Debug Output
 
 - **Use `serial_println!` for debug output**: Primary debugging mechanism (see [HAL module](hal/README.md))
-- **Use `fb_println!` for framebuffer output**: After graphics initialization (see [Graphics module](graphics/README.md))
+- **Use `graphics::kprintln!` / `graphics::kprint!` for framebuffer output**: After graphics initialization (see [Graphics module](graphics/README.md))
 - **Checkpoint pattern**: Use descriptive checkpoints during initialization
 
   ```rust

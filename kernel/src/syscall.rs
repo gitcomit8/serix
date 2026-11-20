@@ -5,12 +5,15 @@
  * Handles system call entry, register marshaling, and return to userspace.
  */
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use core::arch::naked_asm;
 use hal::serial_println;
-use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
+use x86_64::structures::paging::mapper::TranslateResult;
+use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB, Translate};
+use x86_64::VirtAddr;
 /*
  * Serix System Call Numbers
  *
@@ -77,6 +80,155 @@ pub const SYS_FILE_READ: u64 = 92;
 /* Policy management group (93-94): */
 pub const SYS_POLICY_RELOAD: u64 = 93;
 
+/* Mount group (94-95): */
+pub const SYS_MOUNT: u64 = 94;
+pub const SYS_UMOUNT: u64 = 95;
+
+/* Mount flags */
+pub const MOUNT_FLAG_READ_ONLY: u64 = 1;
+
+/*
+ * UserArg - One argument or environment string
+ *
+ * Arrays of these are passed to SYS_SPAWN so a program receives arguments
+ * without the kernel assuming C strings.
+ */
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UserArg {
+	pub ptr: u64,
+	pub len: u64,
+}
+
+/* Argument-vector limits; each string and the total are capped so a caller
+ * cannot make the kernel walk unbounded user memory. */
+const MAX_ARG_COUNT: usize = 64;
+const MAX_ARG_BYTES: usize = 8192;
+
+/*
+ * copy_from_user - Copy a user range into a kernel-owned buffer
+ * @src: User virtual address
+ * @dst: Kernel destination; also the number of bytes to copy
+ *
+ * Walks the calling task's page tables from CR3 and reads the frames
+ * through the HHDM instead of dereferencing @src in Ring 0, so an unmapped
+ * or supervisor-only page returns EFAULT rather than faulting the kernel.
+ * Returns an errno on failure.
+ */
+fn copy_from_user(src: u64, dst: &mut [u8]) -> Result<(), u64> {
+	if dst.is_empty() {
+		return Ok(());
+	}
+	if !is_user_accessible(src as *const u8, dst.len()) {
+		return Err(ERRNO_EFAULT);
+	}
+	/* CR3 still holds the caller's address space: syscalls run with the task's
+	 * page table loaded, and every user PML4 copies the kernel half. */
+	let mapper = unsafe { memory::init_offset_page_table(memory::hhdm_offset()) };
+	let mut done = 0usize;
+	while done < dst.len() {
+		let va = VirtAddr::new(src + done as u64);
+		let page = Page::<Size4KiB>::containing_address(va);
+		let in_page = (va.as_u64() - page.start_address().as_u64()) as usize;
+		let chunk = core::cmp::min(4096 - in_page, dst.len() - done);
+		match mapper.translate(va) {
+			TranslateResult::Mapped {
+				frame,
+				offset,
+				flags,
+			} => {
+				if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+					return Err(ERRNO_EFAULT);
+				}
+				let phys = frame.start_address() + offset;
+				let src_ptr = (memory::hhdm_offset() + phys.as_u64()).as_ptr::<u8>();
+				unsafe {
+					core::ptr::copy_nonoverlapping(src_ptr, dst[done..].as_mut_ptr(), chunk);
+				}
+			}
+			_ => return Err(ERRNO_EFAULT),
+		}
+		done += chunk;
+	}
+	Ok(())
+}
+
+/*
+ * copy_user_string - Copy one user string into a kernel-owned String
+ * @ptr:  User virtual address of the bytes
+ * @len:  Byte count; zero is allowed and yields an empty string
+ *
+ * The bytes are copied first and validated on the kernel copy, never on the
+ * user mapping, so the check cannot race a concurrent unmap. Interior NULs
+ * are rejected: the child receives NUL-terminated strings on its stack, so an
+ * embedded NUL would silently truncate the argument.
+ */
+fn copy_user_string(ptr: u64, len: usize) -> Result<String, u64> {
+	if len > MAX_ARG_BYTES {
+		return Err(ERRNO_EINVAL);
+	}
+	let mut bytes = alloc::vec![0u8; len];
+	copy_from_user(ptr, &mut bytes)?;
+	if bytes.contains(&0) {
+		return Err(ERRNO_EINVAL);
+	}
+	String::from_utf8(bytes).map_err(|_| ERRNO_EINVAL)
+}
+
+/*
+ * copy_user_args - Copy a user argument vector into kernel-owned strings
+ * @ptr:    Pointer to an array of UserArg
+ * @count:  Number of entries
+ * @out:    Destination vector of owned strings
+ *
+ * Returns an errno on failure. The descriptor array is copied in first, so
+ * nothing in this function dereferences user memory directly; each string is
+ * then range-checked, copied, and validated as UTF-8 on the kernel copy.
+ */
+fn copy_user_args(ptr: u64, count: usize, out: &mut alloc::vec::Vec<String>) -> Result<(), u64> {
+	if count > MAX_ARG_COUNT {
+		return Err(ERRNO_EINVAL);
+	}
+	if count == 0 {
+		return Ok(());
+	}
+
+	/* UserArg is repr(C) over two u64 fields, so the descriptor array can be
+	 * copied through a byte view of the destination buffer. */
+	let mut raw = alloc::vec![UserArg { ptr: 0, len: 0 }; count];
+	let array_bytes = count * core::mem::size_of::<UserArg>();
+	unsafe {
+		let dst = core::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u8, array_bytes);
+		copy_from_user(ptr, dst)?;
+	}
+
+	let mut total = 0usize;
+	for arg in raw {
+		let len = arg.len as usize;
+		total += len;
+		if total > MAX_ARG_BYTES {
+			return Err(ERRNO_EINVAL);
+		}
+		out.push(copy_user_string(arg.ptr, len)?);
+	}
+	Ok(())
+}
+
+/*
+ * MountRequest - User-supplied mount arguments
+ *
+ * Passed by pointer because a mount needs two strings plus a flag, which
+ * does not fit in the remaining argument registers.
+ */
+#[repr(C)]
+pub struct MountRequest {
+	pub dev_ptr: u64,
+	pub dev_len: u64,
+	pub target_ptr: u64,
+	pub target_len: u64,
+	pub flags: u64,
+}
+
 pub const SYS_SEND: u64 = 30;
 pub const SYS_RECV: u64 = 31;
 pub const SYS_RECV_BLOCK: u64 = 32;
@@ -96,6 +248,8 @@ pub const ERRNO_ENOTDIR: u64 = u64::MAX - 19; /* Not a directory (errno 20) */
 pub const ERRNO_EPIPE: u64 = u64::MAX - 31; /* Broken pipe (errno 32) */
 pub const ERRNO_EPERM: u64 = u64::MAX - 1; /* Operation not permitted (errno 1) */
 pub const ERRNO_ENOTBLK: u64 = u64::MAX - 15; /* Not a block device (errno 16) */
+pub const ERRNO_EBUSY: u64 = u64::MAX - 17; /* Device or resource busy (errno 16) */
+pub const ERRNO_EROFS: u64 = u64::MAX - 31; /* Read-only filesystem (errno 30) */
 
 /* ------------------------------------------------------------------ */
 /*  Capability authorization metadata                                  */
@@ -131,6 +285,7 @@ pub const fn authorization_for(nr: u64) -> SyscallAuthorization {
 		SYS_PIPE => SyscallAuthorization::Capability { rights: Rights::CONTROL },
 		SYS_MKDIR | SYS_UNLINK | SYS_RMDIR => SyscallAuthorization::Capability { rights: Rights::METADATA },
 		SYS_FORMAT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
+		SYS_MOUNT | SYS_UMOUNT => SyscallAuthorization::Capability { rights: Rights::PLATFORM_ADMIN },
 		SYS_MMAP => SyscallAuthorization::Capability { rights: Rights::MMAP },
 		SYS_MUNMAP => SyscallAuthorization::Capability { rights: Rights::MUNMAP },
 		SYS_FILE_READ => SyscallAuthorization::Capability { rights: Rights::READ },
@@ -503,6 +658,11 @@ extern "C" fn syscall_dispatcher(
 
 			let task_id = task::scheduler::current_task_id();
 			if let Some(file) = crate::fd::get(task_id, arg1) {
+				/* A node from a read-only mount refuses writes; answer EROFS
+				 * rather than reporting a successful zero-byte write. */
+				if file.inode.is_read_only() {
+					return ERRNO_EROFS;
+				}
 				let mut off = file.offset.lock();
 				let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
 				let n = file.inode.write(*off, buf);
@@ -709,20 +869,36 @@ extern "C" fn syscall_dispatcher(
 			 * arg1: path pointer, arg2: path length
 			 * Returns: child pid on success, errno on failure
 			 */
-			let ptr = arg1 as *const u8;
 			let len = arg2 as usize;
-
-			if !is_user_accessible(ptr, len) {
-				return ERRNO_EFAULT;
+			if len == 0 || len > MAX_ARG_BYTES {
+				return ERRNO_EINVAL;
 			}
-			let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-			let path = match core::str::from_utf8(slice) {
-				Ok(s) => s,
-				Err(_) => return ERRNO_EINVAL,
+			/* The path is copied before it is validated, for the same reason the
+			 * argument vectors are: the kernel must not read user pages. */
+			let path = match copy_user_string(arg1, len) {
+				Ok(path) => path,
+				Err(errno) => return errno,
 			};
 
+			/* Optional argument vector: an array of (pointer, length) pairs. A
+			 * zero array pointer keeps the legacy form, where argv is just the
+			 * program path. */
+			let mut args: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+			let mut envs: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+			if arg3 == 0 {
+				args.push(path.clone());
+			} else if let Err(errno) = copy_user_args(arg3, arg4 as usize, &mut args) {
+				return errno;
+			}
+			/* envp is empty for now (docs/USERLAND.md section 6); the sixth
+			 * argument register is not part of the dispatch signature. */
+			let _ = arg5;
+
+			let argv: alloc::vec::Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+			let envp: alloc::vec::Vec<&str> = envs.iter().map(|e| e.as_str()).collect();
+
 			let parent_id = task::scheduler::current_task_id();
-			match crate::process::spawn_user_process(path, parent_id) {
+			match crate::process::spawn_user_process_args(&path, parent_id, &argv, &envp) {
 				Ok(child_id) => child_id,
 				Err(msg) => {
 					hal::serial_println!("[SPAWN] failed: {}", msg);
@@ -969,8 +1145,9 @@ extern "C" fn syscall_dispatcher(
 			/* create_port already adds to global cap store and current task's cspace */
 
 			unsafe {
-				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
-				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+				*cap_ptr = u64::from_le_bytes(cap_handle.as_bytes()[..8].try_into().unwrap());
+				*cap_ptr.add(1) =
+					u64::from_le_bytes(cap_handle.as_bytes()[8..].try_into().unwrap());
 			}
 
 			port_id
@@ -1001,8 +1178,9 @@ extern "C" fn syscall_dispatcher(
 			let (_port, cap_handle) = ipc::IPC_GLOBAL.create_notification_port(port_id, bitmask);
 
 			unsafe {
-				*cap_ptr = u64::from_le_bytes(cap_handle.key[..8].try_into().unwrap());
-				*cap_ptr.add(1) = u64::from_le_bytes(cap_handle.key[8..].try_into().unwrap());
+				*cap_ptr = u64::from_le_bytes(cap_handle.as_bytes()[..8].try_into().unwrap());
+				*cap_ptr.add(1) =
+					u64::from_le_bytes(cap_handle.as_bytes()[8..].try_into().unwrap());
 			}
 
 			port_id
@@ -1238,6 +1416,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.mkdir(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_EINVAL,
 			}
 		}
@@ -1272,6 +1451,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.unlink(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_ENOENT,
 			}
 		}
@@ -1306,6 +1486,7 @@ extern "C" fn syscall_dispatcher(
 
 			match parent_ino.rmdir(name) {
 				Ok(()) => 0,
+				Err("Read-only filesystem") => ERRNO_EROFS,
 				Err(_) => ERRNO_ENOTDIR,
 			}
 		}
@@ -1539,6 +1720,126 @@ extern "C" fn syscall_dispatcher(
 			}
 
 			offset as u64
+		}
+
+		SYS_MOUNT => {
+			/*
+			 * Mount a filesystem on a block device.
+			 * arg1: cap_slot, arg2: cap_gen (PLATFORM_ADMIN right required)
+			 * arg3: pointer to MountRequest
+			 * arg4: size of MountRequest
+			 * Returns: 0 on success, errno on failure
+			 */
+			match authorize_current_inode(
+				arg1 as usize,
+				arg2 as u32,
+				capability::Rights::PLATFORM_ADMIN,
+			) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			}
+
+			let req_ptr = arg3 as *const MountRequest;
+			let req_len = arg4 as usize;
+			if req_len != core::mem::size_of::<MountRequest>()
+				|| !is_user_accessible(req_ptr as *const u8, req_len)
+			{
+				return ERRNO_EFAULT;
+			}
+			let req = unsafe { core::ptr::read(req_ptr) };
+
+			if !is_user_accessible(req.dev_ptr as *const u8, req.dev_len as usize)
+				|| !is_user_accessible(req.target_ptr as *const u8, req.target_len as usize)
+			{
+				return ERRNO_EFAULT;
+			}
+
+			let dev_path = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(req.dev_ptr as *const u8, req.dev_len as usize)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+			let target = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(req.target_ptr as *const u8, req.target_len as usize)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Mount points are absolute; a relative target would be ambiguous
+			 * because the kernel has no cwd. */
+			if !target.starts_with('/') {
+				return ERRNO_EINVAL;
+			}
+
+			let block_dev = match fs::lookup_block_device(dev_path) {
+				Some(dev) => dev,
+				None => return ERRNO_ENOTBLK,
+			};
+
+			/* Probe the driver registry; a device the kernel cannot read is
+			 * reported as invalid rather than mounted as an empty tree. */
+			let root = match fs::probe_and_mount(block_dev) {
+				Some(root) => root,
+				None => {
+					hal::serial_println!("[SYS_MOUNT] {}: no filesystem detected", dev_path);
+					return ERRNO_EINVAL;
+				}
+			};
+
+			let read_only = req.flags & MOUNT_FLAG_READ_ONLY != 0;
+			vfs::mount_with_flags(target, root, read_only);
+			hal::serial_println!(
+				"[SYS_MOUNT] {} -> {}{}",
+				dev_path,
+				target,
+				if read_only { " (read-only)" } else { "" }
+			);
+			0
+		}
+
+		SYS_UMOUNT => {
+			/*
+			 * Remove a mount point.
+			 * arg1: cap_slot, arg2: cap_gen (PLATFORM_ADMIN right required)
+			 * arg3: mount point pointer, arg4: mount point length
+			 * Returns: 0 on success, errno on failure
+			 */
+			match authorize_current_inode(
+				arg1 as usize,
+				arg2 as u32,
+				capability::Rights::PLATFORM_ADMIN,
+			) {
+				Ok(_) => {},
+				Err(errno) => return errno,
+			}
+
+			let ptr = arg3 as *const u8;
+			let len = arg4 as usize;
+			if !is_user_accessible(ptr, len) {
+				return ERRNO_EFAULT;
+			}
+			let target = match core::str::from_utf8(unsafe {
+				core::slice::from_raw_parts(ptr, len)
+			}) {
+				Ok(s) => s,
+				Err(_) => return ERRNO_EINVAL,
+			};
+
+			/* Unmounting the root would leave the process table without a
+			 * filesystem; replacement is the supported way to change it. */
+			if target == "/" {
+				return ERRNO_EBUSY;
+			}
+
+			match vfs::umount(target) {
+				Ok(()) => {
+					hal::serial_println!("[SYS_UMOUNT] {}", target);
+					0
+				}
+				Err(_) => ERRNO_ENOENT,
+			}
 		}
 
 		SYS_POLICY_RELOAD => {

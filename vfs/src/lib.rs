@@ -106,6 +106,90 @@ pub trait INode: Send + Sync {
 	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
 		None
 	}
+
+	/*
+	 * is_read_only - Report whether writes through this node are refused
+	 *
+	 * A mount created read-only wraps its root in ReadOnlyINode, which
+	 * answers true here so a syscall can return EROFS instead of a short
+	 * write. Nodes under a writable mount keep the default.
+	 */
+	fn is_read_only(&self) -> bool {
+		false
+	}
+}
+
+/*
+ * ReadOnlyINode - Write-refusing view over a mounted filesystem
+ *
+ * Wraps the root of a read-only mount and wraps every child returned by
+ * lookup(), so no path into the mount can reach a writable node. Reads,
+ * metadata, and directory listings pass through unchanged.
+ */
+pub struct ReadOnlyINode {
+	inner: Arc<dyn INode>,
+}
+
+impl ReadOnlyINode {
+	pub fn new(inner: Arc<dyn INode>) -> Self {
+		Self { inner }
+	}
+}
+
+impl INode for ReadOnlyINode {
+	fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
+		self.inner.read(offset, buf)
+	}
+
+	fn write(&self, _offset: usize, _buf: &[u8]) -> usize {
+		0
+	}
+
+	fn metadata(&self) -> FileType {
+		self.inner.metadata()
+	}
+
+	fn lookup(&self, name: &str) -> Option<Arc<dyn INode>> {
+		self.inner
+			.lookup(name)
+			.map(|child| Arc::new(ReadOnlyINode::new(child)) as Arc<dyn INode>)
+	}
+
+	fn insert(&self, _name: &str, _node: Arc<dyn INode>) -> Result<(), &'static str> {
+		Err("Read-only filesystem")
+	}
+
+	fn create_file(&self, _name: &str) -> Result<Arc<dyn INode>, &'static str> {
+		Err("Read-only filesystem")
+	}
+
+	fn mkdir(&self, _name: &str) -> Result<(), &'static str> {
+		Err("Read-only filesystem")
+	}
+
+	fn unlink(&self, _name: &str) -> Result<(), &'static str> {
+		Err("Read-only filesystem")
+	}
+
+	fn rmdir(&self, _name: &str) -> Result<(), &'static str> {
+		Err("Read-only filesystem")
+	}
+
+	fn ino(&self) -> Option<u32> {
+		self.inner.ino()
+	}
+
+	fn size(&self) -> usize {
+		self.inner.size()
+	}
+
+	fn readdir(&self) -> Option<Vec<(String, FileType)>> {
+		self.inner.readdir()
+	}
+
+	fn is_read_only(&self) -> bool {
+		true
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -120,7 +204,12 @@ pub trait INode: Send + Sync {
  * E.g. "/dev/sda/" sorts after "/" — reverse iteration finds "/dev/sda/"
  * before "/" for paths under /dev/sda/.
  */
-static MOUNT_TABLE: Mutex<BTreeMap<String, Arc<dyn INode>>> = Mutex::new(BTreeMap::new());
+struct Mount {
+	root: Arc<dyn INode>,
+	read_only: bool,
+}
+
+static MOUNT_TABLE: Mutex<BTreeMap<String, Mount>> = Mutex::new(BTreeMap::new());
 
 /*
  * normalize_mount_path - Ensure path ends with '/' (root stays "/")
@@ -136,19 +225,64 @@ fn normalize_mount_path(path: &str) -> String {
 }
 
 /*
- * mount - Add or replace a mount point
+ * mount - Add or replace a writable mount point
  * @path:  Mount point path (e.g. "/" or "/dev/")
  * @root:  Root INode of the filesystem to mount here
  */
 pub fn mount(path: &str, root: Arc<dyn INode>) {
+	mount_with_flags(path, root, false);
+}
+
+/*
+ * mount_with_flags - Add or replace a mount point
+ * @path:      Mount point path
+ * @root:      Root INode of the filesystem to mount here
+ * @read_only: Refuse every write through the mount
+ *
+ * Replacing an existing mount point keeps earlier handles valid: callers
+ * that already resolved a node keep using their Arc, and only new lookups
+ * see the replacement. A read-only mount stores its root wrapped in
+ * ReadOnlyINode, so enforcement does not depend on which syscall is used.
+ */
+pub fn mount_with_flags(path: &str, root: Arc<dyn INode>, read_only: bool) {
 	let key = normalize_mount_path(path);
+	let root: Arc<dyn INode> = if read_only {
+		Arc::new(ReadOnlyINode::new(root))
+	} else {
+		root
+	};
+	let entry = Mount { root, read_only };
 	let mut table = MOUNT_TABLE.lock();
-	/* Replace existing entry if present */
 	if let Some(existing) = table.get_mut(&key) {
-		*existing = root;
+		*existing = entry;
 		return;
 	}
-	table.insert(key, root);
+	table.insert(key, entry);
+}
+
+/*
+ * is_read_only - Report whether writes to a path would be refused
+ * @path: Absolute path to test
+ *
+ * Uses the same longest-prefix match as lookup_path(), so the answer is
+ * about the mount that owns the path rather than the deepest one that
+ * merely shares a prefix.
+ */
+pub fn is_read_only(path: &str) -> bool {
+	let table = MOUNT_TABLE.lock();
+	table
+		.iter()
+		.rev()
+		.find(|(p, _)| {
+			let p = p.as_str();
+			if p == "/" {
+				path.starts_with('/')
+			} else {
+				path == p.trim_end_matches('/') || path.starts_with(p)
+			}
+		})
+		.map(|(_, m)| m.read_only)
+		.unwrap_or(false)
 }
 
 /*
@@ -190,7 +324,7 @@ pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
 	let table = MOUNT_TABLE.lock();
 
 	/* Find the longest mount prefix that path starts with (reverse = longest first) */
-	let (mount_path, root) = table.iter().rev().find(|(p, root)| {
+	let (mount_path, mount) = table.iter().rev().find(|(p, _)| {
 		let p = p.as_str();
 		if p == "/" {
 			path.starts_with('/')
@@ -198,6 +332,7 @@ pub fn lookup_path(path: &str) -> Option<Arc<dyn INode>> {
 			path == p.trim_end_matches('/') || path.starts_with(p)
 		}
 	})?;
+	let root = &mount.root;
 
 	/* Strip the mount prefix to get the remainder to traverse */
 	let remainder = if *mount_path == "/" {

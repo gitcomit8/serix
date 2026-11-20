@@ -52,7 +52,7 @@ Scans all 256 PCI buses, 32 slots per bus, checking for present devices via the 
 
 ### VirtioBlock
 
-The VirtIO block device driver implements the VirtIO 1.0 specification over PCI transport. It supports sector-level read and write operations with interrupt-driven completion.
+The VirtIO block device driver implements the VirtIO 1.0 specification over PCI transport. It supports sector-level read and write operations with interrupt-driven completion, and owns a table of up to `MAX_BLOCK_DEVICES` (8) devices rather than a single global instance.
 
 ### Two-Phase Initialization
 
@@ -74,7 +74,9 @@ Initialization is split into two phases to handle the dependency on the SLUB (he
 3. Enable the queue
 4. Set device status to `DRIVER_OK`, making the device fully operational
 
-This split exists because virtqueue memory must be allocated from the physical frame allocator, which is not available until after the heap is initialized. Phase 1 stores the device in a global `Once<Mutex<VirtioBlock>>`, and Phase 2 is called later via `setup_queues_global()`.
+This split exists because virtqueue memory must be allocated from the physical frame allocator, which is not available until after the heap is initialized. Phase 1 claims the next free slot in `BLK_DEVICES: [Once<Mutex<VirtioBlock>>; MAX_BLOCK_DEVICES]`, and Phase 2 is called later via `setup_queues_global()`, which walks every initialized slot.
+
+Slots are claimed in PCI enumeration order and never released, so the slot index is also the stable device index used for `/dev/sdX` naming. A device beyond the eighth is logged and dropped.
 
 ### Sector I/O
 
@@ -95,27 +97,33 @@ After submitting the chain and notifying the device, the driver spins on an `Ato
 ### Global Accessors
 
 ```rust
-pub fn virtio_blk() -> Option<&'static Mutex<VirtioBlock>>;
-pub fn store_global(blk: VirtioBlock);
+pub fn virtio_blk() -> Option<&'static Mutex<VirtioBlock>>;          /* device 0 */
+pub fn virtio_blk_at(index: usize) -> Option<&'static Mutex<VirtioBlock>>;
+pub fn device_count() -> usize;
+pub fn store_global(blk: VirtioBlock) -> usize;
 pub fn setup_queues_global();
 pub fn register_interrupt();
 ```
 
-- `virtio_blk()` returns a reference to the global device instance
-- `store_global()` stores a Phase 1 initialized device in the global `Once`
-- `setup_queues_global()` runs Phase 2 on the stored device
-- `register_interrupt()` reads the PCI interrupt line, maps the IRQ via IOAPIC, and registers the IDT handler
+- `virtio_blk()` is a shorthand for device 0, kept for single-disk callers
+- `virtio_blk_at(index)` returns a specific device from the table
+- `device_count()` returns the number of contiguous, initialized slots
+- `store_global()` claims the next free slot and returns its index (`MAX_BLOCK_DEVICES` if the table is full)
+- `setup_queues_global()` runs Phase 2 on every initialized device
+- `register_interrupt()` reads each device's PCI interrupt line, maps the IRQ via IOAPIC, and registers the IDT handler
 
 ### Interrupt Handling
 
-The VirtIO block device uses **interrupt vector 34** (`VIRTIO_BLK_VECTOR`), mapped from **IRQ 11** via the IOAPIC. The interrupt handler (`virtio_blk_interrupt_handler`) reads the ISR status register to acknowledge the interrupt, sets the `VIRTIO_BLK_COMPLETE` atomic flag, and signals EOI to the APIC.
+Each device uses its own vector, `VIRTIO_BLK_VECTOR (34) + index`, so two functions never share an IOAPIC redirection entry even when firmware routes them to the same IRQ line. The handler is shared: it reads the ISR status register of **every** registered device (harmless when idle — reading the register only clears that device's pending bits), sets the `VIRTIO_BLK_COMPLETE` atomic flag, and signals EOI to the APIC.
 
 ```
-PCI IRQ 11 --> IOAPIC --> Vector 34 --> virtio_blk_interrupt_handler
-                                          |-> Read ISR status
-                                          |-> Set VIRTIO_BLK_COMPLETE
-                                          |-> EOI
+PCI IRQ n --> IOAPIC --> Vector (34 + index) --> virtio_blk_interrupt_handler
+                                                   |-> Read ISR status (all devices)
+                                                   |-> Set VIRTIO_BLK_COMPLETE
+                                                   |-> EOI
 ```
+
+**Limitation:** `VIRTIO_BLK_COMPLETE` is a single driver-wide flag, so concurrent I/O on two disks is not safe; callers currently serialize requests.
 
 ## Virtqueue Module
 
@@ -161,7 +169,7 @@ It allocates a physical frame from the page allocator, computes the HHDM virtual
 
 ### BlockDevice
 
-Implements the `vfs::INode` trait to provide byte-oriented access to the VirtIO block device. Translates arbitrary byte offsets and lengths into 512-byte sector operations.
+Implements the `vfs::INode` trait to provide byte-oriented access to a VirtIO block device. `fs::BlockDevINode` wraps any `fs::BlockDev`, including whole disks (`VirtioBlockDev`) and GPT partitions (`PartitionDev`). Translates arbitrary byte offsets and lengths into 512-byte sector operations.
 
 ```rust
 pub struct BlockDevice;

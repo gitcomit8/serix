@@ -86,11 +86,27 @@ pub struct VirtioBlock {
 /* Raw pointers are MMIO addresses, only accessed under Mutex */
 unsafe impl Send for VirtioBlock {}
 
-/* Global VirtIO block device instance */
-static VIRTIO_BLK: Once<Mutex<VirtioBlock>> = Once::new();
+/*
+ * Maximum number of VirtIO block devices the driver will own.
+ *
+ * Slots are claimed in PCI enumeration order and never released, so the
+ * slot index is also the stable device index used for /dev/sdX names.
+ */
+pub const MAX_BLOCK_DEVICES: usize = 8;
 
-/* ISR address for interrupt handler (avoids locking the Mutex) */
-static ISR_CFG_ADDR: AtomicU64 = AtomicU64::new(0);
+/* Block device table — index 0 is /dev/sda, index 1 is /dev/sdb, ... */
+static BLK_DEVICES: [Once<Mutex<VirtioBlock>>; MAX_BLOCK_DEVICES] =
+	[const { Once::new() }; MAX_BLOCK_DEVICES];
+
+/*
+ * Per-device ISR status addresses, indexed like BLK_DEVICES.
+ *
+ * The interrupt handler cannot know which device raised the interrupt, so it
+ * acknowledges every registered device: reading an ISR register only clears
+ * that device's pending bits, so acknowledging an idle device is harmless.
+ */
+static ISR_CFG_ADDRS: [AtomicU64; MAX_BLOCK_DEVICES] =
+	[const { AtomicU64::new(0) }; MAX_BLOCK_DEVICES];
 
 /* Set by ISR, polled by I/O functions */
 static VIRTIO_BLK_COMPLETE: AtomicBool = AtomicBool::new(false);
@@ -104,11 +120,13 @@ const VIRTIO_BLK_VECTOR: u8 = 34;
  * sets the completion flag, and sends EOI.
  */
 extern "x86-interrupt" fn virtio_blk_interrupt_handler(_frame: InterruptStackFrame) {
-	let isr_addr = ISR_CFG_ADDR.load(Ordering::Relaxed);
-	if isr_addr != 0 {
-		/* Reading ISR status acknowledges the interrupt */
-		unsafe {
-			read_volatile(isr_addr as *const u8);
+	for isr_addr in ISR_CFG_ADDRS.iter() {
+		let addr = isr_addr.load(Ordering::Relaxed);
+		if addr != 0 {
+			/* Reading ISR status acknowledges the interrupt */
+			unsafe {
+				read_volatile(addr as *const u8);
+			}
 		}
 	}
 	VIRTIO_BLK_COMPLETE.store(true, Ordering::Release);
@@ -118,65 +136,116 @@ extern "x86-interrupt" fn virtio_blk_interrupt_handler(_frame: InterruptStackFra
 }
 
 /*
- * register_interrupt - Set up interrupt for VirtIO block device
+ * register_interrupt - Set up interrupts for every VirtIO block device
  *
- * Reads PCI interrupt line, maps IRQ via IOAPIC, registers IDT handler.
+ * Each device gets its own vector (VIRTIO_BLK_VECTOR + index) so devices
+ * never share an IOAPIC redirection entry, even if the firmware routes two
+ * functions to the same IRQ line.
  */
 pub fn register_interrupt() {
-	if let Some(blk) = VIRTIO_BLK.get() {
+	for index in 0..device_count() {
+		let Some(blk) = virtio_blk_at(index) else {
+			continue;
+		};
 		let dev = blk.lock();
 		let irq = unsafe { dev.pci_dev.interrupt_line() };
 		let pin = unsafe { dev.pci_dev.interrupt_pin() };
 
 		if pin == 0 {
-			hal::serial_println!("VirtIO: No interrupt pin, staying polled");
-			return;
+			hal::serial_println!("VirtIO: device {}: no interrupt pin, staying polled", index);
+			continue;
 		}
+
+		let vector = VIRTIO_BLK_VECTOR + index as u8;
 
 		/* Store ISR address for handler (lock-free) */
-		ISR_CFG_ADDR.store(dev.isr_cfg as u64, Ordering::Relaxed);
+		ISR_CFG_ADDRS[index].store(dev.isr_cfg as u64, Ordering::Relaxed);
 
 		unsafe {
-			apic::ioapic::map_irq(irq, VIRTIO_BLK_VECTOR);
-			idt::register_interrupt_handler(VIRTIO_BLK_VECTOR, virtio_blk_interrupt_handler);
+			apic::ioapic::map_irq(irq, vector);
+			idt::register_interrupt_handler(vector, virtio_blk_interrupt_handler);
 		}
 		hal::serial_println!(
-			"VirtIO: IRQ {} → vector {}, interrupt registered",
+			"VirtIO: device {}: IRQ {} → vector {}, interrupt registered",
+			index,
 			irq,
-			VIRTIO_BLK_VECTOR,
+			vector,
 		);
 	}
 }
 
 /*
- * virtio_blk - Get reference to the global VirtIO block device
+ * device_count - Number of initialized block devices
+ *
+ * Return: Count of contiguous, initialized slots in the device table
+ */
+pub fn device_count() -> usize {
+	let mut count = 0;
+	while count < MAX_BLOCK_DEVICES && BLK_DEVICES[count].is_completed() {
+		count += 1;
+	}
+	count
+}
+
+/*
+ * virtio_blk_at - Get a block device by table index
+ * @index: Device index (0 = first disk enumerated)
+ *
+ * Return: Some(&Mutex<VirtioBlock>) if that slot is initialized
+ */
+pub fn virtio_blk_at(index: usize) -> Option<&'static Mutex<VirtioBlock>> {
+	BLK_DEVICES.get(index).and_then(|slot| slot.get())
+}
+
+/*
+ * virtio_blk - Get the first VirtIO block device
  *
  * Return: Some(&Mutex<VirtioBlock>) if initialized, None otherwise
  */
 pub fn virtio_blk() -> Option<&'static Mutex<VirtioBlock>> {
-	VIRTIO_BLK.get()
+	virtio_blk_at(0)
 }
 
 /*
- * store_global - Store a VirtioBlock instance globally
+ * store_global - Claim the next free slot in the block device table
  * @blk: Initialized (phase 1) VirtioBlock
+ *
+ * Return: The slot index assigned to the device, or MAX_BLOCK_DEVICES if
+ *         the table is full (the device is then released).
  */
-pub fn store_global(blk: VirtioBlock) {
-	VIRTIO_BLK.call_once(|| Mutex::new(blk));
+pub fn store_global(blk: VirtioBlock) -> usize {
+	let mut pending = Some(blk);
+	for (index, slot) in BLK_DEVICES.iter().enumerate() {
+		if slot.is_completed() {
+			continue;
+		}
+		slot.call_once(|| Mutex::new(pending.take().expect("blk device slot empty")));
+		hal::serial_println!("VirtIO: block device {} registered", index);
+		return index;
+	}
+
+	hal::serial_println!(
+		"VirtIO: block device table full ({} entries), device dropped",
+		MAX_BLOCK_DEVICES
+	);
+	MAX_BLOCK_DEVICES
 }
 
 /*
- * setup_queues_global - Complete phase 2 init on the global device
+ * setup_queues_global - Complete phase 2 init on every block device
  *
  * Must be called after SLUB allocator is initialized.
  */
 pub fn setup_queues_global() {
-	if let Some(blk) = VIRTIO_BLK.get() {
+	for index in 0..device_count() {
+		let Some(blk) = virtio_blk_at(index) else {
+			continue;
+		};
 		let mut dev = blk.lock();
 		if unsafe { dev.setup_queues() } {
-			hal::serial_println!("VirtIO: Queues configured, device live");
+			hal::serial_println!("VirtIO: device {}: queues configured, device live", index);
 		} else {
-			hal::serial_println!("VirtIO: Queue setup failed");
+			hal::serial_println!("VirtIO: device {}: queue setup failed", index);
 		}
 	}
 }

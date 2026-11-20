@@ -1,12 +1,35 @@
 KERNEL = target/x86_64-unknown-none/release/kernel
+KERNEL_GDB= target/x86_64-unknown-none/debug/kernel
 ISO = serix.iso
+ISO_GDB = serix-gdb.iso
 ISO_ROOT = iso_root
+ISO_ROOT_GDB = iso_root_gdb
+QEMU_ISO ?= $(ISO)
 LIMINE_DIR = limine
+
+# Second QEMU disk: a GPT image with two partitions, so every boot exercises
+# the multi-device and partition paths (/dev/sda whole-disk, /dev/sdb1-2).
+GPT_IMG = gpt.img
 
 LIMINE_BRANCH = v10.x-binary
 LIMINE_URL = https://github.com/limine-bootloader/limine.git
 
-.PHONY: all run run-host iso disk clean limine kernel ext4d ext4disk policyd
+.PHONY: all run run-host run-gdb run-nographic iso disk gptdisk payload clean limine kernel kernel-gdb ext4d ext4disk policyd init rsh
+
+EXT4D_BIN = target/x86_64-unknown-none/release/ext4d
+INIT_BIN = target/x86_64-unknown-none/release/examples/init
+
+# Payload disk (docs/USERLAND.md §3): partition 1 is a bootstrap volume the
+# kernel can read before ext4d exists, partition 2 is the ext4 userland that
+# init mounts read-only. Both are built with mke2fs -d, so no loop device or
+# root is needed to populate them.
+PAYLOAD_IMG = payload.img
+PAYLOAD_STAGE = payload/stage
+PAYLOAD_SECTORS = 196608
+PAYLOAD_BOOT_START = 2048
+PAYLOAD_BOOT_SECTORS = 32768
+PAYLOAD_ROOT_START = 34816
+PAYLOAD_ROOT_SECTORS = 159744
 
 all: iso
 
@@ -21,6 +44,9 @@ policyd:
 kernel: ext4d policyd
 	cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem --manifest-path kernel/Cargo.toml --release --target x86_64-unknown-none
 
+kernel-gdb: ext4d policyd
+	cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
+
 limine:
 	if [ ! -d $(LIMINE_DIR) ]; then \
 		git clone $(LIMINE_URL) --branch=$(LIMINE_BRANCH) --depth=1 $(LIMINE_DIR); \
@@ -33,6 +59,22 @@ $(ISO_ROOT)/boot:
 $(ISO_ROOT)/boot/kernel: kernel ext4d | $(ISO_ROOT)/boot
 	cp $(KERNEL) $@
 
+$(ISO_ROOT_GDB)/boot:
+	mkdir -p $@
+
+$(ISO_ROOT_GDB)/boot/kernel: kernel-gdb | $(ISO_ROOT_GDB)/boot
+	cp $(KERNEL_GDB) $@
+
+$(ISO_ROOT_GDB)/boot/limine-bios.sys $(ISO_ROOT_GDB)/boot/limine-bios-cd.bin $(ISO_ROOT_GDB)/boot/limine-uefi-cd.bin: limine | $(ISO_ROOT_GDB)/boot
+	cp $(LIMINE_DIR)/limine-bios.sys $(ISO_ROOT_GDB)/boot/
+	cp $(LIMINE_DIR)/limine-bios-cd.bin $(ISO_ROOT_GDB)/boot/
+	cp $(LIMINE_DIR)/limine-uefi-cd.bin $(ISO_ROOT_GDB)/boot/
+
+$(ISO_ROOT_GDB)/limine.conf: ./limine.conf | $(ISO_ROOT_GDB)
+	sed 's/^\([[:space:]]*protocol:[[:space:]]*limine\)$$/\1\n    kaslr: no/' $< > $@
+
+$(ISO_ROOT_GDB):
+	mkdir -p $@
 ext4disk:
 	@if [ ! -f ext4.img ]; then \
 		dd if=/dev/zero of=ext4.img bs=1M count=128 2>/dev/null; \
@@ -51,14 +93,16 @@ $(ISO_ROOT)/limine.conf:
 	cp ./limine.conf $@
 
 init:
-	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
 	    -p ulib \
 	    --example init \
 	    --release \
 	    --target x86_64-unknown-none
 
 rsh:
-	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" cargo build \
+	RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie" \
+	  cargo build -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
 	    --manifest-path ../rsh/Cargo.toml \
 	    --release \
 	    --target x86_64-unknown-none
@@ -71,6 +115,14 @@ iso: $(ISO_ROOT)/boot/kernel $(ISO_ROOT)/boot/limine-bios.sys $(ISO_ROOT)/boot/l
 	  $(ISO_ROOT) -o $(ISO)
 	./limine/limine bios-install $(ISO)
 
+$(ISO_GDB): $(ISO_ROOT_GDB)/boot/kernel $(ISO_ROOT_GDB)/boot/limine-bios.sys $(ISO_ROOT_GDB)/boot/limine-bios-cd.bin $(ISO_ROOT_GDB)/boot/limine-uefi-cd.bin $(ISO_ROOT_GDB)/limine.conf
+	xorriso -as mkisofs -b boot/limine-bios-cd.bin \
+	  -no-emul-boot -boot-load-size 4 -boot-info-table \
+	  --efi-boot boot/limine-uefi-cd.bin \
+	  -efi-boot-part --efi-boot-image --protective-msdos-label \
+	  $(ISO_ROOT_GDB) -o $@
+	./limine/limine bios-install $@
+
 disk:
 	@if [ ! -f disk.img ] || [ "$$(file disk.img | grep -c ext2)" -eq 0 ]; then \
 		dd if=/dev/zero of=disk.img bs=1M count=64 2>/dev/null; \
@@ -79,6 +131,40 @@ disk:
 	else \
 		echo "disk.img already ext2, skipping format"; \
 	fi
+
+gptdisk:
+	@if [ ! -f $(GPT_IMG) ]; then \
+		dd if=/dev/zero of=$(GPT_IMG) bs=1M count=64 2>/dev/null; \
+		printf 'label: gpt\nstart=2048, size=16384, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="serix-boot"\nstart=18432, size=110592, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="serix-root"\n' \
+			| sfdisk --quiet $(GPT_IMG); \
+		echo "Created $(GPT_IMG) (GPT, 2 partitions)"; \
+	else \
+		echo "$(GPT_IMG) exists, skipping"; \
+	fi
+
+payload: ext4d init
+	rm -rf $(PAYLOAD_STAGE)
+	mkdir -p $(PAYLOAD_STAGE)/boot/sbin \
+	         $(PAYLOAD_STAGE)/root/bin \
+	         $(PAYLOAD_STAGE)/root/usr/bin \
+	         $(PAYLOAD_STAGE)/root/etc/serix \
+	         $(PAYLOAD_STAGE)/root/tmp
+	cp payload/bootstrap/SERIX.MRK $(PAYLOAD_STAGE)/boot/
+	cp $(EXT4D_BIN) $(PAYLOAD_STAGE)/boot/sbin/ext4d
+	cp $(INIT_BIN) $(PAYLOAD_STAGE)/boot/sbin/init
+	cp payload/userland/etc/serix/policy.toml $(PAYLOAD_STAGE)/root/etc/serix/
+	dd if=/dev/zero of=$(PAYLOAD_IMG) bs=512 count=$(PAYLOAD_SECTORS) 2>/dev/null
+	printf '%s\n' \
+		'label: gpt' \
+		"start=$(PAYLOAD_BOOT_START), size=$(PAYLOAD_BOOT_SECTORS), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"serix-bootstrap\"" \
+		"start=$(PAYLOAD_ROOT_START), size=$(PAYLOAD_ROOT_SECTORS), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"serix-userland\"" \
+		| sfdisk --quiet $(PAYLOAD_IMG)
+	mke2fs -q -F -t ext2 -b 1024 -E offset=$$(( $(PAYLOAD_BOOT_START) * 512 )) \
+		-d $(PAYLOAD_STAGE)/boot $(PAYLOAD_IMG) $$(( $(PAYLOAD_BOOT_SECTORS) / 2 ))
+	mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^64bit,^metadata_csum,^dir_index \
+		-E offset=$$(( $(PAYLOAD_ROOT_START) * 512 )) \
+		-d $(PAYLOAD_STAGE)/root $(PAYLOAD_IMG) $$(( $(PAYLOAD_ROOT_SECTORS) / 2 ))
+	echo "Created $(PAYLOAD_IMG): ext2 bootstrap + ext4 userland"
 
 QEMU_ACCEL ?= tcg
 QEMU_CPU ?= max
@@ -99,11 +185,13 @@ HOST_QEMU_MAXCPUS ?= $(shell expr $(HOST_QEMU_SOCKETS) \* $(HOST_QEMU_CORES) \* 
 
 QEMU_COMMON = -machine q35,accel=$(QEMU_ACCEL) -cpu $(QEMU_CPU) -m 4G \
 	-smp cpus=$(QEMU_SMP_CPUS),sockets=$(QEMU_SOCKETS),cores=$(QEMU_CORES),threads=$(QEMU_THREADS),maxcpus=$(QEMU_MAXCPUS) \
-	-boot d -cdrom $(ISO) \
+	-boot d -cdrom $(QEMU_ISO) \
 	-drive file=disk.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off $(QEMU_IOMMU)
+	-device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off \
+	-drive file=$(GPT_IMG),if=none,format=raw,id=x1 \
+	-device virtio-blk-pci,drive=x1,disable-legacy=on,disable-modern=off $(QEMU_IOMMU)
 
-run: iso disk
+run: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio
 
 # KVM host CPU passthrough with the host's socket/core/thread counts. The
@@ -114,17 +202,15 @@ run-host: iso disk
 	  QEMU_CORES=$(HOST_QEMU_CORES) QEMU_THREADS=$(HOST_QEMU_THREADS) \
 	  QEMU_MAXCPUS=$(HOST_QEMU_MAXCPUS)
 
-run-nographic: iso disk
+run-nographic: iso disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -nographic
 
-run-debug: iso disk
-	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
-		-d int,cpu_reset -no-reboot
+run-gdb: QEMU_ISO = $(ISO_GDB)
 
-run-gdb: iso disk
+run-gdb: $(ISO_GDB) disk gptdisk
 	qemu-system-x86_64 $(QEMU_COMMON) -serial stdio \
-		-s -S
+		-s -S -d int,cpu_reset -no-reboot
 
 clean:
-	rm -rf $(ISO_ROOT) $(ISO)
-	cargo clean --manifest-path kernel/Cargo.toml
+	rm -rf $(ISO_ROOT) $(ISO_ROOT_GDB) $(ISO) $(ISO_GDB)
+	cargo clean

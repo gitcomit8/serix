@@ -48,7 +48,6 @@ impl INode for ConsoleDevice {
 	fn write(&self, _offset: usize, buf: &[u8]) -> usize {
 		if let Ok(s) = core::str::from_utf8(buf) {
 			serial_println!("{}", s);
-			// fb_println!("{}", s);
 			buf.len()
 		} else {
 			0

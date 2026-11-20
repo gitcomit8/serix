@@ -7,12 +7,15 @@ The `fs` crate implements filesystem drivers and abstractions for the Serix oper
 - **FAT32**: Full read/write driver with LFN support, FAT cluster chain management
 - **ext2**: Basic parser and stub support
 - **ext4**: Ring-3 daemon backed (`ext4d`) with HTree indexing and JBD2 journaling
+- **GPT**: Validated GUID Partition Table parsing and offset partition devices
+- **Block devices**: `VirtioBlockDev` (one indexed disk) and `PartitionDev` (a GPT partition as its own `BlockDev`)
 
 ## Crate Structure
 
 ```
 fs/
-├── lib.rs        # BlockDev trait, FsDriver registry, probe_and_mount, VirtioBlockDev
+├── lib.rs        # BlockDev trait, FsDriver registry, probe_and_mount, VirtioBlockDev, PartitionDev
+├── gpt.rs        # GPT parsing and validation (host-testable, no kernel deps)
 ├── fat32/        # FAT32 driver (BPB parsing, FAT table, directory entries)
 ├── ext2/         # ext2 driver (superblock, inode, directory)
 ├── ext4/         # ext4 support
@@ -42,12 +45,37 @@ fs::ext2::init();
 fs::ext4::init();
 
 // Probe and auto-mount (after ext4d is spawned)
-if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev)) {
+if let Some(root_ino) = fs::probe_and_mount(Arc::new(fs::VirtioBlockDev::new(0))) {
     vfs::mount("/mnt", root_ino);
 }
 ```
 
 `probe_and_mount()` iterates registered drivers, calls each driver's `probe()` to detect the filesystem type, then calls `mount()` to return the root INode.
+
+## Block Devices and Partitions
+
+`fs::BlockDev` is the only interface filesystem drivers see; it is implemented by:
+
+- **`VirtioBlockDev::new(index)`** — one entry of the driver's block-device table (index 0 is `/dev/sda`).
+- **`PartitionDev::new(parent, start_lba, sector_count)`** — an offset view of a parent device. Sector 0 of the partition is `start_lba` on the parent, and any I/O at or past `sector_count` is refused, so a filesystem driver mounting `/dev/sda2` cannot escape its partition.
+
+### GPT parsing (`gpt.rs`)
+
+`read_gpt(&dev, disk_sectors)` parses the **primary** GPT header at LBA 1 and returns `Vec<Partition>` or a `GptError`. Validation happens in this order, and the first failure rejects the whole table — no partial results are returned:
+
+1. `EFI PART` signature → `NoGpt`
+2. Revision is 1.0 → `BadRevision`
+3. Header size in `92..=512` → `BadHeaderSize`
+4. Header CRC32 (CRC field zeroed) → `BadHeaderCrc`
+5. Entry count/size bounds and array size cap → `BadEntryArray`
+6. Entry-array CRC32 over exactly `entry_count * entry_size` bytes → `BadEntryArrayCrc`
+7. Any unreadable sector → `Io`
+
+Collected entries skip all-zero type GUIDs and zero-length or inverted ranges; entries starting past the disk are dropped and entries extending past it are clipped to the last addressable sector. Partition numbers are assigned contiguously in table order, which drives `/dev/sdXN` naming.
+
+The module depends only on `alloc`, so its 11 unit tests run on the host. The header comment of `fs/src/gpt.rs` contains the harness commands; the kernel build does not run them.
+
+**Not implemented:** backup-GPT fallback, overlap detection, protective-MBR interpretation, and non-512-byte logical sectors.
 
 ## ext4 Architecture
 
@@ -66,7 +94,7 @@ kshell/other Ring-0 task
         |
    ext4d daemon (Ring 3)
         |
-        | read/write_block() on /dev/sda
+        | read/write_block() on /dev/sda (or /dev/sdXN via PartitionDev)
         |
    VirtIO block device
 ```
@@ -380,7 +408,7 @@ The image is created by the Makefile with `mkfs.vfat -F 32`.
 
 ### Internal Crates
 
-- **drivers**: VirtIO block device interface (`virtio_blk()`, `read_sector()`, `write_sector()`)
+- **drivers**: VirtIO block device interface (`virtio_blk_at()`, `device_count()`, `read_sector()`, `write_sector()`)
 - **vfs**: `INode` trait and `FileType` enum that this crate implements
 - **hal**: Serial console output for debug/error messages (`serial_println!`)
 

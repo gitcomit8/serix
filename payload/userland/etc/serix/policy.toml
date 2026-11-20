@@ -1,0 +1,23 @@
+# Serix Policy Daemon Configuration
+# Path-based access control rules
+#
+# This is the payload copy, mounted read-only from the ext4 userland
+# partition. init applies it with SYS_POLICY_RELOAD.
+
+[[rule]]
+target = "/etc/shadow"
+match_type = "exact"
+action = "deny"
+required_rights = "READ"
+
+[[rule]]
+target = "/proc/serix/cap-audit"
+match_type = "exact"
+action = "deny"
+required_rights = "READ"
+
+[[rule]]
+target = "/"
+match_type = "prefix"
+action = "allow"
+required_rights = "READ,WRITE,LOOKUP"

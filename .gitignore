@@ -10,10 +10,16 @@
 .idea/
 Cargo.lock
 iso_root/*
+iso_root_gdb/*
 
 # Build artifacts
 serix.iso
 disk.img
+payload/stage/
+
+# Boot smoke test output (scripts/boot-smoke.sh)
+boot-smoke.log
+boot-smoke.log.qemu
 
 # Tool state (Claude Code, Remember MCP, RTK)
 .rtk/

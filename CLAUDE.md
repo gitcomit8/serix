@@ -12,7 +12,8 @@ Serix is a hybrid-kernel x86_64 operating system written in `#![no_std]` Rust. I
 cargo build --release          # Build all workspace crates (kernel + all subsystems)
 cargo build -p <crate> --release  # Build a specific crate
 make init                      # Build userspace init binary (required before iso)
-make iso                       # Build bootable ISO (kernel + ext4d + Limine)
+make payload                   # Build payload.img: ext2 bootstrap + ext4 userland (docs/USERLAND.md)
+make iso                       # Build bootable ISO (kernel + ext4d + policyd + Limine)
 make run                       # Build everything and run in QEMU
 make run-debug                 # Run with -d int,cpu_reset -no-reboot (catch triple faults)
 make run-gdb                   # Run with GDB server on port 1234, paused (-S -s)
@@ -29,9 +30,9 @@ cargo clippy                   # Lint
 
 ### Workspace Structure
 
-Cargo workspace with 16 member crates. `.cargo/config.toml` sets `x86_64-unknown-none` as default target and enables `build-std` — no `--target` flag needed.
+Cargo workspace with 20 member crates. `.cargo/config.toml` sets `x86_64-unknown-none` as default target and enables `build-std` — no `--target` flag needed.
 
-Key crates: `kernel/` (entry, GDT, syscalls, process spawning), `memory/` (paging, heap, frame allocator, kernel stacks), `hal/` (serial, CPU, I/O ports), `apic/` (LAPIC, I/O APIC, timer), `idt/` (exception handlers), `graphics/` (framebuffer console), `task/` (async executor, scheduler, context switch), `capability/` (security), `drivers/` (VirtIO, PCI), `vfs/` (virtual filesystem), `ipc/` (port-based messaging), `loader/` (ELF loader), `ulib/` (userspace syscall wrappers), `fs/` (FAT32, ext2, ext4 parser/stubs), `keyboard/` (PS/2 driver), `ext4d/` (Ring 3 ext4 daemon), `util/` (panic handler).
+Key crates: `kernel/` (entry, GDT, syscalls, process spawning, LES bridge), `memory/` (paging, heap, frame allocator, kernel stacks, VMAs), `hal/` (serial, CPU, I/O ports, topology), `acpi/` (RSDP/RSDT/XSDT and MADT parsing), `apic/` (LAPIC, I/O APIC, x2APIC, IPIs, timer), `idt/` (exception handlers), `graphics/` (framebuffer console), `task/` (async executor, per-CPU WFQ scheduler, context switch), `capability/` (C-space, rights, validation, audit), `drivers/` (VirtIO, PCI), `vfs/` (mount table, path resolution, page cache), `ipc/` + `ipc_types/` (port-based messaging and wire format), `loader/` (ELF loader), `ulib/` (userspace syscall wrappers), `fs/` (FAT32, ext2, ext4 with JBD2 journal and HTree indexing, GPT parsing, policy rules), `keyboard/` (PS/2 driver), `ext4d/` (Ring 3 ext4 daemon), `policyd/` (Ring 3 policy daemon), `util/` (panic handler).
 
 Internal crate dependencies use `{ path = "../crate_name" }`.
 
@@ -50,11 +51,11 @@ Serial init → disable PIC/enable APIC → register interrupt handlers → load
 
 ### Interrupt Vectors
 
-0-31: CPU exceptions, 33: PS/2 keyboard, 49: LAPIC timer (~625 Hz). All handlers must signal EOI to APIC.
+0-31: CPU exceptions, 33: PS/2 keyboard, 34-41: VirtIO block devices (one vector per device, `VIRTIO_BLK_VECTOR + index`), 49: LAPIC timer (~625 Hz). All handlers must signal EOI to APIC.
 
 ### Syscall Interface
 
-Linux-style ABI via `SYSCALL`/`SYSRET`. RAX=number, RDI/RSI/RDX/R10/R8/R9=args. Dispatch in `kernel/src/syscall.rs`, wrappers in `ulib/src/lib.rs`.
+Linux-style `SYSCALL`/`SYSRET` entry with Serix-native numbers (not Linux-compatible). RAX=number, RDI/RSI/RDX/R10/R8/R9=args. Dispatch in `kernel/src/syscall.rs`, wrappers in `ulib/src/lib.rs`. File, memory, and IPC operations pass a capability reference (`slot` + `generation`) in their leading arguments; process controls (`SPAWN`, `WAIT`) authorize against the calling task's capability space. `authorization_for(nr)` is the exhaustive per-arm table classifying each syscall as `Unprotected` or requiring specific `Rights`.
 
 | Number | Name | Description |
 |--------|------|-------------|
@@ -75,10 +76,18 @@ Linux-style ABI via `SYSCALL`/`SYSRET`. RAX=number, RDI/RSI/RDX/R10/R8/R9=args. 
 | 18 | SYS_GETDENTS | Read directory entries |
 | 20 | SYS_MKDIR | Create directory |
 | 21 | SYS_UNLINK | Delete file |
+| 22 | SYS_RMDIR | Remove directory |
+| 23 | SYS_FORMAT | Format block device as ext4 (needs PLATFORM_ADMIN) |
 | 30 | SYS_SEND | Send IPC message to port |
 | 31 | SYS_RECV | Receive IPC message (non-blocking) |
-| 32 | SYS_RECV_BLOCK | Receive IPC message (blocking) |
+| 32 | SYS_RECV_BLOCK | Receive IPC message (blocking, fills full `Message`) |
 | 33 | SYS_CREATE_PORT | Create IPC port, return capability handle |
+| 34 | SYS_CREATE_NOTIFICATION_PORT | Create async notification port with event bitmask |
+| 35 | SYS_NOTIFY | Raise event bitmask on a notification port |
+| 90 | SYS_MMAP | Map a file into the task's address space |
+| 91 | SYS_MUNMAP | Unmap a VMA |
+| 92 | SYS_FILE_READ | Read a whole file (capped at 4 KiB) into a user buffer |
+| 93 | SYS_POLICY_RELOAD | Reparse policy config and swap the LES snapshot |
 
 **Error codes**: Negative errno values encoded as `u64::MAX - n` (e.g., `ERRNO_EBADF = u64::MAX - 8`).
 
@@ -97,20 +106,24 @@ Linux-style ABI via `SYSCALL`/`SYSRET`. RAX=number, RDI/RSI/RDX/R10/R8/R9=args. 
 - `kernel/src/process.rs::spawn_user_process()` parses ELF, allocates PML4, maps `PT_LOAD` segments, constructs user stack, enters Ring 3 via `iretq`
 - Overlapping segments share pages (detected via `PageTableFlags::PRESENT` check)
 - Userspace loaded at `0x200000` (set by `user.ld` linker script)
-- ext4d daemon is embedded as ELF bytes in kernel binary (`include_bytes!`)
+- `ext4d` and `policyd` are embedded as ELF bytes in the kernel binary (`include_bytes!`) and inserted into the VFS root at boot
 
 ### Filesystem Stack
 
 **Ring 0 (Kernel):**
-- **VFS layer** (`vfs/`): Path resolution, FD table, `INode` trait
+- **VFS layer** (`vfs/`): Mount table (`MOUNT_TABLE`, a `BTreeMap` iterated in reverse for longest-prefix matching), `mount()`/`umount()`/`lookup_path()`, FD table, `INode` trait, `RamDir`/`RamFile`, page cache, mmap-backed VMAs
+- **Block devices**: `drivers::virtio` owns a fixed table of up to 8 devices (`MAX_BLOCK_DEVICES`); `store_global()` claims a slot and returns its index. `kernel/src/init/filesystem.rs::expose_block_devices()` publishes each disk as `/dev/sda`, `/dev/sdb`, ... and each validated GPT entry as `/dev/sda1`, `/dev/sda2`, ...; disks without a GPT keep only the whole-disk node
+- **Boot mounts**: `RamDir` at `/` and `/dev/`, the disks and partitions above, `/proc/serix/cap-audit`, `/etc/serix/policy.toml`; `init::scheduler::init_scheduler()` probes disk 0 (`/dev/sda`) and auto-mounts the detected filesystem at `/mnt` (RamDir fallback if detection fails)
 - **FAT32**: Full R/W, LFN support, cluster allocation
 - **ext2**: Basic support
-- **ext4 stub**: Kernel-side IPC forwarding to Ring 3 daemon
+- **GPT** (`fs/src/gpt.rs`): validated partition-table parsing (signature, revision, header size, header CRC32, entry-array CRC32, entry bounds); a table failing any check is rejected whole. `PartitionDev` presents a partition as an offset `BlockDev` and refuses I/O past its end
+- **ext4**: Kernel-side stub forwards operations to the Ring 3 daemon over IPC; also implements superblock/BGDT/inode/extent/directory parsing, JBD2 journal writeback and crash recovery (`fs/src/ext4/journal.rs`), HTree directory indexing (`fs/src/ext4/htree.rs`), and formatting via `SYS_FORMAT` (`fs/src/ext4/format.rs`)
 
 **Ring 3 (Userspace):**
-- **ext4d daemon** (`ext4d/`): Handles ext4 operations via IPC (superblock, inode tables, extent trees, file I/O)
+- **ext4d daemon** (`ext4d/`): Serves ext4 operations over IPC (superblock, inode tables, extent trees, directories, file I/O)
+- **policyd daemon** (`policyd/`): Stores and evaluates path-based policy loaded from `/etc/serix/policy.toml`
 
-**IPC Protocol**: Synchronous request/response via kernel IPC ports. `SYS_SEND` from kernel → ext4d, `SYS_RECV` from ext4d. Message format: opcode + args (`fs/src/ext4/ipc_protocol.rs`).
+**IPC Protocol**: Request/response over queued 128-byte port messages — `SYS_SEND` enqueues and never blocks on the receiver. Kernel → ext4d on `EXT4_REQ_PORT` (`0x4E00`), replies on `EXT4_REPLY_BASE + sender_id` (`0x4E01`); policyd listens on `0x5000`. Message format: opcode + args (`fs/src/ext4/ipc.rs`).
 
 ### Kernel Shell (kshell)
 
@@ -121,7 +134,7 @@ Built-in TTY shell running as a Ring-0 task. Input: PS/2 keyboard. Output: frame
 - **Tabs, not spaces** (`hard_tabs = true`, `tab_spaces = 8`, `max_width = 100`)
 - **C-style block comments** for function headers: `/* function_name - description */`
 - **Global state pattern**: `static INSTANCE: Once<Mutex<Type>> = Once::new()`
-- **Debug output**: `serial_println!` (kernel), `fb_println!` (framebuffer), `kprintln!` (kshell)
+- **Debug output**: `serial_println!` (serial), `graphics::kprint!` / `graphics::kprintln!` (framebuffer console, also used by kshell)
 - **Address types**: Use `x86_64::PhysAddr` and `x86_64::VirtAddr`, not raw integers
 - **Syscall naming**: prefix with `serix_` (e.g., `serix_write`)
 - **Handler naming**: suffix with `_handler` (e.g., `timer_interrupt_handler`)
@@ -175,7 +188,7 @@ Limine documentation: https://github.com/limine-bootloader/limine/blob/trunk/PRO
 
 ## Workspace Structure
 
-This is a **Cargo workspace** with 16 member crates. Key implications:
+This is a **Cargo workspace** with 20 member crates. Key implications:
 
 - **Default target**: `.cargo/config.toml` sets `x86_64-unknown-none` as default target and enables `build-std` — no `--target` flag needed
 - **Shared dependencies**: Managed in root `Cargo.toml` `[workspace]` section
@@ -192,7 +205,7 @@ RUSTFLAGS="-C relocation-model=static -C link-arg=-Tuser.ld -C link-arg=-no-pie"
   cargo build -p <crate> --release --target x86_64-unknown-none
 ```
 
-The `ext4d` daemon is embedded into the kernel binary via `include_bytes!()` and loaded at boot.
+The `ext4d` and `policyd` daemons are embedded into the kernel binary via `include_bytes!()` and loaded at boot.
 
 ## QEMU Configuration
 
@@ -200,7 +213,9 @@ The `make run` command launches QEMU with:
 - **4GB RAM**: `-m 4G`
 - **4 CPUs**: `-smp 4`
 - **Serial**: `-serial stdio`
-- **VirtIO block device**: `-drive file=disk.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off`
+- **Two VirtIO block devices**: `-drive file=disk.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0,disable-legacy=on,disable-modern=off` plus a second GPT disk (`gpt.img`, drive id `x1`) built by the `make gptdisk` target
+
+`make run` depends on `iso disk gptdisk`, so every boot exercises the multi-device and partition paths (`/dev/sda` whole disk, `/dev/sdb1`-`/dev/sdb2`).
 
 To modify QEMU settings, edit the `QEMU_COMMON` variable in `Makefile`.
 
@@ -228,28 +243,32 @@ When referencing the Intel SDM for architectural details — register layouts, i
 ## Project Status
 
 **Current Phase:** 4 (Storage & Filesystem Stack)  
-**Version:** 0.0.6  
-**Status:** ext4 daemon MVP integrated; FAT32 complete; SMP with 4+ CPUs working
+**Version:** 0.0.8
+**Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; multi-disk VirtIO block layer with GPT partitions; SMP with 4+ CPUs working
 
 ### What Works
 - Boot kernel to blue framebuffer with memory map
-- Spawn multiple Ring 3 processes (ext4d daemon, kshell)
-- Mount FAT32 or ext4 filesystem from block device
-- Read/write files via syscall-mediated filesystem operations
+- Spawn Ring 3 processes (`ext4d`, `policyd`) and the Ring 0 kshell task
+- Multi-filesystem VFS mount table with longest-prefix resolution
+- Multi-disk block layer: up to 8 VirtIO block devices, each with its own IRQ vector and ISR status address
+- GPT discovery at boot: `/dev/sda`, `/dev/sdb`, ... whole disks plus `/dev/sdXN` partition nodes, with corrupt tables rejected whole
+- Auto-mount of a detected filesystem from disk 0 at `/mnt` during boot
+- Read/write files via syscall-mediated filesystem operations (FAT32, ext2, ext4 through `ext4d`)
+- ext4 JBD2 journal writeback/crash recovery and HTree directory indexing
+- Capability-checked syscalls plus LES path policy served by `policyd`
 - PS/2 keyboard input, LAPIC timer interrupts (~625 Hz)
 - SMP with Limine MP: boot 1-16 CPUs, per-CPU run queues, per-CPU kernel stacks
 - Priority inheritance protocol for lock contention
 - Preemptive scheduling via LAPIC timer
 
 ### What's Missing
-- Mount table (BTreeMap for multi-filesystem layouts)
-- Auto-mount root filesystem at boot
 - Ring 3 driver server framework (MMIO BAR mapping)
-- ext4 journal (JBD2) and HTree directory indexing
 - Unified page cache with demand paging
-- Dynamic linking or `execve()`
-- fork/clone/waitpid()
+- Dynamic linking
+- fork/clone and `execve()`
 - Signal handling
+- Network driver, NetDaemon, and TCP/IP stack
+- Full ext4 acceptance validation (interop, journal replay after interrupted writes, malformed-metadata rejection)
 
 
 # Claude Code Token Optimization Rules
