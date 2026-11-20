@@ -6,7 +6,7 @@
  * The per-CPU data area is pointed to by the GS_BASE MSR.
  */
 
-use super::{CURRENT_TASK, SchedClass, TaskCB, TaskState};
+use super::{CURRENT_TASKS, MAX_CPUS, SchedClass, TaskCB, TaskState};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -201,25 +201,50 @@ pub fn wake_task(task: Arc<Mutex<TaskCB>>) {
 }
 
 /*
- * current_cpu_id - Read the LAPIC ID of the current CPU via MSR 0x1B
+ * current_cpu_id - Read the APIC id of the CPU executing this code
  *
- * Return: CPU ID as u8
+ * Return: CPU id as u8
+ *
+ * The id comes from CPUID leaf 1 EBX[31:24] (initial APIC id). Reading
+ * IA32_APIC_BASE (MSR 0x1B) here was wrong: that MSR has no APIC id in its
+ * low byte, so every CPU reported 0 and all of them shared one run queue.
+ *
+ * This must not depend on the apic crate, which depends on this one, and
+ * CPUID is the only source that works in both xAPIC and x2APIC mode.
  */
 pub fn current_cpu_id() -> u8 {
-	let mut apic_id: u64;
-	unsafe {
-		core::arch::asm!("rdmsr", in("ecx") 0x1Bu32, lateout("eax") apic_id, lateout("edx") _);
-	}
-	(apic_id & 0xFF) as u8
+	let leaf = core::arch::x86_64::__cpuid(1);
+	((leaf.ebx >> 24) & 0xFF) as u8
 }
 
 /*
- * current_task_id - Get the task ID of the currently running task
+ * current_task_slot - Per-CPU storage for this CPU's current task id
+ * @cpu_id: CPU index (APIC id, as used for the run-queue table too)
+ *
+ * Return: The atomic holding this CPU's current task id
+ */
+fn current_task_slot(cpu_id: u8) -> &'static core::sync::atomic::AtomicU64 {
+	&CURRENT_TASKS[cpu_id as usize % MAX_CPUS]
+}
+
+/*
+ * current_task_id - Get the task ID of the task running on this CPU
  *
  * Return: TaskId value, or 0 if no task is running
  */
 pub fn current_task_id() -> u64 {
-	CURRENT_TASK.load(Ordering::Acquire)
+	current_task_slot(current_cpu_id()).load(Ordering::Acquire)
+}
+
+/*
+ * set_current_task_id - Record which task is running on this CPU
+ * @id: Task ID, or 0 when this CPU has no current task
+ *
+ * Used by the blocking paths that put a task back as current without
+ * going through pick_next_task().
+ */
+pub fn set_current_task_id(id: u64) {
+	current_task_slot(current_cpu_id()).store(id, Ordering::Release);
 }
 
 /*
@@ -247,14 +272,20 @@ pub fn current_task_arc() -> Option<Arc<Mutex<TaskCB>>> {
  *         Caller must ensure the task is eventually re-enqueued or destroyed.
  */
 pub fn take_current() -> Option<Arc<Mutex<TaskCB>>> {
-	get_per_cpu_run_queue(current_cpu_id()).lock().current.take()
+	let cpu_id = current_cpu_id();
+	let taken = get_per_cpu_run_queue(cpu_id).lock().current.take();
+	if taken.is_some() {
+		/* No task is running here until pick_next_task() names one. */
+		current_task_slot(cpu_id).store(0, Ordering::Release);
+	}
+	taken
 }
 
 /*
  * pick_next_task() - Select the next task to run from the per-CPU run queue
  *
  * Dequeues the front task and transitions it to Running state.
- * Updates CURRENT_TASK atomic with the selected task's ID.
+ * Updates this CPU's CURRENT_TASKS slot with the selected task's ID.
  *
  * Return: Some(task) if a runnable task exists, None if queue is empty
  *
@@ -268,7 +299,7 @@ pub fn pick_next_task() -> Option<Arc<Mutex<TaskCB>>> {
 	{
 		let mut task = next.lock();
 		task.set_state(TaskState::Running);
-		CURRENT_TASK.store(task.id.0, Ordering::Release);
+		current_task_slot(cpu_id).store(task.id.0, Ordering::Release);
 	}
 	rq.current = Some(Arc::clone(&next));
 	Some(next)

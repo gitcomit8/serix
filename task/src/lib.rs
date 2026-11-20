@@ -32,14 +32,27 @@ use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 use x86_64::structures::paging::PhysFrame;
 /*
- * CURRENT_TASK - Task ID of the currently running task
+ * MAX_CPUS - Number of per-CPU scheduling slots
  *
- * 0 means no task is running (idle / early boot)
- * Updated atomically before each context switch
- *
- * TODO(SMP): Per-CPU current-task tracking via GS_BASE
+ * Matches PER_CPU_RUN_QUEUES in scheduler.rs. The kernel supports up to
+ * 16 online CPUs, and both tables are indexed by the same CPU id.
  */
-pub static CURRENT_TASK: AtomicU64 = AtomicU64::new(0);
+pub const MAX_CPUS: usize = 16;
+
+/*
+ * CURRENT_TASKS - Per-CPU task ID of the task running on that CPU
+ *
+ * 0 means no task is running (idle / early boot).
+ *
+ * This has to be per-CPU: with four CPUs running four different tasks a
+ * single global value is overwritten by whichever CPU scheduled last, and
+ * every lookup that resolves authority by task (fd table, capability
+ * space, parent/child bookkeeping) then acts on another task.
+ *
+ * Written by pick_next_task()/take_current() for the local CPU only, and
+ * read with Acquire ordering by current_task_id().
+ */
+pub static CURRENT_TASKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 pub static SWITCH_HOOK: Once<fn(VirtAddr)> = Once::new();
 
@@ -829,8 +842,12 @@ pub fn block_current_and_switch() {
 	let new_arc = match pick_next_task() {
 		Some(t) => t,
 		None => {
-			/* No other task — put ourselves back as current */
-			crate::scheduler::get_per_cpu_run_queue(crate::scheduler::current_cpu_id()).lock().current = Some(old_arc);
+			/* No other task — put ourselves back as current. take_current()
+			 * cleared this CPU's current-task id, so restore it. */
+			let cpu_id = crate::scheduler::current_cpu_id();
+			let task_id = old_arc.lock().id.0;
+			crate::scheduler::get_per_cpu_run_queue(cpu_id).lock().current = Some(old_arc);
+			crate::scheduler::set_current_task_id(task_id);
 			return;
 		}
 	};
