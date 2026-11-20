@@ -44,6 +44,9 @@ use core::arch::naked_asm;
  *   rsp=0, rbp=8, rbx=16, r12=24, r13=32, r14=40, r15=48
  *   rip=56, rflags=64, cs=72, ss=80, fs=88, gs=96, ds=104, es=112
  *   fs_base=120, gs_base=128, cr3=136, ipc_msg_ptr=144, ipc_msg_valid=152
+ *   fx=160 (512-byte FXSAVE image, 16-byte aligned)
+ *
+ * task/src/lib.rs asserts the cr3 and fx offsets at compile time.
  */
 #[unsafe(naked)]
 pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUContext) {
@@ -62,6 +65,11 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		/* Save CR3 — CPUContext.cr3 is at offset 136 */
 		"mov rax, cr3",
 		"mov [rdi + 136], rax",
+
+		/* Save x87/SSE state — CPUContext.fx is at offset 160.
+		 * FXSAVE needs a 16-byte aligned destination, which the
+		 * FxSaveArea field type guarantees. */
+		"fxsave64 [rdi + 160]",
 
 		/* ---- Load new context ---- */
 		"mov rsp, [rsi + 0]",
@@ -94,6 +102,9 @@ pub unsafe extern "C" fn context_switch(old: *mut CPUContext, new: *const CPUCon
 		"je 2f",
 		"mov cr3, rax",
 		"2:",
+
+		/* ---- Load x87/SSE state for the new task ---- */
+		"fxrstor64 [rsi + 160]",
 
 		/* ---- Update PER_CPU_DATA.current_task_id ---- */
 		/* current_task_id is already set by pick_next_task() before
