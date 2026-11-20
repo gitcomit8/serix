@@ -400,7 +400,7 @@ pub fn spawn_user_process_args(
 	 * so that stdin/stdout/stderr occupy the well-known slots 0/1/2
 	 * in the task's C-space. This ensures ulib's hard-coded
 	 * STDIN_CAP and STDOUT_CAP resolve correctly. */
-	crate::fd::init_stdio(child_id);
+	crate::fd::init_stdio(child_id, &tcb.cspace);
 
 	/* 10. Bootstrap grants are explicit, least-privilege child capabilities.
 	 * They replace the former assumption that a well-known port number

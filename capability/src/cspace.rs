@@ -86,6 +86,42 @@ impl CapabilitySpace {
 	}
 
 	/*
+	 * insert_with_generation - Place a capability with a fixed generation
+	 *
+	 * The well-known stdio slots carry a published generation: ulib's
+	 * STDIN_CAP/STDOUT_CAP/STDERR_CAP are (0, 1), (1, 1), (2, 1). The
+	 * normal insert() counter would give the three slots generations 1, 2
+	 * and 3, so every stdout/stderr write would fail the generation check.
+	 *
+	 * The caller chooses the generation for slots that are never reused
+	 * within a task's lifetime.
+	 */
+	pub fn insert_with_generation(
+		&mut self,
+		cap_id: CapabilityId,
+		close_on_exec: bool,
+		generation: u32,
+	) -> Option<usize> {
+		let slots = &mut self.slots;
+		for (i, slot) in slots.iter_mut().enumerate() {
+			if slot.cap_id.is_none() {
+				slot.cap_id = Some(cap_id);
+				slot.generation = generation;
+				slot.close_on_exec = close_on_exec;
+				return Some(i);
+			}
+		}
+
+		let slot_idx = slots.len();
+		slots.push(Slot {
+			cap_id: Some(cap_id),
+			generation,
+			close_on_exec,
+		});
+		Some(slot_idx)
+	}
+
+	/*
 	 * insert - Place a capability into the next available slot
 	 *
 	 * Returns the slot index, or None if the capability should not be

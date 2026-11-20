@@ -13,6 +13,15 @@ use spin::Mutex;
 use vfs::INode;
 
 /*
+ * STDIO_GENERATION - Generation carried by the well-known stdio capabilities
+ *
+ * ulib's STDIN_CAP/STDOUT_CAP/STDERR_CAP are (slot, generation) = (0..2, 1)
+ * and are part of the userspace ABI, so the kernel must place those three
+ * capabilities with this generation instead of the per-insert counter.
+ */
+const STDIO_GENERATION: u32 = 1;
+
+/*
  * struct OpenFile - Per-fd state
  * @inode: VFS node backing this descriptor
  * @offset: Current read/write cursor position
@@ -260,35 +269,40 @@ pub fn cleanup(task_id: u64) {
 /*
  * init_stdio - Insert fd 0/1/2 into the FD table for a task
  * @task_id: Target task ID
+ * @cspace:  The target task's capability space
  *
  * Must be called before the task uses read()/write() on stdio fds.
  * Mints capabilities for stdin, stdout, and stderr so the task can
  * authorize I/O operations.
+ *
+ * The capability space is passed in rather than looked up: a spawned task
+ * is not yet on any run queue when its stdio is set up, so a lookup by ID
+ * finds nothing and the child starts with no stdio authority at all.
  */
-pub fn init_stdio(task_id: u64) {
+pub fn init_stdio(
+	task_id: u64,
+	cspace: &Arc<spin::Mutex<capability::cspace::CapabilitySpace>>,
+) {
 	use crate::stdio::{StderrINode, StdinINode, StdoutINode};
 
 	let mut table = FD_TABLE.lock();
 
 	// Stdin — READ only
-	let stdin_arc = Arc::new(StdinINode);
-	let stdin_ptr = Arc::as_ptr(&stdin_arc) as usize as u64;
-	let stdin_cap = mint_cap_for_inode(task_id, stdin_arc, stdin_ptr, capability::Rights::READ);
+	let stdin_arc: Arc<dyn INode> = Arc::new(StdinINode);
+	let stdin_cap = mint_stdio_cap(cspace, Arc::clone(&stdin_arc), capability::Rights::READ);
 
 	// Stdout — WRITE only
-	let stdout_arc = Arc::new(StdoutINode);
-	let stdout_ptr = Arc::as_ptr(&stdout_arc) as usize as u64;
-	let stdout_cap = mint_cap_for_inode(task_id, stdout_arc, stdout_ptr, capability::Rights::WRITE);
+	let stdout_arc: Arc<dyn INode> = Arc::new(StdoutINode);
+	let stdout_cap = mint_stdio_cap(cspace, Arc::clone(&stdout_arc), capability::Rights::WRITE);
 
 	// Stderr — WRITE only
-	let stderr_arc = Arc::new(StderrINode);
-	let stderr_ptr = Arc::as_ptr(&stderr_arc) as usize as u64;
-	let stderr_cap = mint_cap_for_inode(task_id, stderr_arc, stderr_ptr, capability::Rights::WRITE);
+	let stderr_arc: Arc<dyn INode> = Arc::new(StderrINode);
+	let stderr_cap = mint_stdio_cap(cspace, Arc::clone(&stderr_arc), capability::Rights::WRITE);
 
 	table.insert(
 		(task_id, 0),
 		Arc::new(OpenFile {
-			inode: Arc::new(StdinINode),
+			inode: stdin_arc,
 			offset: Mutex::new(0),
 			cap_id: stdin_cap,
 		}),
@@ -296,7 +310,7 @@ pub fn init_stdio(task_id: u64) {
 	table.insert(
 		(task_id, 1),
 		Arc::new(OpenFile {
-			inode: Arc::new(StdoutINode),
+			inode: stdout_arc,
 			offset: Mutex::new(0),
 			cap_id: stdout_cap,
 		}),
@@ -304,11 +318,40 @@ pub fn init_stdio(task_id: u64) {
 	table.insert(
 		(task_id, 2),
 		Arc::new(OpenFile {
-			inode: Arc::new(StderrINode),
+			inode: stderr_arc,
 			offset: Mutex::new(0),
 			cap_id: stderr_cap,
 		}),
 	);
+}
+
+/*
+ * mint_stdio_cap - Mint a well-known stdio capability into a task's C-space
+ * @cspace: Space to insert into
+ * @inode:  Inode the capability authorizes
+ * @rights: Rights to grant
+ *
+ * The slot is whatever insert_with_generation picks (0, 1, 2 in call
+ * order), with the generation userspace expects for stdio.
+ */
+fn mint_stdio_cap(
+	cspace: &Arc<spin::Mutex<capability::cspace::CapabilitySpace>>,
+	inode: Arc<dyn INode>,
+	rights: capability::Rights,
+) -> Option<capability::types::CapabilityId> {
+	let ptr = Arc::as_ptr(&inode) as *const () as usize as u64;
+	let cap_handle = capability::CapabilityHandle::generate();
+	let record = capability::global_cap_store().lock().mint_root(
+		cap_handle,
+		capability::CapabilityType::Inode { ptr },
+		rights,
+		0,
+	);
+	let cap_id = record.id;
+	cspace
+		.lock()
+		.insert_with_generation(cap_id, false, STDIO_GENERATION);
+	Some(cap_id)
 }
 
 /*
