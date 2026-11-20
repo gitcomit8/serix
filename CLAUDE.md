@@ -165,6 +165,8 @@ Only revert to shell tools if Serena is unavailable or explicitly requested othe
 - **Memory ordering**: APs waiting on `AP_READY_PTR` must use `Acquire` load; BSP must use `Release` store
 - **Frame allocator**: `StaticBootFrameAllocator` has no deallocation; frames cannot be freed
 - **Kernel stack allocation**: Use `memory::kstack::alloc_kernel_stack()` for per-task stacks; the KSTACK region is pre-mapped and visible in all address spaces
+- **Kernel task entry and interrupts**: kernel tasks are resumed by `ret` from `context_switch`, which does not restore RFLAGS, so a Ring 0 task entered from a syscall path starts with interrupts disabled. `kshell` enables them explicitly on entry; any new kernel task must do the same
+- **Serial lock**: `hal::serial` must always take `SERIAL_PORT`/`LOG_BUFFER` with interrupts disabled. A holder that can be preempted deadlocks the CPU against a waiter spinning from the syscall path, where interrupts are off
 
 ## Debugging
 
@@ -243,8 +245,8 @@ When referencing the Intel SDM for architectural details — register layouts, i
 ## Project Status
 
 **Current Phase:** 4 (Storage & Filesystem Stack)  
-**Version:** 0.0.8
-**Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; multi-disk VirtIO block layer with GPT partitions; SMP with 4+ CPUs working
+**Version:** 0.0.9
+**Status:** ext4 daemon with JBD2 journal and HTree indexing integrated; FAT32 complete; multi-disk VirtIO block layer with GPT partitions; SMP with 4+ CPUs working, including per-CPU current-task tracking and per-task x87/SSE state
 
 ### What Works
 - Boot kernel to blue framebuffer with memory map
@@ -258,6 +260,8 @@ When referencing the Intel SDM for architectural details — register layouts, i
 - Capability-checked syscalls plus LES path policy served by `policyd`
 - PS/2 keyboard input, LAPIC timer interrupts (~625 Hz)
 - SMP with Limine MP: boot 1-16 CPUs, per-CPU run queues, per-CPU kernel stacks
+- Per-CPU current-task tracking (`CURRENT_TASKS`), with the APIC id read from CPUID leaf 1; userland tasks run and report on all 4 CPUs of `make run`
+- Per-task x87/SSE state via eager 512-byte `FXSAVE`/`FXRSTOR` on every context switch, stress-tested from Ring 3
 - Priority inheritance protocol for lock contention
 - Preemptive scheduling via LAPIC timer
 

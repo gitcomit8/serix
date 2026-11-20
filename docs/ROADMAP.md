@@ -1,6 +1,6 @@
 # Serix Development Roadmap
 
-> **Last Updated:** 2026-11-18 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9 · **Next Milestone:** v0.1.0 "Live Userspace CLI"
+> **Last Updated:** 2026-11-21 · **Target Architecture:** x86_64 (AMD64) · **Current Release:** v0.0.9 · **Next Milestone:** v0.1.0 "Live Userspace CLI"
 
 This document defines the phased development plan for the Serix hybrid kernel. Each phase specifies concrete deliverables, acceptance criteria, and subsystem dependencies. Phases are ordered by the project's critical path; no calendar estimates are provided.
 
@@ -15,7 +15,7 @@ The kernel has completed Phases 1–2 and the four core features of Phase 3. Cur
 - **Boot:** Limine v10.x (BIOS + UEFI), higher-half kernel with HHDM at `0xFFFF_8000_0000_0000`
 - **Interrupts:** LAPIC + I/O APIC fully operational; legacy PIC disabled; LAPIC timer at ~625 Hz (vector 49); PS/2 keyboard (vector 33); VirtIO block (vectors 34-41, one per enumerated device); x2APIC when CPUID exposes it, with fixed-IPI send and acknowledged per-CPU mailboxes for TLB shootdown, scheduler kick, and panic stop
 - **Memory:** 4-level paging (PML4), `StaticBootFrameAllocator`, 1 MiB kernel heap (`linked_list_allocator`), SLUB allocator for large objects, and per-task kernel stacks from the pre-mapped `KSTACK_VA_START` region (`0xFFFF_B000_0000_0000`; 1 MiB for spawned processes, 64 KiB for kshell, 4 KiB for APs)
-- **Scheduling:** Preemptive per-CPU Weighted Fair Queueing (WFQ) with virtual-runtime tracking and priority inheritance; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with pre-mapped kernel stacks; callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking primitives
+- **Scheduling:** Preemptive per-CPU Weighted Fair Queueing (WFQ) with virtual-runtime tracking and priority inheritance; per-CPU current-task slots (`CURRENT_TASKS`), with the CPU id read from CPUID leaf 1; LAPIC timer invokes `schedule()` at ~625 Hz; `TaskCB` with pre-mapped kernel stacks; callee-saved GPR + CR3 context switch with eager 512-byte `FXSAVE`/`FXRSTOR` per task; `block_current_and_switch()` for blocking primitives
 - **Syscalls (29 total):** `SYSCALL`/`SYSRET` via MSR; Serix-native numbers (not Linux-compatible): Process group — `SYS_EXIT(0)`, `SYS_YIELD(1)`, `SYS_GETPID(2)`, `SYS_GETPPID(3)`, `SYS_SPAWN(4)`, `SYS_WAIT(5)`; File I/O — `SYS_OPEN(10)`, `SYS_CLOSE(11)`, `SYS_READ(12)`, `SYS_WRITE(13)`, `SYS_SEEK(14)`, `SYS_DUP(15)`, `SYS_DUP2(16)`, `SYS_PIPE(17)`, `SYS_GETDENTS(18)`; Filesystem — `SYS_MKDIR(20)`, `SYS_UNLINK(21)`, `SYS_RMDIR(22)`, `SYS_FORMAT(23)`; IPC — `SYS_SEND(30)`, `SYS_RECV(31)`, `SYS_RECV_BLOCK(32)`, `SYS_CREATE_PORT(33)`, `SYS_CREATE_NOTIFICATION_PORT(34)`, `SYS_NOTIFY(35)`; Memory — `SYS_MMAP(90)`, `SYS_MUNMAP(91)`; File read — `SYS_FILE_READ(92)`; Policy — `SYS_POLICY_RELOAD(93)`. The central `authorization_for()` table classifies 24 calls as capability-gated and 5 as unprotected; file, memory, and IPC send/receive paths validate through `authorize_current_inode()`/`authorize_current_ipc()`, while process-control arms still rely on task/parent identity (see Phase 6 below).
 - **IPC:** Port-based message passing; blocking `receive_blocking()` with wait queues; `send()` wakes blocked receivers; producer/consumer validated
 - **Storage:** VirtIO 1.0 block device (PCI modern, two-phase init) with a table of up to 8 devices, one IRQ vector (`VIRTIO_BLK_VECTOR + index`) and ISR status address per device; virtqueue with DMA-safe HHDM frame allocation; IOAPIC-routed completion interrupt registered when the device exposes one, with polled used-ring completion; `BlockDevice` VFS INode for byte-oriented access; 64 MiB ext2 image used by `make disk`, write→read verified
@@ -37,12 +37,14 @@ These are the gaps that currently prevent the kernel from delivering a usable us
 - **Handles have no usable generation:** `SYS_OPEN` returns a bare fd while `ulib` hardcodes capability generation 1; there is no `opendir` and no relative open.
 - **Enforcement is per-arm, not table-driven:** `authorization_for(nr)` is defined in `kernel/src/syscall.rs` but never called; `SYS_SPAWN` has no authorization check at all.
 - **Nothing is reclaimed:** exit closes descriptors and pushes a zombie, but address spaces, page tables, user pages, and kernel stacks are never freed and the frame allocator has no free path.
+- **Kernel tasks inherit RFLAGS:** `context_switch` resumes a task with `ret` and does not restore the interrupt flag, so a Ring 0 task entered from a syscall path starts with interrupts disabled. `kshell` compensates with an explicit `sti`; any new kernel task must do the same until the switch restores RFLAGS generically.
+- **Lock discipline is manual:** a spin lock taken with interrupts enabled can be preempted, and a waiter that spins from the syscall path (interrupts off) then deadlocks the CPU permanently. The serial port was fixed this way; every other lock is still up to its caller.
 
 ---
 
 ## Next Milestone: v0.1.0 — Live Userspace CLI
 
-**Status:** In progress (design and interface decisions locked; step 0 and steps 1-4 in flight). Full specification: [USERLAND.md](USERLAND.md).
+**Status:** In progress (design and interface decisions locked; step 0 done, step 3b / B13 done, steps 1-4 in flight). Full specification: [USERLAND.md](USERLAND.md).
 
 This milestone replaces the old assumption that Phase 8 would arrive after all hardware work. It is now the critical path: a single recorded QEMU session must boot the live ISO, discover a payload disk, start `/sbin/init`, mount the read-only ext4 userland, and reach an `rsh` prompt where external programs start with arguments, exit statuses, inherited descriptors, and real capability enforcement.
 
@@ -64,7 +66,7 @@ This milestone replaces the old assumption that Phase 8 would arrive after all h
 | **B10** | Full authorization enforcement | `authorization_for` never called; `SYS_SPAWN` ungated | Table enforced before dispatch; `rsh` can start `/bin/ls` but not `/sbin/policyd` |
 | **B11** | `ulib` and the `rsh` contract | No formatting, args, allocator, or published ABI | A program built against the published ABI runs; `rsh` builds against the same crate |
 | **B12** | Lifecycle and address-space teardown | Address spaces, pages, and kernel stacks never freed. Split: teardown, with a minimal `free_frame` path, is a v0.1.0 item; a full reclaiming allocator is not | Fifty starts and one shell crash leave free frames within a documented bound |
-| **B13** | Extended CPU state (x87/SSE) | No `fxsave`/`xsave` in the tree; context switch saves callee-saved GPRs and CR3 only | Two Ring 3 programs keep distinct XMM/x87 state across preemptions on 1 and multiple CPUs |
+| **B13** | Extended CPU state (x87/SSE) | ✅ Done — 512-byte eager `FXSAVE`/`FXRSTOR` area in every `CPUContext`, `CR4.OSFXSR`/`OSXMMEXCPT` enabled on the BSP and all APs, two-process XMM stress test passes | Two Ring 3 programs keep distinct XMM/x87 state across preemptions on 1 and multiple CPUs |
 
 ### Order of work
 
@@ -76,7 +78,7 @@ The blockers are ordered for **independently demonstrable checkpoints** rather t
 | 1 | `make payload` fixture: ext2 bootstrap with `/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`, plus an ext4 userland partition | — | Linux mounts both partitions; `make payload` is idempotent |
 | 2 | B3 `SYS_MOUNT` + `MS_RDONLY` + read-only `ext4d` | 1 | Read-only mount works; writes return `EROFS` |
 | 3 | B8 `argv`/`envp` for spawn | — | A test program prints `argc` and `argv[1]` |
-| 3b | B13 x87/SSE state saved per task | — | Two-process XMM stress test passes |
+| 3b | B13 x87/SSE state saved per task | — | ✅ **Done:** two-process XMM stress test passes (`ulib/examples/fputest.rs`; 5/5 boots at `-smp 4`) |
 | 4 | B4 payload discovery and bootstrap mount at `/` | 1, 2, 3 | **Checkpoint A:** kernel boots a disk-delivered `/sbin/init` |
 | 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **Checkpoint B:** kernel spawns exactly one process, init does the rest |
 | 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works; stale handles rejected |
@@ -85,7 +87,7 @@ The blockers are ordered for **independently demonstrable checkpoints** rather t
 | 9 | B12 address-space teardown with a minimal `free_frame` | 5 | Fifty starts within a documented frame bound |
 | 10 | B9 descriptor inheritance, B6 hardlinks | 6 | Optional for v0.1.0 |
 
-**Immediate next step: steps 1 through 4.** B1 and B2 are complete; the payload fixture, the mount syscall, `argv`, and discovery are the remaining path to Checkpoint A.
+**Immediate next step: steps 1 through 4.** B1, B2, and B13 (step 3b) are complete; the payload fixture, the mount syscall, `argv`, and discovery are the remaining path to Checkpoint A.
 
 Deliberately deferred: backup-GPT fallback, MBR fallback, overlap detection, non-512-byte sectors, a full reclaiming frame allocator, and the `/boot` reservation. None appear in the acceptance session.
 
@@ -166,7 +168,7 @@ Disk installation, bootloader installation, UEFI disk boot, networking, dynamic 
 
 ## Phase 3: Preemptive Scheduling & IPC Hardening 🔄
 
-**Status:** Core scheduling complete; SMP with Limine MP AP bootstrap operational; WFQ and priority inheritance implemented
+**Status:** Core scheduling complete; SMP with Limine MP AP bootstrap operational; WFQ and priority inheritance implemented; per-CPU current-task tracking and per-task x87/SSE state added
 
 ### Preemptive SMP Scheduler
 
@@ -174,6 +176,8 @@ Disk installation, bootloader installation, UEFI disk boot, networking, dynamic 
 - [x] LAPIC timer-driven preemption at ~625 Hz invoking `schedule()` (vector 49)
 - [x] Pre-mapped kernel stack region (`KSTACK_VA_START`) with per-task stacks: 1 MiB for spawned processes, 64 KiB for kshell, 4 KiB for APs
 - [x] Callee-saved GPR + CR3 context switch; `block_current_and_switch()` for blocking
+- [x] Per-CPU current-task tracking: `CURRENT_TASKS` slots indexed by the APIC id from CPUID leaf 1, replacing the single global `CURRENT_TASK`
+- [x] Per-task x87/SSE state: eager `fxsave64`/`fxrstor64` of a 512-byte `FxSaveArea` on every context switch, stress-tested from Ring 3
 - [x] Per-CPU run queues (`PER_CPU_RUN_QUEUES` array, 16 slots); GS_BASE MSR points to per-CPU data area
 - [x] Weighted Fair Queueing (WFQ) for `Fair` class with virtual-runtime tracking
 - [x] Priority inheritance: `acquire_lock_with_pi()` boosts holder priority; `release_lock_with_pi()` restores original priority; global `LOCK_REGISTRY` tracks lock holders
@@ -521,7 +525,7 @@ Existing Rust shell to be ported from `std` to `#![no_std]` + `ulib` for Serix u
 | **5** | LES (Least-Elevated Security) Policy Bridge | ✅ Policy engine + audit ring + `policyd` integration; hot-reload implemented; audit pagination pending |
 | **6** | Security Bridge & Capability Enforcement | 🔄 Core enforcement operational (24 of 29 syscalls classified capability-gated); process-control gating and adversarial validation pending |
 | **7** | Hardware Enablement (SMP, IOMMU, ACPI, NVMe, XHCI) | 🔄 SMP operational; ACPI MADT/FADT/DMAR decoding, x2APIC, IPI mailboxes, MSI-X inventory; IOMMU/power/NVMe/XHCI pending |
-| **0.1.0** | **Live Userspace CLI** (multi-disk + GPT, `SYS_MOUNT`, init, `rsh`, argv, enforcement) | 🔄 **In progress.** Design locked in [USERLAND.md](USERLAND.md); B1–B2 done, B3–B12 pending |
+| **0.1.0** | **Live Userspace CLI** (multi-disk + GPT, `SYS_MOUNT`, init, `rsh`, argv, enforcement) | 🔄 **In progress.** Design locked in [USERLAND.md](USERLAND.md); B1–B2 and B13 done, B3–B12 pending |
 | **8** | Userspace & MVP Deliverables (rsh shell, /proc, demo) | 📋 Re-scoped: follows the v0.1.0 milestone (kshell Ring-0 shell exists with 14 commands) |
 | **9** | Networking (VirtIO-net, zero-copy, TCP/IP) | 📋 Planned |
 | **10** | Optimization & Tooling (perf, debug, CI/CD) | 📋 Planned |

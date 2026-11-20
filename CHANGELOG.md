@@ -4,6 +4,8 @@
 
 ### Added
 
+- Per-task x87/SSE state: `CPUContext` carries a 512-byte, 16-byte-aligned `FxSaveArea` saved and restored with `fxsave64`/`fxrstor64` on every context switch (`task/src/context_switch.rs`), with compile-time assertions pinning the hand-written struct offsets. `hal::cpu::enable_sse()` clears `CR0.EM`, sets `CR0.MP`, and sets `CR4.OSFXSR`/`CR4.OSXMMEXCPT` on the BSP and on every AP.
+- `ulib/examples/fputest.rs`: Ring 3 stress program whose parent spawns two workers; each worker writes distinct x87, MMX, and SSE patterns, spins long enough to be preempted, and reports mismatches. Built as a naked `_start` that forwards the entry RSP so `argc` reaches the program intact.
 - Multi-device VirtIO block layer: `drivers/src/virtio.rs` replaces the `VIRTIO_BLK` singleton with a table of up to 8 devices; each device claims a slot and gets its own IRQ vector (`VIRTIO_BLK_VECTOR + index`) and ISR status address. `store_global()` now returns the claimed index.
 - GPT support (`fs/src/gpt.rs`): validated primary-GPT parsing with signature, revision, header-size, header CRC32, entry-array CRC32, and entry-bound checks. A table failing any check is rejected whole. 11 host unit tests cover the parser and every rejection path.
 - `fs::PartitionDev`: an offset `BlockDev` that presents a partition's own sector 0 to filesystem drivers and refuses I/O past the partition end.
@@ -12,8 +14,16 @@
 
 ### Changed
 
+- Per-CPU current-task tracking: `task::CURRENT_TASKS` (one slot per CPU) replaces the single global `CURRENT_TASK`, and `current_cpu_id()` reads CPUID leaf 1 `EBX[31:24]` instead of `IA32_APIC_BASE`, which holds no APIC id in its low byte — every CPU previously reported id 0 and shared one run queue, one current-task slot, and one TSS stack hook.
 - `fs::VirtioBlockDev` is now `VirtioBlockDev::new(index)` instead of a zero-sized singleton, and `virtio_blk()` delegates to `virtio_blk_at(0)`.
 - Boot auto-mount still probes disk 0 only; partition nodes are exposed but not probed or mounted.
+
+### Fixed
+
+- `SYSRET` returned with the user *data* selector (`CS = 0x23`) because `Star::write` was given the data selector for the CS field. The first return to Ring 3 raised `#GP` with error `0x20`; the frame dump showed `[0x2009cc, 0x23, 0x10246, 0x7fff…, 0x1b]`.
+- Spawned tasks had empty c-spaces: `init_stdio` minted the stdio capabilities via `find_task_by_id`, which cannot see a child that has not been enqueued yet, so writes to fds 0-2 returned `EBADF`. It now receives the child's `&tcb.cspace` directly, with `CapabilitySpace::insert_with_generation` and `STDIO_GENERATION = 1` preserving generation validation.
+- `kshell` ran with interrupts disabled after the `SYS_EXIT` path switched to it: kernel tasks are resumed by `ret` from `context_switch`, which does not restore RFLAGS, so the shell inherited the syscall path's cleared interrupt flag. The LAPIC timer then stopped on that CPU and every queued task starved behind the shell. It now enables interrupts on entry.
+- Serial output could wedge the machine: `serial_read_byte()` held the `SERIAL_PORT` lock in a window where it could be preempted, and the next task to print spun on that lock from the syscall path, where interrupts are off, so nothing could resume the holder. The read and log-replay paths now hold their locks with interrupts disabled.
 
 ## [v0.0.9] - 2026-11-10
 

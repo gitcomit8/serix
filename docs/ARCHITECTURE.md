@@ -178,7 +178,7 @@ pub struct TaskCB {
 	- `Batch(140)`: Low-priority background tasks.
 	- `Iso(50)`: Isochronous tasks with elevated priority.
 - **Priority Inheritance:** `acquire_lock_with_pi()` temporarily boosts a lock holder's priority to match the acquirer's priority (prevents priority inversion). `release_lock_with_pi()` restores the original priority. Global `LOCK_REGISTRY` tracks which task holds which lock.
-- **Context Switch:** `context_switch()` (in `task/context_switch.rs`) saves/restores callee-saved GPRs (`RBP`, `RBX`, `R12-R15`), `CR3` (page table base), and `FS_BASE`/`GS_BASE` MSRs. FPU/SSE state is **not yet lazily saved** (handled by `#XF` handler, no lazy restore).
+- **Context Switch:** `context_switch()` (in `task/context_switch.rs`) saves/restores callee-saved GPRs (`RBP`, `RBX`, `R12-R15`), `CR3` (page table base), `FS_BASE`/`GS_BASE` MSRs, and a 512-byte `FxSaveArea` per task via `fxsave64`/`fxrstor64`. x87/SSE state is saved **eagerly** on every switch; `XSAVE` and lazy restore remain deferred. Because the resume path is a plain `ret`, RFLAGS is not restored, so a kernel task entered from a syscall path must enable interrupts itself.
 
 ### 6.3 Process Semantics
 

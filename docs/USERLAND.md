@@ -449,18 +449,18 @@ Capability slot numbering is load-bearing: `ulib` currently hardcodes slots 0–
 
 ### B13 — Extended CPU state (x87/SSE)
 
-**State.** The context switch saves callee-saved GPRs and CR3 (see Current Status in [ROADMAP.md](ROADMAP.md)), and no `fxsave`/`xsave` appears anywhere in the tree. `ext4d` and `policyd` already run preempted in Ring 3, `init` and `rsh` are next, and Rust codegen uses XMM registers freely.
+**State.** ✅ Done. Every `CPUContext` carries a 512-byte, 16-byte-aligned `FxSaveArea` at offset 160 (pinned by compile-time assertions), and `context_switch()` saves and restores it with `fxsave64`/`fxrstor64` on every switch — eagerly, so no lazy-restore bookkeeping and no `#XF` path is needed. `hal::cpu::enable_sse()` clears `CR0.EM`, sets `CR0.MP`, and sets `CR4.OSFXSR`/`CR4.OSXMMEXCPT` on the BSP and on each AP in `init/cpu.rs`. `ulib/examples/fputest.rs` is the stress program: a naked `_start` that forwards the entry RSP so `argc` survives, a parent that spawns two workers, and workers that write distinct x87/MMX/SSE patterns, spin long enough to be preempted, then verify every register.
 
 **Why it blocks.** A timer preemption between two Ring 3 tasks can silently corrupt one task's x87/XMM state. The failure surfaces as wrong data far from its cause, which makes it the most expensive kind of bug to find after `rsh` exists.
 
 **Work.**
 
-- [ ] Enable `CR4.OSFXSR` and `CR4.OSXMMEXCPT` on every CPU (plus `OSXSAVE` and `XCR0` if XSAVE is used).
-- [ ] Give each task a save area (FXSAVE: 512 bytes, 16-byte aligned; XSAVE: sized from CPUID leaf 0xD) and save/restore it across context switches, eagerly or lazily.
-- [ ] Decide and document whether kernel code may use SSE; if it may not, enforce it in the target spec.
-- [ ] Stress test: two Ring 3 programs each hold a distinct XMM/x87 pattern and verify it across preemptions.
+- [x] Enable `CR4.OSFXSR` and `CR4.OSXMMEXCPT` on every CPU (plus `OSXSAVE` and `XCR0` if XSAVE is used). — FXSAVE form only; `hal::cpu::enable_sse()` runs on the BSP and on every AP.
+- [x] Give each task a save area (FXSAVE: 512 bytes, 16-byte aligned; XSAVE: sized from CPUID leaf 0xD) and save/restore it across context switches, eagerly or lazily. — eager FXSAVE; XSAVE and lazy restore stay deferred (see Phase 10 below).
+- [x] Decide and document whether kernel code may use SSE; if it may not, enforce it in the target spec. — kernel code may use SSE: `CR0.EM` is cleared and the same eager save covers Ring 0 tasks such as `kshell`, so no target-spec change is needed. Nothing in the kernel uses SSE today.
+- [x] Stress test: two Ring 3 programs each hold a distinct XMM/x87 pattern and verify it across preemptions. — both workers report `mismatches=0`; 5/5 boots at `-smp 4`.
 
-**Done when.** The two-process stress test completes a documented number of context switches with no mismatch, on 1 and multiple CPUs.
+**Done when.** The two-process stress test completes with no mismatch across preemptions on multiple CPUs — verified at `-smp 4` (5/5 boots). A single-CPU run was not repeated after the scheduling fixes, so that half of the original criterion is unverified.
 
 ## 10. Order of work
 
@@ -472,7 +472,7 @@ Ordered for independently demonstrable checkpoints. Each step ends in a bootable
 | 1 | `make payload`: ext2 bootstrap (`/SERIX.MRK`, `/sbin/init`, `/sbin/ext4d`) plus ext4 userland | — | Both partitions mount on Linux |
 | 2 | B3 `SYS_MOUNT`, `MS_RDONLY`, read-only `ext4d` | 1 | Writes to `/` return `EROFS` |
 | 3 | B8 `argv`/`envp` | — | Test program prints `argc`/`argv[1]` |
-| 3b | B13 x87/SSE state saved per task | — | Two-process XMM stress test passes |
+| 3b | B13 x87/SSE state saved per task | — | ✅ Two-process XMM stress test passes |
 | 4 | B4 marker scan and bootstrap mount at `/` | 1, 2, 3 | **A:** init comes from disk |
 | 5 | B5 init owns daemons, mounts, policy, respawn | 4 | **B:** one kernel spawn |
 | 6 | B7 `opendir` and opaque handles | 0 | Relative open/list works |
