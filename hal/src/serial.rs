@@ -187,7 +187,9 @@ fn write_outputs(s: &str) {
 
 /// Copy the newest retained serial log bytes into `dst` in chronological order.
 pub fn copy_recent_log(dst: &mut [u8]) -> usize {
-	LOG_BUFFER.lock().copy_recent(dst)
+	/* Same invariant as serial_read_byte: never hold this lock across a
+	 * window where the holder can be preempted. */
+	x86_64::instructions::interrupts::without_interrupts(|| LOG_BUFFER.lock().copy_recent(dst))
 }
 
 /*
@@ -221,13 +223,21 @@ macro_rules! serial_println {
  * when QEMU is launched with -serial stdio.
  */
 pub fn serial_read_byte() -> Option<u8> {
-	if let Some(serial) = SERIAL_PORT.get() {
-		let port = serial.lock();
-		if port.is_data_ready() {
-			return Some(port.read_byte());
+	/*
+	 * Take the port lock with interrupts disabled. A holder that can be
+	 * preempted deadlocks the machine: the next task to print spins on this
+	 * lock from the syscall path, where interrupts are off, so nothing can
+	 * ever resume the holder and release it.
+	 */
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		if let Some(serial) = SERIAL_PORT.get() {
+			let port = serial.lock();
+			if port.is_data_ready() {
+				return Some(port.read_byte());
+			}
 		}
-	}
-	None
+		None
+	})
 }
 
 /*

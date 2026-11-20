@@ -398,7 +398,7 @@ impl IpcSpace {
 	 */
 	pub fn create_port(&self, id: u64) -> (Arc<Port>, capability::CapabilityHandle) {
 		let mut ports = self.ports.write();
-		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
+		let owner_id = task::scheduler::current_task_id();
 		let port = Arc::new(Port::new(id, owner_id));
 		ports.insert(id, port.clone());
 		drop(ports);
@@ -447,7 +447,7 @@ impl IpcSpace {
 	 */
 	pub fn create_notification_port(&self, id: u64, bitmask: u64) -> (Arc<Port>, capability::CapabilityHandle) {
 		let mut ports = self.ports.write();
-		let owner_id = task::CURRENT_TASK.load(core::sync::atomic::Ordering::Relaxed);
+		let owner_id = task::scheduler::current_task_id();
 		let port = Arc::new(Port::new_with_kind(id, owner_id, true));
 		/* Set initial notification bitmask */
 		port.notification_bitmask.store(bitmask, Ordering::Relaxed);

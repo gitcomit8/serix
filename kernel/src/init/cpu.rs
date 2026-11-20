@@ -33,6 +33,14 @@ pub extern "C" fn ap_init_callback(cpu: &limine::mp::Cpu) -> ! {
 		loop { x86_64::instructions::hlt(); }
 	}
 
+	/*
+	 * Enable x87/SSE on this CPU (CR0.MP, CR4.OSFXSR, CR4.OSXMMEXCPT).
+	 * The BSP does the same in _start(); FXSAVE and FXRSTOR raise #UD
+	 * without CR4.OSFXSR, so a task that migrates here must find the
+	 * same state the context switch assumes.
+	 */
+    hal::cpu::enable_sse();
+
 	/* Mask timer interrupt — prevent premature timer IRQ before init complete */
     unsafe { apic::timer::mask_timer() };
 

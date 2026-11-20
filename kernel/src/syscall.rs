@@ -447,21 +447,20 @@ pub fn init_syscalls() {
 
 	/*
 	 * Setup STAR (Segment Selectors)
-	 * x86_64 crate expectation:
-	 * Arg 0 (user_code_selector) must be Arg 1 (user_data_selector) + 8
-	 * STAR gets Arg 1.
 	 *
-	 * We pass:
-	 * Arg 1 (Base) = Index 3 (0x18)
-	 * Arg 0 (Target) = Index 4 (0x20)
-	 *
-	 * Hardware behavior (SYSRET):
-	 * SS = STAR + 8 = Index 3 + 1 = Index 4 (User Data) -> Correct
-	 * CS = STAR + 16 = Index 3 + 2 = Index 5 (User Code) -> Correct
+	 * The GDT (gdt.rs) puts user data at index 4 (0x23) and user code at
+	 * index 5 (0x2b); the Ring 3 trampoline in process.rs loads the same
+	 * pair. Star::write expects the SYSRET code selector, and stores
+	 * (code - 16) in STAR[63:48], from which hardware derives
+	 *   SYSRET CS = STAR[63:48] + 16 = user code (0x2b)
+	 *   SYSRET SS = STAR[63:48] + 8  = user data (0x23)
+	 * Passing user data as the code selector instead makes SYSRET return
+	 * with CS pointing at the data descriptor, and any later iretq to that
+	 * frame faults with #GP(0x20).
 	 */
 	Star::write(
+		x86_64::structures::gdt::SegmentSelector::new(5, x86_64::PrivilegeLevel::Ring3),
 		x86_64::structures::gdt::SegmentSelector::new(4, x86_64::PrivilegeLevel::Ring3),
-		x86_64::structures::gdt::SegmentSelector::new(3, x86_64::PrivilegeLevel::Ring3),
 		x86_64::structures::gdt::SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0),
 		x86_64::structures::gdt::SegmentSelector::new(2, x86_64::PrivilegeLevel::Ring0),
 	)
@@ -747,6 +746,7 @@ extern "C" fn syscall_dispatcher(
 						cr3: 0,
 						ipc_msg_ptr: 0,
 						ipc_msg_valid: false,
+						fx: task::FxSaveArea::new(),
 					};
 					unsafe {
 						/*

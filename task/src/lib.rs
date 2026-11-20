@@ -32,14 +32,27 @@ use spin::{Mutex, Once};
 use x86_64::VirtAddr;
 use x86_64::structures::paging::PhysFrame;
 /*
- * CURRENT_TASK - Task ID of the currently running task
+ * MAX_CPUS - Number of per-CPU scheduling slots
  *
- * 0 means no task is running (idle / early boot)
- * Updated atomically before each context switch
- *
- * TODO(SMP): Per-CPU current-task tracking via GS_BASE
+ * Matches PER_CPU_RUN_QUEUES in scheduler.rs. The kernel supports up to
+ * 16 online CPUs, and both tables are indexed by the same CPU id.
  */
-pub static CURRENT_TASK: AtomicU64 = AtomicU64::new(0);
+pub const MAX_CPUS: usize = 16;
+
+/*
+ * CURRENT_TASKS - Per-CPU task ID of the task running on that CPU
+ *
+ * 0 means no task is running (idle / early boot).
+ *
+ * This has to be per-CPU: with four CPUs running four different tasks a
+ * single global value is overwritten by whichever CPU scheduled last, and
+ * every lookup that resolves authority by task (fd table, capability
+ * space, parent/child bookkeeping) then acts on another task.
+ *
+ * Written by pick_next_task()/take_current() for the local CPU only, and
+ * read with Acquire ordering by current_task_id().
+ */
+pub static CURRENT_TASKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 pub static SWITCH_HOOK: Once<fn(VirtAddr)> = Once::new();
 
@@ -181,12 +194,67 @@ impl Default for SchedClass {
 }
 
 /*
+ * struct FxSaveArea - One task's x87/SSE state, in FXSAVE format
+ *
+ * The layout is the 512-byte region FXSAVE writes when CR4.OSFXSR is set:
+ * x87 control/status/tag words and the eight 80-bit registers first, then
+ * MXCSR and the sixteen XMM registers. It is 16-byte aligned because FXSAVE
+ * and FXRSTOR raise #GP for a misaligned memory operand.
+ *
+ * A fresh task must not start from a zeroed image: an x87 control word of
+ * zero leaves every floating-point exception unmasked, and MXCSR of zero
+ * does the same for SIMD exceptions, so the first SSE instruction with a
+ * denormal or an invalid operand would fault. `new` writes the architectural
+ * defaults instead (FCW 0x037F, MXCSR 0x1F80).
+ */
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct FxSaveArea {
+	pub bytes: [u8; 512],
+}
+
+impl FxSaveArea {
+	/*
+	 * new - Build the architectural default FPU/SSE image
+	 */
+	pub const fn new() -> Self {
+		let mut bytes = [0u8; 512];
+		/* FCW at offset 0: round-to-nearest, all x87 exceptions masked. */
+		bytes[0] = 0x7F;
+		bytes[1] = 0x03;
+		/* MXCSR at offset 24: all SIMD exceptions masked, round-to-nearest. */
+		bytes[24] = 0x80;
+		bytes[25] = 0x1F;
+		/* MXCSR_MASK at offset 28: every MXCSR bit is implemented. */
+		bytes[28] = 0xFF;
+		bytes[29] = 0xFF;
+		Self { bytes }
+	}
+}
+
+impl Default for FxSaveArea {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+/*
+ * Debug - Name the area without dumping 512 bytes into every log line
+ */
+impl core::fmt::Debug for FxSaveArea {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		f.write_str("FxSaveArea(512)")
+	}
+}
+
+/*
  * struct CPUContext - CPU context for task switching
  *
  * Callee-saved registers (SYS-V ABI): rsp, rbp, rbx, r12-r15
  * Execution context: rip, rflags
  * Segments: cs, ss, fs, gs, ds, es
  * MSRs/CR: fs_base, gs_base, cr3
+ * Extended state: fx (FXSAVE image of the x87/SSE state)
  *
  * IPC register-mediated transfer (sender → receiver):
  *   ipc_msg_ptr: non-zero = sender passed IPC msg, ptr → msg.data
@@ -194,6 +262,9 @@ impl Default for SchedClass {
  *
  * Context switch loads these into rbx/r12/r13 (arg1/arg2/arg3 registers)
  * so the receiver sees IPC data in SysV calling convention registers.
+ *
+ * The field offsets are hand-written in context_switch.rs, so the layout is
+ * asserted below rather than assumed.
  */
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -229,7 +300,21 @@ pub struct CPUContext {
 	 * flag. Loaded into rbx/r12/r13 before restoring normal registers. */
 	pub ipc_msg_ptr: u64,
 	pub ipc_msg_valid: bool,
+
+	/* FPU/SSE state, saved and restored on every context switch. */
+	pub fx: FxSaveArea,
 }
+
+/*
+ * The assembly in context_switch.rs addresses these fields by literal
+ * offset. Fail the build if a field moves instead of corrupting a task's
+ * floating-point state at runtime.
+ */
+const _: () = {
+	assert!(core::mem::offset_of!(CPUContext, cr3) == 136);
+	assert!(core::mem::offset_of!(CPUContext, fx) == 160);
+	assert!(core::mem::align_of::<CPUContext>() == 16);
+};
 
 impl Default for CPUContext {
 	fn default() -> Self {
@@ -254,6 +339,7 @@ impl Default for CPUContext {
 			cr3: 0,
 			ipc_msg_ptr: 0,
 			ipc_msg_valid: false,
+			fx: FxSaveArea::new(),
 		}
 	}
 }
@@ -756,8 +842,12 @@ pub fn block_current_and_switch() {
 	let new_arc = match pick_next_task() {
 		Some(t) => t,
 		None => {
-			/* No other task — put ourselves back as current */
-			crate::scheduler::get_per_cpu_run_queue(crate::scheduler::current_cpu_id()).lock().current = Some(old_arc);
+			/* No other task — put ourselves back as current. take_current()
+			 * cleared this CPU's current-task id, so restore it. */
+			let cpu_id = crate::scheduler::current_cpu_id();
+			let task_id = old_arc.lock().id.0;
+			crate::scheduler::get_per_cpu_run_queue(cpu_id).lock().current = Some(old_arc);
+			crate::scheduler::set_current_task_id(task_id);
 			return;
 		}
 	};

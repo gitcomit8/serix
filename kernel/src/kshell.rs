@@ -53,6 +53,15 @@ const LINE_MAX: usize = 256;
  * Must be `unsafe extern "C" fn() -> !` to satisfy TaskCB::new.
  */
 pub unsafe extern "C" fn kshell_task() -> ! {
+	/*
+	 * Kernel tasks are entered by `ret` from context_switch, which does not
+	 * restore RFLAGS, so this task inherits the interrupt flag of whatever
+	 * switched to it — typically the SYS_EXIT path, which runs with
+	 * interrupts disabled. Without this, the LAPIC timer never fires again
+	 * on this CPU and every other queued task starves.
+	 */
+	x86_64::instructions::interrupts::enable();
+
 	graphics::kprintln!();
 	graphics::kprintln!("=== Serix kshell ===");
 	graphics::kprintln!("Type 'help' for commands.");
